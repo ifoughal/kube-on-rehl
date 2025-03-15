@@ -7,12 +7,48 @@ set -o pipefail  # Fail if any piped command fails
 command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
+
+# Function to update or add the PATH variable in /etc/environment
+update_path() {
+    local NEW_PATH="export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    local ENV_FILE="/etc/environment"
+
+    # Check if the PATH variable is already defined in /etc/environment
+    if grep -q '^export PATH=' "$ENV_FILE"; then
+        # If PATH exists, update it with the new value
+        sudo sed -i 's|^export PATH=.*|'"$NEW_PATH"'|' "$ENV_FILE"
+        echo "Updated PATH in $ENV_FILE."
+    else
+        # If PATH does not exist, append it to the file
+        echo "$NEW_PATH" | sudo tee -a "$ENV_FILE"
+        echo "Added PATH to $ENV_FILE."
+    fi
+    # Reload the environment variables to apply changes immediately
+    source "$ENV_FILE"
+    export PATH
+    # Print the updated PATH for verification
+    echo "Updated PATH: $PATH"
+}
+
+
+
+update_firewall() {
+    sudo firewall-cmd --zone=public --add-port=6443/tcp --permanent
+    sudo firewall-cmd --zone=public --add-port=10250/tcp --permanent
+    sudo firewall-cmd --reload
+}
+
+# Call the function
+update_path
+
+
 # Initialize variables
 CURRENT_HOSTNAME=$(eval hostname)
 NODES_FILE=""
 NODE_TYPE=""
 DRY_RUN=false
 
+echo 'export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' | sudo tee -a /etc/environment
 
 # Parse command-line arguments manually (including --dry-run)
 while [[ $# -gt 0 ]]; do
@@ -33,12 +69,10 @@ while [[ $# -gt 0 ]]; do
             NODE_TYPE="$2"
             shift 2
             ;;
-
         -n|--set-hostname-to)
             SET_HOSTNAME_TO="$2"
             shift 2
             ;;
-
         --dry-run)
             DRY_RUN=true
             echo "Dry run mode: No changes will be made."
@@ -46,7 +80,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 --hostname <hostname> --nodes-file <nodes_file> --node-type <kube-init|worker> [--dry-run]"
+            echo "Usage: $0 --control-plane-hostname <str> --control-plane-port <str> --nodes-file <nodes_file> --node-type <control-plane|worker-node|> --set-hostname-to <str OPTIONAL> [--dry-run] "
             exit 1
             ;;
     esac
@@ -54,15 +88,15 @@ done
 
 
 # Validate that required arguments are provided
-if [ -z "$CONTROLPLANE_HOSTNAME" ] || -z "$CONTROLPLANE_PORT" ] || [ -z "$NODES_FILE" ] || [ -z "$NODE_TYPE" ]; then
+if [ -z "$CONTROLPLANE_HOSTNAME" ] || [ -z "$CONTROLPLANE_PORT" ] || [ -z "$NODES_FILE" ] || [ -z "$NODE_TYPE" ]; then
     echo "Error: Missing required arguments."
-    echo "Usage: $0 -h <hostname> -n <nodes_file> -t <kube-init|worker> [-d]"
+    echo "Usage: $0 --control-plane-hostname <str> --control-plane-port <str> --nodes-file <nodes_file> --node-type <control-plane|worker-node> --set-hostname-to <str OPTIONAL> [--dry-run]"
     exit 1
 fi
 
-# Ensure that 'kube-init' or 'worker' is provided as node type
-if [[ "$NODE_TYPE" != "kube-init" && "$NODE_TYPE" != "worker" ]]; then
-    echo "Error: 'kube-init' or 'worker' must be provided as the node type."
+# Ensure that 'control-plane' or 'worker-node' is provided as node type
+if [[ "$NODE_TYPE" != "control-plane" && "$NODE_TYPE" != "worker-node" ]]; then
+    echo "Error: 'control-plane' or 'worker-node' must be provided as the node type."
     exit 1
 fi
 
@@ -82,7 +116,7 @@ fi
 
 
 sudo dnf update -y
-sudo dnf install -y python3-pip yum-utils bash-completion git wget
+sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools
 pip install yq
 
 
@@ -108,7 +142,7 @@ if ! command_exists yq; then
     echo "Error: 'yq' command not found. Please install yq to parse YAML files."
     exit 1
 fi
-# Parse YAML file and append node and worker details to /etc/hosts
+# Parse YAML file and append node and worker-node details to /etc/hosts
 if ! command_exists jq; then
     echo "Error: 'jq' command not found. Please install jq to parse JSON files."
     exit 1
@@ -123,7 +157,6 @@ yq '.nodes' "$NODES_FILE" | jq -r '.[] | "\(.ip) \(.hostname)"' | while read -r 
     # Append the entry to the file (e.g., /etc/hosts)
     # Normalize spaces in the input line (collapse multiple spaces/tabs into one)
     normalized_line=$(echo "$line" | sed 's/[[:space:]]\+/ /g')
-
 
     # Check if the normalized line already exists in the target file by parsing each line
     exists=false
@@ -228,19 +261,20 @@ kubeadm completion bash | sudo tee $COMPLETION_FILE >/dev/null
 # Kubeadm init logic
 KUBE_ADM_COMMAND="sudo kubeadm "
 
-if [ "$NODE_TYPE" == "kube-init" ]; then
-    echo "Initializing control plane node..."
+if [ "$NODE_TYPE" == "control-plane" ]; then
+    KUBE_ADM_COMMAND="$KUBE_ADM_COMMAND init --control-plane-endpoint=${CURRENT_HOSTNAME} --skip-phases=addon/kube-proxy "
 
-    KUBE_ADM_COMMAND="$KUBE_ADM_COMMAND init --control-plane-endpoint=${CURRENT_HOSTNAME}"
-
-
-    # Simulate Kubeadm init or worker node join
+    # Simulate Kubeadm init or worker-node node join
     if [ "$DRY_RUN" = true ]; then
+        echo "Initializing dry-run for control plane node init..."
         KUBE_ADM_COMMAND="$KUBE_ADM_COMMAND --dry-run "
+    else
+        echo "Initializing control plane node init..."
     fi
 
-    echo "Initializing control plane node..."
-    KUBEADM_INIT_OUTPUT=$(eval "$KUBE_ADM_COMMAND 2>&1")
+    echo "    with command: $KUBE_ADM_COMMAND"
+    # KUBEADM_INIT_OUTPUT=$(eval "$KUBE_ADM_COMMAND 2>&1")
+    KUBEADM_INIT_OUTPUT=$(eval "$KUBE_ADM_COMMAND" 2> "/var/log/kubeadm_init_errors.log")
 
     if [[ $? -ne 0 ]]; then
         echo "Error: Failed to run kubeadm init."
@@ -254,10 +288,7 @@ if [ "$NODE_TYPE" == "kube-init" ]; then
 
     if [ "$DRY_RUN" = true ]; then
         echo "Control plane dry-run initialized without errors."
-
-
-
-    elif [ "$DRY_RUN" = false ]; then
+    else
         echo "Control plane initialized successfully."
         # Copy kubeconfig for kubectl access
         mkdir -p $HOME/.kube
@@ -269,7 +300,7 @@ if [ "$NODE_TYPE" == "kube-init" ]; then
     CONTROLPLANE_ADDRESS=$(eval ip -o -4 addr show ens160 | awk '{print $4}' | cut -d/ -f1)  # 192.168.66.129
 
 
-        JOIN_YAML=./worker-join.yaml
+        JOIN_YAML=./worker-node-join.yaml
         cat <<EOF | sudo tee "$JOIN_YAML" > /dev/null
 apiVersion: kubeadm.k8s.io/v1beta2
 kind: JoinConfiguration
@@ -308,8 +339,8 @@ controlPlane:
 EOF
         echo "Join YAML files created at $JOIN_YAML."
 
-# elif [ "$NODE_TYPE" == "worker" ]; then
-#     echo "Preparing worker node..."
+# elif [ "$NODE_TYPE" == "worker-node" ]; then
+#     echo "Preparing worker-node node..."
 
 #     # Get the join command from the join_command.txt (assumes it was previously created by the control plane node)
 #     if [ ! -f join_command.txt ]; then
@@ -318,13 +349,13 @@ EOF
 #     fi
 
 #     JOIN_CMD=$(cat join_command.txt)
-#     echo "Running join command for worker node: $JOIN_CMD"
+#     echo "Running join command for worker-node node: $JOIN_CMD"
 
-#     # Run the join command on the worker node
+#     # Run the join command on the worker-node node
 #     sudo $JOIN_CMD
 
 else
-    echo "Error: Invalid node type. Use 'control' for control plane or 'worker' for worker node."
+    echo "Error: Invalid node type. Use 'control-plane' or 'worker-node'."
     exit 1
 fi
 
