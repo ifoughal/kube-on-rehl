@@ -294,7 +294,6 @@ if [ "$NODE_TYPE" == "control-plane" ]; then
         mkdir -p $HOME/.kube
         sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
         sudo chown $(id -u):$(id -g) $HOME/.kube/config
-
     fi
 
     CONTROLPLANE_ADDRESS=$(eval ip -o -4 addr show ens160 | awk '{print $4}' | cut -d/ -f1)  # 192.168.66.129
@@ -339,6 +338,14 @@ controlPlane:
 EOF
         echo "Join YAML files created at $JOIN_YAML."
 
+
+
+
+
+
+
+
+
 # elif [ "$NODE_TYPE" == "worker-node" ]; then
 #     echo "Preparing worker-node node..."
 
@@ -360,3 +367,37 @@ else
 fi
 
 echo "Kubernetes node setup completed."
+
+
+
+add_bashcompletion () {
+    # Parse the application name as a function argument
+    app="$1"
+
+    if [ -z "$app" ]; then
+        echo "Error: Application name must be provided."
+        return 1
+    fi
+    echo "Adding $app bash completion"
+    COMPLETION_FILE="/etc/bash_completion.d/$app"
+
+    # Assuming the application has a completion script available
+    $app completion bash | sudo tee "$COMPLETION_FILE" >/dev/null
+
+    echo "$app bash completion added successfully."
+    source $COMPLETION_FILE
+}
+
+
+install_cilium () {
+    CILIUM_CLI_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
+    CLI_ARCH=amd64
+    if [ "$(uname -m)" = "aarch64" ]; then CLI_ARCH=arm64; fi
+    curl -L --fail --remote-name-all https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}
+    sha256sum --check cilium-linux-${CLI_ARCH}.tar.gz.sha256sum
+    sudo tar xzvfC cilium-linux-${CLI_ARCH}.tar.gz /usr/local/bin
+    rm cilium-linux-*
+    add_bashcompletion cilium
+
+
+}
