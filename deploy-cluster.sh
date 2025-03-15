@@ -8,7 +8,7 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 # Initialize variables
-CURRENT_HOSTNAME=""
+CURRENT_HOSTNAME=$(eval hostname)
 NODES_FILE=""
 NODE_TYPE=""
 DRY_RUN=false
@@ -17,8 +17,12 @@ DRY_RUN=false
 # Parse command-line arguments manually (including --dry-run)
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -h|--hostname)
-            CURRENT_HOSTNAME="$2"
+        -c|--control-plane-hostname)
+            CONTROLPLANE_HOSTNAME="$2"
+            shift 2
+            ;;
+        -p|--control-plane-port)
+            CONTROLPLANE_PORT="$2"
             shift 2
             ;;
         -n|--nodes-file)
@@ -29,6 +33,12 @@ while [[ $# -gt 0 ]]; do
             NODE_TYPE="$2"
             shift 2
             ;;
+
+        -n|--set-hostname-to)
+            SET_HOSTNAME_TO="$2"
+            shift 2
+            ;;
+
         --dry-run)
             DRY_RUN=true
             echo "Dry run mode: No changes will be made."
@@ -44,7 +54,7 @@ done
 
 
 # Validate that required arguments are provided
-if [ -z "$CURRENT_HOSTNAME" ] || [ -z "$NODES_FILE" ] || [ -z "$NODE_TYPE" ]; then
+if [ -z "$CONTROLPLANE_HOSTNAME" ] || -z "$CONTROLPLANE_PORT" ] || [ -z "$NODES_FILE" ] || [ -z "$NODE_TYPE" ]; then
     echo "Error: Missing required arguments."
     echo "Usage: $0 -h <hostname> -n <nodes_file> -t <kube-init|worker> [-d]"
     exit 1
@@ -62,14 +72,17 @@ if [ ! -f "$NODES_FILE" ]; then
     exit 1
 fi
 
+if [ ! -z "$SET_HOSTNAME_TO" ]; then
+    # Set hostname
+    sudo hostnamectl set-hostname "$SET_HOSTNAME_TO"
+    echo "Hostname set to $SET_HOSTNAME_TO"
 
-if [ ! -f "$NODES_FILE" ]; then
-    echo "Error: Node YAML file '$NODES_FILE' not found."
-    exit 1
+    CURRENT_HOSTNAME=$(eval hostname)
 fi
 
+
 sudo dnf update -y
-sudo dnf install -y python3-pip yum-utils bash-completion
+sudo dnf install -y python3-pip yum-utils bash-completion git wget
 pip install yq
 
 
@@ -88,10 +101,6 @@ else
 fi
 
 sestatus
-
-# Set hostname
-sudo hostnamectl set-hostname "$CURRENT_HOSTNAME"
-echo "Hostname set to $CURRENT_HOSTNAME"
 
 
 # Convert YAML to JSON using yq
@@ -225,57 +234,80 @@ if [ "$NODE_TYPE" == "kube-init" ]; then
     KUBE_ADM_COMMAND="$KUBE_ADM_COMMAND init --control-plane-endpoint=${CURRENT_HOSTNAME}"
 
 
-        # Simulate Kubeadm init or worker node join
+    # Simulate Kubeadm init or worker node join
     if [ "$DRY_RUN" = true ]; then
         KUBE_ADM_COMMAND="$KUBE_ADM_COMMAND --dry-run "
     fi
 
-
     echo "Initializing control plane node..."
     KUBEADM_INIT_OUTPUT=$(eval "$KUBE_ADM_COMMAND 2>&1")
+
     if [[ $? -ne 0 ]]; then
         echo "Error: Failed to run kubeadm init."
         echo "$KUBEADM_INIT_OUTPUT"
         exit 1
     fi
-    echo "Control plane initialized successfully."
 
-
-    echo "Control plane initialized successfully."
     # Extract the token and CA hash from the kubeadm init output
     JOIN_TOKEN=$(echo "$KUBEADM_INIT_OUTPUT" | grep -oP 'token \K[^\s]+')
     CA_SHA256=$(echo "$KUBEADM_INIT_OUTPUT" | grep -oP 'discovery-token-ca-cert-hash sha256:\K([a-f0-9]+)' | tr -d '\n')
 
-    if [ "$DRY_RUN" = false ]; then
+    if [ "$DRY_RUN" = true ]; then
+        echo "Control plane dry-run initialized without errors."
+
+
+
+    elif [ "$DRY_RUN" = false ]; then
+        echo "Control plane initialized successfully."
         # Copy kubeconfig for kubectl access
         mkdir -p $HOME/.kube
         sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
         sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
     fi
 
-    # control-plane-1
-    API_ADDRESS=192.168.66.129
-    API_HOSTNAME=${CURRENT_HOSTNAME}
-    API_PORT=6443
+    CONTROLPLANE_ADDRESS=$(eval ip -o -4 addr show ens160 | awk '{print $4}' | cut -d/ -f1)  # 192.168.66.129
 
 
-    JOIN_YAML=./join-config.yaml
-    cat <<EOF | sudo tee "$JOIN_YAML" > /dev/null
+        JOIN_YAML=./worker-join.yaml
+        cat <<EOF | sudo tee "$JOIN_YAML" > /dev/null
 apiVersion: kubeadm.k8s.io/v1beta2
 kind: JoinConfiguration
 discovery:
-bootstrapToken:
-    token: $JOIN_TOKEN
-    apiServerEndpoint: ${CURRENT_HOSTNAME}:${API_PORT}
-    caCertHashes:
-    - sha256:$CA_SHA256
-controlPlane:
-localAPIEndpoint:
-    advertiseAddress: ${API_ADDRESS}  # Replace with the IP address of the control plane node
-    bindPort: ${API_PORT}
-EOF
+    bootstrapToken:
+        apiServerEndpoint: ${CONTROLPLANE_HOSTNAME}:${CONTROLPLANE_PORT}
+        token: $JOIN_TOKEN
+        caCertHashes:
+        - sha256:$CA_SHA256
 
-    echo "Join YAML file created at $JOIN_YAML."
+# eg of extra args for a node handling storage
+# nodeRegistration:
+#   kubeletExtraArgs:
+#     enable-controller-attach-detach: "false"
+#     node-labels: "node-type=rook"
+EOF
+    echo "Join YAML files created at $JOIN_YAML."
+
+
+        JOIN_YAML=./control-plane-join.yaml
+        cat <<EOF | sudo tee "$JOIN_YAML" > /dev/null
+apiVersion: kubeadm.k8s.io/v1beta2
+kind: JoinConfiguration
+discovery:
+    bootstrapToken:
+        apiServerEndpoint: ${CONTROLPLANE_HOSTNAME}:${CONTROLPLANE_PORT}
+        token: $JOIN_TOKEN
+        caCertHashes:
+        - sha256:$CA_SHA256
+
+controlPlane:
+    localAPIEndpoint:
+        advertiseAddress: ${NEW_CONTROLPLANE_ADDRESS}  # Replace with the IP address of the new control plane node
+        bindPort: ${NEW_CONTROLPLANE_API_PORT}
+    # certificateKey: "e6a2eb8381237ab72a4fa94f30285ec12a9694d750b9785706a83bfcbbbd2204"  # not sure
+EOF
+        echo "Join YAML files created at $JOIN_YAML."
+
 # elif [ "$NODE_TYPE" == "worker" ]; then
 #     echo "Preparing worker node..."
 
