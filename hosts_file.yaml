@@ -1,10 +1,7 @@
 nodes:
-- ip: 192.168.66.129
-  hostname: controle-plane-1
-- ip: 192.168.66.130
-  hostname: controle-plane-2
-- ip: 192.168.66.131
-  hostname: worker-node-1
-- ip: 192.168.66.132
-  hostname: worker-node-2
-
+- ip: 10.66.65.7
+  hostname: node-1
+- ip: 10.66.65.9
+  hostname: node-2
+- ip: 10.66.65.8
+  hostname: node-3

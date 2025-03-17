@@ -1,11 +1,438 @@
 #!/bin/bash
 
+SUDO_USERNAME=ifoughal
+SUDO_USER_PASSWORD=password123
+SUDO_GROUP=maintainers
+
+CONTROLPLANE_INGRESS_INTER=ens192
+HTTP_PROXY="http://10.66.65.10:80"
+HTTPS_PROXY="http://10.66.65.10:80"
+NO_PROXY=".pack,.svc,.svc.cluster.local,.cluster.local,node-1,node-2,node-3,localhost,::1,127.0.0.1,10.66.65.7,10.66.65.8,10.66.65.9,10.96.0.0/12,10.244.0.0/16"
+
+
+
 set -e  # Exit on error
 set -o pipefail  # Fail if any piped command fails
 
 # Function to check if a command exists
 command_exists() {
     command -v "$1" >/dev/null 2>&1
+}
+
+
+
+update_firewall() {
+
+    # check zone:
+    if $(sudo firewall-cmd --get-zones | grep -q "k8s"); then
+        echo firewallD 'k8s' zone already exists
+    else
+        echo creating firewallD 'k8s' zone
+        sudo firewall-cmd --permanent --new-zone=k8s
+         # apply changes:
+        sudo firewall-cmd --reload
+    fi
+    # set k8s as default zone
+    sudo firewall-cmd --set-default-zone=k8s
+    #################################################################*
+    # allow http and k8s zones to use 22 and ICMP
+
+    # Open port 53 (DNS) for all networks (public zone)
+    sudo firewall-cmd --zone=public --add-service=dns --permanent
+    sudo firewall-cmd --zone=k8s --add-service=dns --permanent
+
+    sudo firewall-cmd --zone=public --add-port=53/tcp --permanent
+    sudo firewall-cmd --zone=public --add-port=53/udp --permanent
+    sudo firewall-cmd --zone=k8s --add-port=53/tcp --permanent
+    sudo firewall-cmd --zone=k8s --add-port=53/udp --permanent
+
+
+    # Open port 22 (SSH) for all networks (public zone)
+    sudo firewall-cmd --zone=k8s --add-port=22/tcp --permanent
+    sudo firewall-cmd --zone=public --add-port=22/tcp --permanent
+
+    # Allow ICMP echo-reply/request  for all networks (public zone)
+    sudo firewall-cmd  --zone=k8s --permanent --add-icmp-block-inversion
+    sudo firewall-cmd  --zone=public --permanent --add-icmp-block-inversion
+
+    # Allow ICMP echo-reply (ping response) for all networks (public zone)
+    sudo firewall-cmd --permanent --zone=public --add-icmp-block=echo-reply
+    sudo firewall-cmd --permanent --zone=k8s --add-icmp-block=echo-reply
+
+    # Allow ICMP echo-request (ping) for all networks (public zone)
+    sudo firewall-cmd --permanent --zone=public --add-icmp-block=echo-request
+    sudo firewall-cmd --permanent --zone=k8s --add-icmp-block=echo-request
+
+    sudo firewall-cmd --reload
+    #############################################################################
+
+    # Kubectl API Server
+    sudo firewall-cmd --zone=public --add-port=6443/tcp --permanent
+    sudo firewall-cmd --zone=k8s --add-port=6443/tcp --permanent
+
+    # Kubelet health and communication
+    sudo firewall-cmd --zone=k8s --add-port=10248/tcp --permanent
+    sudo firewall-cmd --zone=k8s --add-port=10250/tcp --permanent
+
+    # Control plane services
+    sudo firewall-cmd --zone=k8s --add-port=10251/tcp --permanent  # Scheduler
+    sudo firewall-cmd --zone=k8s --add-port=10252/tcp --permanent  # Controller Manager
+    sudo firewall-cmd --zone=k8s --add-port=10257/tcp --permanent  # Secure Controller Manager
+    sudo firewall-cmd --zone=k8s --add-port=10259/tcp --permanent  # Secure Scheduler
+
+
+    sudo firewall-cmd --zone=k8s --add-port=4000/tcp --permanent
+    sudo firewall-cmd --zone=k8s --add-port=4245/tcp --permanent
+    sudo firewall-cmd --zone=k8s --add-port=443/tcp --permanent
+    sudo firewall-cmd --zone=k8s --add-port=80/tcp --permanent
+    sudo firewall-cmd --zone=k8s --add-port=8080/tcp --permanent
+    sudo firewall-cmd --zone=k8s --add-port=9090/tcp --permanent
+
+    sudo firewall-cmd --zone=public --add-port=4000/tcp --permanent
+    sudo firewall-cmd --zone=public --add-port=4245/tcp --permanent
+    sudo firewall-cmd --zone=public --add-port=443/tcp --permanent
+    sudo firewall-cmd --zone=public --add-port=80/tcp --permanent
+    sudo firewall-cmd --zone=public --add-port=8080/tcp --permanent
+    sudo firewall-cmd --zone=public --add-port=9090/tcp --permanent
+
+    # BGP for Calico/Cilium
+    sudo firewall-cmd --zone=k8s --add-port=179/tcp --permanent
+
+    # etcd access
+    sudo firewall-cmd --zone=k8s --add-port=2379-2381/tcp --permanent
+
+    # VXLAN overlay network communication (used for networking between nodes in Kubernetes with VXLAN encapsulation)
+    sudo firewall-cmd --zone=k8s --add-port=8472/udp --permanent
+
+    # Health checks
+    sudo firewall-cmd --zone=k8s --add-port=4240/tcp --permanent
+    sudo firewall-cmd --zone=k8s --add-icmp-block=echo-request --permanent
+
+    # Additional required ports for Cilium
+    sudo firewall-cmd --zone=k8s --add-port=4244/tcp --permanent  # Hubble server
+    sudo firewall-cmd --zone=k8s --add-port=4245/tcp --permanent  # Hubble Relay
+    sudo firewall-cmd --zone=k8s --add-port=4250/tcp --permanent  # Mutual Auth
+    sudo firewall-cmd --zone=k8s --add-port=51871/udp --permanent # WireGuard
+
+    # Spire Agent health check port (listening on 127.0.0.1 or ::1)
+    sudo firewall-cmd --zone=k8s --permanent --add-port=4251/tcp
+
+    # cilium-agent pprof server (debugging, listening on 127.0.0.1)
+    sudo firewall-cmd --zone=k8s --permanent --add-port=6060/tcp
+
+    # cilium-operator pprof server (debugging, listening on 127.0.0.1)
+    sudo firewall-cmd --zone=k8s --permanent --add-port=6061/tcp
+
+    # Hubble Relay pprof server (debugging, listening on 127.0.0.1)
+    sudo firewall-cmd --zone=k8s --permanent --add-port=6062/tcp
+
+    # cilium-envoy health listener (listening on 127.0.0.1)
+    sudo firewall-cmd --zone=k8s --permanent --add-port=9878/tcp
+
+    # cilium-agent health status API (listening on 127.0.0.1 and/or ::1)
+    sudo firewall-cmd --zone=k8s --permanent --add-port=9879/tcp
+
+    # cilium-agent gops server (debugging, listening on 127.0.0.1)
+    sudo firewall-cmd --zone=k8s --permanent --add-port=9890/tcp
+
+    # cilium-operator gops server (debugging, listening on 127.0.0.1)
+    sudo firewall-cmd --zone=k8s --permanent --add-port=9891/tcp
+
+    # Hubble Relay gops server (debugging, listening on 127.0.0.1)
+    sudo firewall-cmd --zone=k8s --permanent --add-port=9893/tcp
+
+    # cilium-envoy Admin API (listening on 127.0.0.1)
+    sudo firewall-cmd --zone=k8s --permanent --add-port=9901/tcp
+
+    # cilium-agent Prometheus metrics
+    sudo firewall-cmd --zone=k8s --permanent --add-port=9962/tcp
+
+    # cilium-operator Prometheus metrics
+    sudo firewall-cmd --zone=k8s --permanent --add-port=9963/tcp
+
+    # cilium-envoy Prometheus metrics
+    sudo firewall-cmd --zone=k8s --permanent --add-port=9964/tcp
+
+    # VXLAN overlay network communication (used by Cilium and other network plugins)
+    sudo firewall-cmd --zone=k8s --permanent --add-port=4789/udp
+
+    # enable firewallD masquerade
+    sudo firewall-cmd --add-masquerade --permanent
+
+
+    #############################################################################
+    # worker nodes ports:
+    # VXLAN overlay network communication (used for networking between nodes in Kubernetes with VXLAN encapsulation)
+    sudo firewall-cmd --zone=k8s --add-port=8472/udp --permanent
+
+    # Health check port for cluster status (Cilium health checks and similar services)
+    sudo firewall-cmd --zone=k8s --add-port=4240/tcp --permanent
+
+    # ICMP echo-request (ping) allowed for health checks and diagnostics
+    sudo firewall-cmd --zone=k8s --add-icmp-block=echo-request --permanent
+
+    # Access to etcd cluster (used for the Kubernetes control plane communication)
+    sudo firewall-cmd --zone=k8s --add-port=2379-2380/tcp --permanent
+
+    # Kubernetes node ports, including worker and master services and external access (for services like kubelet and external services)
+    sudo firewall-cmd --zone=k8s --permanent --add-port=30000-32767/tcp
+
+    # Kubelet health and communication
+    sudo firewall-cmd --zone=k8s --add-port=10250/tcp --permanent
+
+    # BGP for Calico/Cilium
+    sudo firewall-cmd --zone=k8s --add-port=179/tcp --permanent
+
+    # Additional required ports for Cilium
+    sudo firewall-cmd --zone=k8s --add-port=4244/tcp --permanent  # Hubble server
+    sudo firewall-cmd --zone=k8s --add-port=4245/tcp --permanent  # Hubble Relay
+    sudo firewall-cmd --zone=k8s --add-port=4250/tcp --permanent  # Mutual Auth
+    sudo firewall-cmd --zone=k8s --add-port=51871/udp --permanent # WireGuard
+
+    # VXLAN overlay network communication (used for networking between nodes in Kubernetes with VXLAN encapsulation)
+    sudo firewall-cmd --zone=k8s --permanent --add-port=4789/udp
+    #############################################################################
+    # firewall-cmd --list-all
+    sudo firewall-cmd --reload
+}
+
+install_go () {
+    cd /tmp
+    GO_VERSION=1.24.1
+    TINYGO_VERSION=0.36.0
+
+    # install Go
+    wget https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz
+    sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
+
+    # install tinyGo
+    wget https://github.com/tinygo-org/tinygo/releases/download/v${TINYGO_VERSION}/tinygo${TINYGO_VERSION}.linux-amd64.tar.gz
+    sudo tar -C /usr/local -xzf tinygo${TINYGO_VERSION}.linux-amd64.tar.gz
+
+    # update path:
+    files=(
+        "/etc/environment"
+        "$HOME/.bashrc"
+    )
+
+    extra_paths=(
+        "/usr/local/go/bin"
+        "/usr/local/tinygo/bin"
+    )
+    echo updating paths for GO
+    for file in "${files[@]}"; do
+        # update environemnt path:
+        for path in "${extra_paths[@]}"; do
+            if grep -q '^PATH=' ${file}; then
+                sudo sed -i "s|^PATH=.*|&:${path}|" ${file}
+            else
+                sudo sed -i "1i PATH=\$PATH:${path}" "$file"
+            fi
+        done
+    done
+    echo Finished updating paths for GO
+
+    source ~/.bashrc
+}
+
+
+configure_containerD () {
+    #############################################################################
+    # configure proxy:
+    sudo mkdir -p /etc/systemd/system/containerd.service.d
+
+    cat <<EOF | sudo tee /etc/systemd/system/containerd.service.d/http-proxy.conf
+[Service]
+    Environment="HTTP_PROXY=$HTTP_PROXY"
+    Environment="HTTPS_PROXY=$HTTP_PROXY"
+    Environment="NO_PROXY=$NO_PROXY"
+EOF
+    #############################################################################
+    # Configure containerd so that it uses systemd & cgroups on all nodes:
+    #  pause version mismatch:
+    containerd config default | sudo tee /etc/containerd/config.toml >/dev/null 2>&1
+    sudo sed -i 's/SystemdCgroup \= false/SystemdCgroup \= true/g' /etc/containerd/config.toml
+
+    sudo sed -i 's|sandbox_image = "registry.k8s.io/pause:3.8"|sandbox_image = "registry.k8s.io/pause:3.10"|' /etc/containerd/config.toml
+
+
+    # ensure changes have been applied
+    if sudo containerd config dump | grep -q "SystemdCgroup = true"; then
+        echo Cgroups configured for containerD
+    else
+        echo Failed to configure Cgroups configured for containerD
+        exit 1
+    fi
+    if sudo containerd config dump | grep -q "sandbox_image = \"registry.k8s.io/pause:3.10\""; then
+        echo "set sandbox_image to pause version 3.10"
+    else
+        echo "Failed to set sandbox_image to pause version 3.10"
+        exit 1
+    fi
+
+    sudo setfacl -m g:maintainers:rw /var/run/containerd/containerd.sock
+    sudo setfacl -m g:wheel:rw /var/run/containerd/containerd.sock
+
+    sudo systemctl enable containerd
+    sudo systemctl daemon-reload
+    sudo systemctl restart containerd
+
+    sleep 10
+    # Check if the containerd service is active
+    if systemctl is-active --quiet containerd.service; then
+        echo "ContainerD configuration updated successfully."
+    else
+        echo "ContainerD configuration failed, containerd service is not running..."
+        exit 1
+    fi
+
+    # check containerd version:
+    containerd --version
+}
+
+
+prerequisites_requirements_checks() {
+    # Check if the kernel is recent enough
+    kernel_version=$(uname -r)
+    echo "Kernel version: $kernel_version"
+
+    # Recommended kernel version
+    recommended_version_rehl="4.18"
+
+    # Compare kernel versions
+    if [[ "$(printf '%s\n' "$recommended_version" "$kernel_version" | sort -V | head -n1)" == "$recommended_version" ]]; then
+        echo "Kernel version is sufficient."
+    else
+        echo "Kernel version is below the recommended version ($recommended_version)."
+        exit 1
+    fi
+
+    # Verify eBPF is supported
+    echo "Checking eBPF support..."
+    sudo bpftool feature
+
+    # Ensure that bpf is mounted
+    echo "Checking if bpf is mounted..."
+    mount_output=$(mount | grep /sys/fs/bpf)
+
+    if [[ -n "$mount_output" ]]; then
+        echo "bpf is mounted: $mount_output"
+    else
+        echo "bpf is not mounted. You may need to mount it manually."
+        exit 1
+    fi
+    #################################################################
+    # Check if the groups exist with the specified GIDs
+    SUDO_GROUP=maintainers
+    if getent group $SUDO_GROUP | grep -q "${SUDO_GROUP}:"; then
+        echo "'${SUDO_GROUP}' Group exists."
+    else
+        echo "'${SUDO_GROUP}' Group does not exist, creating..."
+        sudo groupadd ${SUDO_GROUP}
+    fi
+
+    # Create the user and add to groups
+    # Check if the user exists
+    if id "$SUDO_USERNAME" &>/dev/null; then
+        echo "User $SUDO_USERNAME exists."
+        sudo usermod $SUDO_USERNAME -aG wheel,${SUDO_GROUP} -s /bin/bash -m -d /home/$SUDO_USERNAME
+
+    else
+        echo "User $SUDO_USERNAME does not exist."
+        sudo useradd $SUDO_USERNAME -G wheel,${SUDO_GROUP} -s /bin/bash -m
+    fi
+
+    # Set the password for the user
+    echo "$SUDO_USERNAME:$SUDO_USER_PASSWORD" | sudo chpasswd
+
+    # Append to visudo
+
+    # Check if the visudo entry is appended
+    if sudo grep -q "%$SUDO_GROUP       ALL=(ALL)       NOPASSWD:ALL" /etc/sudoers.d/10_sudo_users_groups; then
+        echo "Visudo entry for $SUDO_GROUP is appended correctly."
+    else
+        echo "Visudo entry for $SUDO_GROUP is not found."
+        sudo bash -c "echo '%$SUDO_GROUP       ALL=(ALL)       NOPASSWD:ALL' >> /etc/sudoers.d/10_sudo_users_groups"
+    fi
+    #################################################################
+    # /etc/environment proxy:
+    # Call the function
+    update_path
+    #################################################################
+    # Disable swap space on All Nodes
+    sudo swapoff -a
+    sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+
+    #################################################################*
+    # Disable SELinux temporarily and modify config for persistence
+    if sudo setenforce 0 2>/dev/null; then
+        echo "SELinux set to permissive mode temporarily."
+    else
+        echo "Warning: Failed to set SELinux to permissive mode. It may already be disabled."
+    fi
+
+    if sudo sed -i --follow-symlinks 's/^SELINUX=enforcing/SELINUX=permissive/g' /etc/selinux/config; then
+        echo "SELinux configuration updated."
+    else
+        echo "Error: Failed to update SELinux configuration."
+        exit 1
+    fi
+
+    if $(sestatus |grep -q "Current mode:                   permissive"); then
+        echo SELinux set to permissive.
+    else
+        echo ERROR, failed to set SELinux set to permissive.
+        exit 1
+    fi
+    #################################################################*
+    update_firewall
+    #############################################################################
+    # bridge network
+    sudo echo -e "overlay\nbr_netfilter" | sudo tee /etc/modules-load.d/containerd.conf
+    sudo modprobe overlay
+    sudo modprobe br_netfilter
+
+    sudo echo -e "net.bridge.bridge-nf-call-iptables = 1\nnet.ipv4.ip_forward = 1\nnet.bridge.bridge-nf-call-ip6tables = 1" | sudo tee -a /etc/sysctl.d/k8s.conf
+    sudo sysctl --system
+    #############################################################################
+    # install containerD
+    sudo dnf install -y yum-utils
+    sudo dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+    sudo dnf install containerd.io -y
+    #############################################################################
+    # enable containerD NRI:
+    CONFIG_FILE="/etc/containerd/config.toml"
+
+    # Backup the original config file
+    cp -n $CONFIG_FILE "${CONFIG_FILE}.bak"
+
+    # Use sed to edit the config file
+    sudo sed -i '/\[plugins."io.containerd.nri.v1.nri"\]/,/^$/{
+        s/disable = true/disable = false/
+        s/disable_connections = true/disable_connections = false/
+        s|plugin_config_path = ".*"|plugin_config_path = "/etc/nri/conf.d"|
+        s|plugin_path = ".*"|plugin_path = "/opt/nri/plugins"|
+        s|plugin_registration_timeout = ".*"|plugin_registration_timeout = "15s"|
+        s|plugin_request_timeout = ".*"|plugin_request_timeout = "12s"|
+        s|socket_path = ".*"|socket_path = "/var/run/nri/nri.sock"|
+    }' $CONFIG_FILE
+
+    sudo mkdir -p /etc/nri/conf.d /opt/nri/plugins
+    sudo chown -R root:root /etc/nri /opt/nri
+    #############################################################################
+    # install go:
+    install_go
+    #############################################################################
+    # configuration for containerd
+    configure_containerD
+    # containerd containerd.io 1.7.25 bcc810d6
+    #############################################################################
+    # Install Kubernetes tools
+    # Fetch the latest stable full version (e.g., v1.32.2)
+    K8S_VERSION=$(curl -L -s https://dl.k8s.io/release/stable-1.txt)
+
+    # Extract only the major.minor version (e.g., 1.32)
+    K8S_MINOR_VERSION=$(echo $K8S_VERSION | cut -d'.' -f1,2)
 }
 
 # Function to update or add the PATH variable in /etc/environment
@@ -25,21 +452,30 @@ update_path() {
     fi
     # Reload the environment variables to apply changes immediately
     source "$ENV_FILE"
-    export PATH
+    export http_proxy="http://10.66.8.162:3128"
+    export https_proxy="http://10.66.8.162:3128"
+    export HTTP_PROXY="$http_proxy"
+    export HTTPS_PROXY="$https_proxy"
+
+    export no_proxy=".pack,.svc,.svc.cluster.local,.cluster.local,lorionstrm01vel,lorionstrm02vel,lorionstrm03vel,localhost,::1,127.0.0.1,10.66.65.7,10.66.65.8,10.66.65.9,10.96.0.0/12,10.244.0.0/16"
+    export NO_PROXY="$no_proxy"
+
+    cat <<EOF | sudo tee /etc/environment
+export http_proxy="http://10.66.8.162:3128"
+export https_proxy="http://10.66.8.162:3128"
+export HTTP_PROXY="$http_proxy"
+export HTTPS_PROXY="$https_proxy"
+
+export no_proxy=".pack,.svc,.svc.cluster.local,.cluster.local,lorionstrm01vel,lorionstrm02vel,lorionstrm03vel,localhost,::1,127.0.0.1,10.66.65.7,10.66.65.8,10.66.65.9,10.96.0.0/12,10.244.0.0/16"
+export NO_PROXY="$no_proxy"
+EOF
     # Print the updated PATH for verification
     echo "Updated PATH: $PATH"
 }
 
 
 
-update_firewall() {
-    sudo firewall-cmd --zone=public --add-port=6443/tcp --permanent
-    sudo firewall-cmd --zone=public --add-port=10250/tcp --permanent
-    sudo firewall-cmd --reload
-}
 
-# Call the function
-update_path
 
 
 # Initialize variables
@@ -48,7 +484,6 @@ NODES_FILE=""
 NODE_TYPE=""
 DRY_RUN=false
 
-echo 'export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' | sudo tee -a /etc/environment
 
 # Parse command-line arguments manually (including --dry-run)
 while [[ $# -gt 0 ]]; do
@@ -114,27 +549,12 @@ if [ ! -z "$SET_HOSTNAME_TO" ]; then
     CURRENT_HOSTNAME=$(eval hostname)
 fi
 
-
 sudo dnf update -y
 sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools
 pip install yq
 
-
-# Disable SELinux temporarily and modify config for persistence
-if sudo setenforce 0 2>/dev/null; then
-    echo "SELinux set to permissive mode temporarily."
-else
-    echo "Warning: Failed to set SELinux to permissive mode. It may already be disabled."
-fi
-
-if sudo sed -i --follow-symlinks 's/^SELINUX=enforcing/SELINUX=permissive/g' /etc/selinux/config; then
-    echo "SELinux configuration updated."
-else
-    echo "Error: Failed to update SELinux configuration."
-    exit 1
-fi
-
-sestatus
+# Call the function
+# prerequisites_requirements_checks
 
 
 # Convert YAML to JSON using yq
@@ -274,7 +694,11 @@ if [ "$NODE_TYPE" == "control-plane" ]; then
 
     echo "    with command: $KUBE_ADM_COMMAND"
     # KUBEADM_INIT_OUTPUT=$(eval "$KUBE_ADM_COMMAND 2>&1")
-    KUBEADM_INIT_OUTPUT=$(eval "$KUBE_ADM_COMMAND" 2> "/var/log/kubeadm_init_errors.log")
+    LOGS_DIR=/var/log/kubeadm_init_errors.log
+    sudo touch ${LOGS_DIR}
+    sudo chmod 666 ${LOGS_DIR}
+
+    KUBEADM_INIT_OUTPUT=$(eval "$KUBE_ADM_COMMAND" 2> "${LOGS_DIR}")
 
     if [[ $? -ne 0 ]]; then
         echo "Error: Failed to run kubeadm init."
@@ -296,7 +720,7 @@ if [ "$NODE_TYPE" == "control-plane" ]; then
         sudo chown $(id -u):$(id -g) $HOME/.kube/config
     fi
 
-    CONTROLPLANE_ADDRESS=$(eval ip -o -4 addr show ens160 | awk '{print $4}' | cut -d/ -f1)  # 192.168.66.129
+    CONTROLPLANE_ADDRESS=$(eval ip -o -4 addr show $CONTROLPLANE_INGRESS_INTER | awk '{print $4}' | cut -d/ -f1)  # 192.168.66.129
 
 
         JOIN_YAML=./worker-node-join.yaml
