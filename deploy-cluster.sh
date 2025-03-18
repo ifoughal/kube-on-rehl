@@ -862,12 +862,14 @@ install_cilium
 install_longhorn_prerequisites() {
     ##################################################################
     # required utilities
-    sudo dnf install curl jq nfs-utils -y
+    sudo dnf install curl jq nfs-utils \cryptsetup device-mapper \
+        iscsi-initiator-utils -y
     ##################################################################
     # Create ns for longhorn:
     kubectl create ns longhorn-system
     ##################################################################
     # install NFS/iSCSI on all nodes:
+    # REF: https://github.com/longhorn/longhorn/tree/master/deploy/prerequisite
     for service in "nfs" "iscsi"; do
         echo "Started installation of ${service} on all nodes"
         kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/${LONGHORN_VERSION}/deploy/prerequisite/longhorn-${service}-installation.yaml
@@ -935,7 +937,43 @@ install_longhorn_prerequisites() {
         fi
     done
     ##################################################################
-    # Installing Cryptsetup and LUKS
+    # enabling iscsi_tcp & dm_crypt on all nodes
+
+    # Ensure the iscsi_tcp module loads automatically on boot
+    MODULE_FILE="/etc/modules"
+    MODULE_NAME="iscsi_tcp"
+
+    # Check if the module is already in the file
+    if ! grep -q "^${MODULE_NAME}$" ${MODULE_FILE}; then
+        echo "${MODULE_NAME}" | sudo tee -a ${MODULE_FILE}
+        echo "Added ${MODULE_NAME} to ${MODULE_FILE}"
+    else
+        echo "${MODULE_NAME} is already present in ${MODULE_FILE}"
+    fi
+
+    # Load the iscsi_tcp module
+    sudo modprobe iscsi_tcp
+    echo "Loaded ${MODULE_NAME} module"
+
+    # Enable dm_crypt
+    sudo modprobe dm_crypt
+    echo "Loaded dm_crypt module"
+
+    ##################################################################
+    # Run the environment check script and capture the output
+    OUTPUT=$(curl -sSfL https://raw.githubusercontent.com/longhorn/longhorn/${LONGHORN_VERSION}/scripts/environment_check.sh | bash)
+
+    # Print the output
+    echo "$OUTPUT"
+
+    # Check for errors in the output
+    if echo "$OUTPUT" | grep -q '\[ERROR\]'; then
+        echo "Errors found in the environment check:"
+        echo "$OUTPUT" | grep '\[ERROR\]'
+    else
+        echo "No errors found in the environment check."
+    fi
+
 }
 
 
