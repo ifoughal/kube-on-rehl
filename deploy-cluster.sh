@@ -9,6 +9,7 @@ HTTP_PROXY="http://10.66.65.10:80"
 HTTPS_PROXY="http://10.66.65.10:80"
 NO_PROXY=".pack,.svc,.svc.cluster.local,.cluster.local,node-1,node-2,node-3,localhost,::1,127.0.0.1,10.66.65.7,10.66.65.8,10.66.65.9,10.96.0.0/12,10.244.0.0/16"
 
+LONGHORN_VERSION=v1.8.1
 
 
 set -e  # Exit on error
@@ -20,6 +21,58 @@ command_exists() {
 }
 
 
+
+
+install_cilium () {
+    ################################################################################################################
+    # if kube-proxy has been installed:
+    kubectl -n kube-system delete ds kube-proxy
+    # Delete the configmap as well to avoid kube-proxy being reinstalled during a Kubeadm upgrade (works only for K8s 1.19 and newer)
+    kubectl -n kube-system delete cm kube-proxy
+    # Run on each node with root permissions:
+    sudo iptables-save | grep -v KUBE | sudo iptables-restore
+    ################################################################################################################
+    sudo sysctl -w net.ipv4.conf.ens192.rp_filter=2
+    ################################################################################################################
+    helm repo add cilium https://helm.cilium.io/ --force-update
+    ################################################################################################################
+    CILIUM_CLI_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
+    CLI_ARCH=amd64
+    if [ "$(uname -m)" = "aarch64" ]; then CLI_ARCH=arm64; fi
+    curl -L --fail --remote-name-all https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}
+    sha256sum --check cilium-linux-${CLI_ARCH}.tar.gz.sha256sum
+    sudo tar xzvfC cilium-linux-${CLI_ARCH}.tar.gz /usr/local/bin
+    rm cilium-linux-*
+    ################################################################################################################
+    add_bashcompletion cilium
+    ################################################################################################################
+    cilium install --version 1.17.1 --values ./cilium/values.yaml
+    cilium status --wait
+    ################################################################################################################
+    kubectl apply -f cilium/ingress.yaml
+    # delete default ingress
+    kubectl delete svc -n kube-system cilium-ingress
+    ################################################################################################################
+
+}
+
+add_bashcompletion () {
+    # Parse the application name as a function argument
+    app="$1"
+
+    if [ -z "$app" ]; then
+        echo "Error: Application name must be provided."
+        return 1
+    fi
+    echo "Adding $app bash completion"
+    COMPLETION_FILE="/etc/bash_completion.d/$app"
+
+    # Assuming the application has a completion script available
+    $app completion bash | sudo tee "$COMPLETION_FILE" >/dev/null
+
+    echo "$app bash completion added successfully."
+    source $COMPLETION_FILE
+}
 
 update_firewall() {
 
@@ -175,7 +228,9 @@ update_firewall() {
     sudo firewall-cmd --zone=k8s --add-port=2379-2380/tcp --permanent
 
     # Kubernetes node ports, including worker and master services and external access (for services like kubelet and external services)
-    sudo firewall-cmd --zone=k8s --permanent --add-port=30000-32767/tcp
+    sudo firewall-cmd --zone=k8s --add-port=30000-32767/tcp --permanent
+    sudo firewall-cmd --zone=public --add-port=30000-32767/tcp --permanent
+    sudo firewall-cmd --reload
 
     # Kubelet health and communication
     sudo firewall-cmd --zone=k8s --add-port=10250/tcp --permanent
@@ -235,6 +290,13 @@ install_go () {
     source ~/.bashrc
 }
 
+
+install_helm () {
+    curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+    ln -sf /usr/local/bin/helm /usr/bin/
+
+    add_bashcompletion helm
+}
 
 configure_containerD () {
     #############################################################################
@@ -422,6 +484,9 @@ prerequisites_requirements_checks() {
     #############################################################################
     # install go:
     install_go
+    #############################################################################
+    # install_helm
+    install_helm
     #############################################################################
     # configuration for containerd
     configure_containerD
@@ -675,8 +740,7 @@ sudo systemctl enable --now kubelet
 echo "Kubernetes prerequisites setup completed successfully."
 
 echo "Adding Kubeadm bash completion"
-COMPLETION_FILE=/etc/bash_completion.d/kubeadm
-kubeadm completion bash | sudo tee $COMPLETION_FILE >/dev/null
+add_bashcompletion kubeadm
 
 # Kubeadm init logic
 KUBE_ADM_COMMAND="sudo kubeadm "
@@ -793,35 +857,115 @@ fi
 echo "Kubernetes node setup completed."
 
 
+install_cilium
 
-add_bashcompletion () {
-    # Parse the application name as a function argument
-    app="$1"
+install_longhorn_prerequisites() {
+    ##################################################################
+    # required utilities
+    sudo dnf install curl jq nfs-utils -y
+    ##################################################################
+    # Create ns for longhorn:
+    kubectl create ns longhorn-system
+    ##################################################################
+    # install NFS/iSCSI on all nodes:
+    for service in "nfs" "iscsi"; do
+        echo "Started installation of ${service} on all nodes"
+        kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/${LONGHORN_VERSION}/deploy/prerequisite/longhorn-${service}-installation.yaml
 
-    if [ -z "$app" ]; then
-        echo "Error: Application name must be provided."
-        return 1
+        upper_service=$(echo ${service} | awk '{print toupper($0)}')
+
+        # Wait for the pods to be in Running state
+        echo "Waiting for Longhorn ${upper_service} installation pods to be in Running state..."
+        while true; do
+            PODS=$(kubectl -n longhorn-system get pod | grep longhorn-${service}-installation)
+            RUNNING_COUNT=$(echo "$PODS" | grep -c "Running")
+            TOTAL_COUNT=$(echo "$PODS" | wc -l)
+
+            echo "Running Longhorn ${upper_service} install containers: ${RUNNING_COUNT}/${TOTAL_COUNT}"
+            if [[ $RUNNING_COUNT -eq $TOTAL_COUNT ]]; then
+                break
+            fi
+            sleep 5
+        done
+
+        current_retry=0
+        max_retries=3
+        while true; do
+            current_retry=$((current_retry + 1))
+            echo "Checking Longhorn ${upper_service} setup completion... try N: $current_retry"
+            all_pods_up=1
+            # Get the logs of the service installation container
+            for POD_NAME in $(kubectl -n longhorn-system get pod | grep longhorn-${service}-installation | awk '{print $1}'); do
+                LOGS=$(kubectl -n longhorn-system logs $POD_NAME -c ${service}-installation)
+                if echo "$LOGS" | grep -q "${service} install successfully"; then
+                    echo "Longhorn ${upper_service} installation successful in pod $POD_NAME"
+                else
+                    echo "Longhorn ${upper_service} installation failed or incomplete in pod $POD_NAME"
+                    all_pods_up=0
+                fi
+            done
+
+            if [ $all_pods_up -eq 1 ]; then
+                break
+            fi
+            sleep 30
+            if [ $current_retry -eq $max_retries ]; then
+                echo "Reached maximum retry count. Exiting."
+                break
+            fi
+        done
+
+        kubectl delete -f https://raw.githubusercontent.com/longhorn/longhorn/${LONGHORN_VERSION}/deploy/prerequisite/longhorn-${service}-installation.yaml
+    done
+    ##################################################################
+    # Check if the containerd service is active
+    if systemctl is-active --quiet iscsid; then
+        echo "iscsi deployed successfully."
+    else
+        echo "iscsi service is not running..."
+        exit 1
     fi
-    echo "Adding $app bash completion"
-    COMPLETION_FILE="/etc/bash_completion.d/$app"
-
-    # Assuming the application has a completion script available
-    $app completion bash | sudo tee "$COMPLETION_FILE" >/dev/null
-
-    echo "$app bash completion added successfully."
-    source $COMPLETION_FILE
+    ##################################################################
+    # Ensure kernel support for NFS v4.1/v4.2:
+    for ver in 1 2; do
+        if $(cat /boot/config-`uname -r`| grep -q "CONFIG_NFS_V4_${ver}=y"); then
+            echo NFS v4.${ver} is supported
+        else
+            echo ERROR: NFS v4.${ver} is not supported
+        fi
+    done
+    ##################################################################
+    # Installing Cryptsetup and LUKS
 }
 
 
-install_cilium () {
-    CILIUM_CLI_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
-    CLI_ARCH=amd64
-    if [ "$(uname -m)" = "aarch64" ]; then CLI_ARCH=arm64; fi
-    curl -L --fail --remote-name-all https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}
-    sha256sum --check cilium-linux-${CLI_ARCH}.tar.gz.sha256sum
-    sudo tar xzvfC cilium-linux-${CLI_ARCH}.tar.gz /usr/local/bin
-    rm cilium-linux-*
-    add_bashcompletion cilium
+install_longhorn () {
 
 
+
+}
+
+
+
+
+install_certmanager () {
+    ##################################################################
+    # install cert-manager cli:
+    OS=$(go env GOOS)
+    ARCH=$(go env GOARCH)
+    VERSION=2.1.1
+    curl -fsSL -o cmctl https://github.com/cert-manager/cmctl/releases/download/v${VERSION}/cmctl_${OS}_${ARCH}
+    chmod +x cmctl
+    sudo mv cmctl /usr/local/bin
+    add_bashcompletion cmctl
+    ##################################################################
+    # deploy cert-manager:
+    CM_VERSION=1.17.1
+    helm repo add jetstack https://charts.jetstack.io --force-update
+    helm upgrade --install cert-manager jetstack/cert-manager  \
+        --version v${CM_VERSION} \
+        --namespace cert-manager \
+        --create-namespace \
+        -f certmanager/values.yaml
+    ##################################################################
 }
