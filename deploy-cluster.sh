@@ -1,16 +1,25 @@
 #!/bin/bash
 
-SUDO_USERNAME=ifoughal
-SUDO_USER_PASSWORD=password123
+
+NODE_1=lorionstrm01vel
+NODE_2=lorionstrm02vel
+NODE_3=lorionstrm03vel
+
+LONGHORN_NS=kube-system
+
+
+SUDO_USERNAME=ifoughali
+SUDO_USER_PASSWORD=BdZwFaHXwiROgZjKoizI
 SUDO_GROUP=maintainers
 
 CONTROLPLANE_INGRESS_INTER=ens192
-HTTP_PROXY="http://10.66.65.10:80"
-HTTPS_PROXY="http://10.66.65.10:80"
-NO_PROXY=".pack,.svc,.svc.cluster.local,.cluster.local,node-1,node-2,node-3,localhost,::1,127.0.0.1,10.66.65.7,10.66.65.8,10.66.65.9,10.96.0.0/12,10.244.0.0/16"
+HTTP_PROXY="http://10.66.8.162:3128"
+HTTPS_PROXY="http://10.66.8.162:3128"
+NO_PROXY=".pack,.svc,.svc.cluster.local,.cluster.local,lorionstrm01vel,lorionstrm02vel,lorionstrm03vel,localhost,::1,127.0.0.1,10.66.65.7,10.66.65.8,10.66.65.9,10.96.0.0/12,10.244.0.0/16"
 
 LONGHORN_VERSION=v1.8.1
-
+CLI_ARCH=amd64
+if [ "$(uname -m)" = "aarch64" ]; then CLI_ARCH=arm64; fi
 
 set -e  # Exit on error
 set -o pipefail  # Fail if any piped command fails
@@ -35,10 +44,9 @@ install_cilium () {
     sudo sysctl -w net.ipv4.conf.ens192.rp_filter=2
     ################################################################################################################
     helm repo add cilium https://helm.cilium.io/ --force-update
+    helm repo update
     ################################################################################################################
     CILIUM_CLI_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
-    CLI_ARCH=amd64
-    if [ "$(uname -m)" = "aarch64" ]; then CLI_ARCH=arm64; fi
     curl -L --fail --remote-name-all https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}
     sha256sum --check cilium-linux-${CLI_ARCH}.tar.gz.sha256sum
     sudo tar xzvfC cilium-linux-${CLI_ARCH}.tar.gz /usr/local/bin
@@ -586,7 +594,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-
 # Validate that required arguments are provided
 if [ -z "$CONTROLPLANE_HOSTNAME" ] || [ -z "$CONTROLPLANE_PORT" ] || [ -z "$NODES_FILE" ] || [ -z "$NODE_TYPE" ]; then
     echo "Error: Missing required arguments."
@@ -862,11 +869,11 @@ install_cilium
 install_longhorn_prerequisites() {
     ##################################################################
     # required utilities
-    sudo dnf install curl jq nfs-utils \cryptsetup device-mapper \
+    sudo dnf install curl jq nfs-utils cryptsetup device-mapper \
         iscsi-initiator-utils -y
     ##################################################################
     # Create ns for longhorn:
-    kubectl create ns longhorn-system
+    kubectl create ns $LONGHORN_NS
     ##################################################################
     # install NFS/iSCSI on all nodes:
     # REF: https://github.com/longhorn/longhorn/tree/master/deploy/prerequisite
@@ -879,7 +886,7 @@ install_longhorn_prerequisites() {
         # Wait for the pods to be in Running state
         echo "Waiting for Longhorn ${upper_service} installation pods to be in Running state..."
         while true; do
-            PODS=$(kubectl -n longhorn-system get pod | grep longhorn-${service}-installation)
+            PODS=$(kubectl -n $LONGHORN_NS get pod | grep longhorn-${service}-installation)
             RUNNING_COUNT=$(echo "$PODS" | grep -c "Running")
             TOTAL_COUNT=$(echo "$PODS" | wc -l)
 
@@ -897,8 +904,8 @@ install_longhorn_prerequisites() {
             echo "Checking Longhorn ${upper_service} setup completion... try N: $current_retry"
             all_pods_up=1
             # Get the logs of the service installation container
-            for POD_NAME in $(kubectl -n longhorn-system get pod | grep longhorn-${service}-installation | awk '{print $1}'); do
-                LOGS=$(kubectl -n longhorn-system logs $POD_NAME -c ${service}-installation)
+            for POD_NAME in $(kubectl -n $LONGHORN_NS get pod | grep longhorn-${service}-installation | awk '{print $1}'); do
+                LOGS=$(kubectl -n $LONGHORN_NS logs $POD_NAME -c ${service}-installation)
                 if echo "$LOGS" | grep -q "${service} install successfully"; then
                     echo "Longhorn ${upper_service} installation successful in pod $POD_NAME"
                 else
@@ -965,7 +972,6 @@ install_longhorn_prerequisites() {
 
     # Print the output
     echo "$OUTPUT"
-
     # Check for errors in the output
     if echo "$OUTPUT" | grep -q '\[ERROR\]'; then
         echo "Errors found in the environment check:"
@@ -973,17 +979,142 @@ install_longhorn_prerequisites() {
     else
         echo "No errors found in the environment check."
     fi
+    ##################################################################
+    # Longhorn-cli Install:
+    if ! command -v longhornctl &> /dev/null; then
+        echo "longhornctl not found. Installing..."
+        # Download longhornctl
+        curl -sSfL -o longhornctl https://github.com/longhorn/cli/releases/download/${LONGHORN_VERSION}/longhornctl-linux-${CLI_ARCH}
+        # Move longhornctl to /usr/local/bin
+        sudo mv longhornctl /usr/local/bin/
+        # Make longhornctl executable
+        sudo chmod +x /usr/local/bin/longhornctl
+        # Create a symbolic link in /usr/bin
+        sudo ln -sf /usr/local/bin/longhornctl /usr/bin
+        echo "longhornctl installed successfully."
+    else
+        echo "longhornctl is already installed."
+    fi
+    ##################################################################
+    # Check the prerequisites and configurations for Longhorn:
+    # currently preflight doesnt support almalinux
+    # so if on almalinx; run os-camo o, alll nodes prior to check preflight
+    for i in 1 2 3; do
+        NODE_VAR="NODE_$i"
+        CURRENT_NODE=${!NODE_VAR}
+        echo "sending camo script to target node: ${CURRENT_NODE}"
+        scp ./longhorn/os-camo.sh ${CURRENT_NODE}:/tmp/
+        echo "Executing camofoulage on node: ${CURRENT_NODE}"
+        ssh -q ${CURRENT_NODE} """
+            sudo chmod +x /tmp/os-camo.sh
+            /tmp/os-camo.sh camo
+        """
+    done
 
+    OUTPUT=$(longhornctl check preflight 2>&1)
+    # Print the output
+    echo "$OUTPUT"
+    # Check for errors in the output
+    if echo "$OUTPUT" | grep -q 'level\=error'; then
+        echo "Errors found in the environment check:"
+        echo "$OUTPUT" | grep 'level\=error'
+        exit 1
+    else
+        echo "No errors found during the longhornctl preflight environment check."
+    fi
+
+    kubectl delete -n default daemonsets.apps longhorn-preflight-checker >/dev/null 2>&1
+    ##################################################################
+    # Install the preflight:
+    OUTPUT=$(longhornctl install preflight 2>&1)
+    # Print the output
+    echo "$OUTPUT"
+    # Check for errors in the output
+    if echo "$OUTPUT" | grep -q 'level\=error'; then
+        echo "Errors found during the in longhornctl install preflight"
+        echo "$OUTPUT" | grep 'level\=error'
+        exit 1
+    else
+        echo "No errors found in the environment check."
+    fi
+    ##################################################################
+    # check the preflight again after install:
+    OUTPUT=$(longhornctl check preflight 2>&1)
+    # Print the output
+    echo "$OUTPUT"
+    # Check for errors in the output
+    if echo "$OUTPUT" | grep -q 'level\=error'; then
+        echo "Errors found in the environment check:"
+        echo "$OUTPUT" | grep 'level\=error'
+        exit 1
+    else
+        echo "No errors found during the longhornctl preflight environment check."
+    fi
+    ##################################################################
+    # revert camo:
+    for i in 1 2 3; do
+        NODE_VAR="NODE_$i"
+        CURRENT_NODE=${!NODE_VAR}
+        echo "Resetting camofoulage on node: ${CURRENT_NODE}"
+        ssh -q ${CURRENT_NODE} /tmp/os-camo.sh revert
+    done
+    ##################################################################
 }
 
 
 install_longhorn () {
+    ##################################################################
+    helm repo add longhorn https://charts.longhorn.io --force-update
+    helm repo update
+    ##################################################################
+    # TODO on all nodes:
+    # revert camo:
+    for i in 1 2 3; do
+        NODE_VAR="NODE_$i"
+        CURRENT_NODE=${!NODE_VAR}
+        echo "Resetting camofoulage on node: ${CURRENT_NODE}"
+        ssh -q ${CURRENT_NODE} "sudo rm -rf /mnt/longhorn-1/*"
+    done
+    ##################################################################
+    output=$(helm install longhorn longhorn/longhorn  \
+        --namespace $LONGHORN_NS  \
+        --version ${LONGHORN_VERSION} -f ./longhorn/values.yaml 2>&1)
 
-
-
+    # Check if the Helm install command was successful
+    if [ ! $? -eq 0 ]; then
+        echo -e "Failed to install Longhorn:\n\t${output}"
+        return 1
+    fi
+    ##################################################################
+    # Wait for the pods to be running
+    echo "Waiting for Longhorn pods to be running..."
+    sleep 45  # approximate time for longhorn to boostrap
+    current_retry=0
+    max_retries=3
+    while true; do
+        current_retry=$((current_retry + 1))
+        if [ $current_retry -gt $max_retries ]; then
+            echo "Reached maximum retry count. Exiting."
+            return 1
+        fi
+        echo "Checking Longhorn chart deployment completion... try N: $current_retry"
+        PODS=$(kubectl -n $LONGHORN_NS get pods --no-headers | grep -v 'Running\|Completed')
+        if [ -z "$PODS" ]; then
+            echo "All Longhorn pods are running."
+            break
+        else
+            echo "Waiting for pods to be ready..."
+        fi
+        sleep 60
+    done
+    ##################################################################
 }
 
-
+##################################################################
+install_longhorn_prerequisites
+##################################################################
+install_longhorn
+##################################################################
 
 
 install_certmanager () {
@@ -1000,6 +1131,8 @@ install_certmanager () {
     # deploy cert-manager:
     CM_VERSION=1.17.1
     helm repo add jetstack https://charts.jetstack.io --force-update
+    helm repo update
+
     helm upgrade --install cert-manager jetstack/cert-manager  \
         --version v${CM_VERSION} \
         --namespace cert-manager \
