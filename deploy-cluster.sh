@@ -1,23 +1,9 @@
 #!/bin/bash
 
 
-NODE_1=lorionstrm01vel
-NODE_2=lorionstrm02vel
-NODE_3=lorionstrm03vel
-
-LONGHORN_NS=kube-system
+source .env
 
 
-SUDO_USERNAME=ifoughali
-SUDO_USER_PASSWORD=BdZwFaHXwiROgZjKoizI
-SUDO_GROUP=maintainers
-
-CONTROLPLANE_INGRESS_INTER=ens192
-HTTP_PROXY="http://10.66.8.162:3128"
-HTTPS_PROXY="http://10.66.8.162:3128"
-NO_PROXY=".pack,.svc,.svc.cluster.local,.cluster.local,lorionstrm01vel,lorionstrm02vel,lorionstrm03vel,localhost,::1,127.0.0.1,10.66.65.7,10.66.65.8,10.66.65.9,10.96.0.0/12,10.244.0.0/16"
-
-LONGHORN_VERSION=v1.8.1
 CLI_ARCH=amd64
 if [ "$(uname -m)" = "aarch64" ]; then CLI_ARCH=arm64; fi
 
