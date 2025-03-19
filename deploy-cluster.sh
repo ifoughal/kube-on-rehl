@@ -1,7 +1,7 @@
 #!/bin/bash
 
-
-source .env
+# reading .env file
+. .env
 
 
 CLI_ARCH=amd64
@@ -56,7 +56,7 @@ add_bashcompletion () {
 
     if [ -z "$app" ]; then
         echo "Error: Application name must be provided."
-        return 1
+        exit 1
     fi
     echo "Adding $app bash completion"
     COMPLETION_FILE="/etc/bash_completion.d/$app"
@@ -247,9 +247,6 @@ update_firewall() {
 
 install_go () {
     cd /tmp
-    GO_VERSION=1.24.1
-    TINYGO_VERSION=0.36.0
-
     # install Go
     wget https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz
     sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
@@ -320,9 +317,9 @@ EOF
         exit 1
     fi
     if sudo containerd config dump | grep -q "sandbox_image = \"registry.k8s.io/pause:3.10\""; then
-        echo "set sandbox_image to pause version 3.10"
+        echo "set sandbox_image to pause version ${PAUSE_VERSION}"
     else
-        echo "Failed to set sandbox_image to pause version 3.10"
+        echo "Failed to set sandbox_image to pause version ${PAUSE_VERSION}"
         exit 1
     fi
 
@@ -353,13 +350,13 @@ prerequisites_requirements_checks() {
     echo "Kernel version: $kernel_version"
 
     # Recommended kernel version
-    recommended_version_rehl="4.18"
+    recommended_rehl_version="4.18"
 
     # Compare kernel versions
-    if [[ "$(printf '%s\n' "$recommended_version" "$kernel_version" | sort -V | head -n1)" == "$recommended_version" ]]; then
+    if [[ "$(printf '%s\n' "$recommended_rehl_version" "$kernel_version" | sort -V | head -n1)" == "$recommended_rehl_version" ]]; then
         echo "Kernel version is sufficient."
     else
-        echo "Kernel version is below the recommended version ($recommended_version)."
+        echo "Kernel version is below the recommended version ($recommended_rehl_version)."
         exit 1
     fi
 
@@ -714,7 +711,6 @@ sudo systemctl enable containerd
 
 # Update Kubernetes repository to the latest minor version
 K8S_REPO_FILE="/etc/yum.repos.d/kubernetes.repo"
-K8S_VERSION=1.31
 
 echo "[kubernetes]
 name=Kubernetes
@@ -906,7 +902,7 @@ install_longhorn_prerequisites() {
             sleep 30
             if [ $current_retry -eq $max_retries ]; then
                 echo "Reached maximum retry count. Exiting."
-                break
+                exit
             fi
         done
 
@@ -1069,19 +1065,19 @@ install_longhorn () {
     # Check if the Helm install command was successful
     if [ ! $? -eq 0 ]; then
         echo -e "Failed to install Longhorn:\n\t${output}"
-        return 1
+        exit 1
     fi
     ##################################################################
     # Wait for the pods to be running
     echo "Waiting for Longhorn pods to be running..."
-    sleep 45  # approximate time for longhorn to boostrap
+    sleep 70  # approximate time for longhorn to boostrap
     current_retry=0
     max_retries=3
     while true; do
         current_retry=$((current_retry + 1))
         if [ $current_retry -gt $max_retries ]; then
             echo "Reached maximum retry count. Exiting."
-            return 1
+            exit 1
         fi
         echo "Checking Longhorn chart deployment completion... try N: $current_retry"
         PODS=$(kubectl -n $LONGHORN_NS get pods --no-headers | grep -v 'Running\|Completed')
@@ -1108,19 +1104,17 @@ install_certmanager () {
     # install cert-manager cli:
     OS=$(go env GOOS)
     ARCH=$(go env GOARCH)
-    VERSION=2.1.1
     curl -fsSL -o cmctl https://github.com/cert-manager/cmctl/releases/download/v${VERSION}/cmctl_${OS}_${ARCH}
     chmod +x cmctl
     sudo mv cmctl /usr/local/bin
     add_bashcompletion cmctl
     ##################################################################
     # deploy cert-manager:
-    CM_VERSION=1.17.1
     helm repo add jetstack https://charts.jetstack.io --force-update
     helm repo update
 
     helm upgrade --install cert-manager jetstack/cert-manager  \
-        --version v${CM_VERSION} \
+        --version v${CERTMANAGER_VERSION} \
         --namespace cert-manager \
         --create-namespace \
         -f certmanager/values.yaml
