@@ -1,7 +1,22 @@
 #!/bin/bash
 
+
+
+# Initialize variables
+CURRENT_HOSTNAME=$(eval hostname)
+NODES_FILE=""
+NODE_TYPE=""
+DRY_RUN=false
+
+
+
+
 # reading .env file
 . .env
+
+CONTROLPLANE_ADDRESS=$(eval ip -o -4 addr show $CONTROLPLANE_INGRESS_INTER | awk '{print $4}' | cut -d/ -f1)  # 192.168.66.129
+CONTROLPLANE_SUBNET=$(echo $CONTROLPLANE_ADDRESS | awk -F. '{print $1"."$2"."$3".0/24"}')
+
 
 
 CLI_ARCH=amd64
@@ -16,39 +31,92 @@ command_exists() {
 }
 
 
+# Parse command-line arguments manually (including --dry-run)
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -c|--control-plane-hostname)
+            CONTROLPLANE_HOSTNAME="$2"
+            shift 2
+            ;;
+        -p|--control-plane-port)
+            CONTROLPLANE_PORT="$2"
+            shift 2
+            ;;
+        -n|--nodes-file)
+            NODES_FILE="$2"
+            shift 2
+            ;;
+        -t|--node-type)
+            NODE_TYPE="$2"
+            shift 2
+            ;;
+        -n|--set-hostname-to)
+            SET_HOSTNAME_TO="$2"
+            shift 2
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            echo "Dry run mode: No changes will be made."
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 --control-plane-hostname <str> --control-plane-port <str> --nodes-file <nodes_file> --node-type <control-plane|worker-node|> --set-hostname-to <str OPTIONAL> [--dry-run] "
+            exit 1
+            ;;
+    esac
+done
+
+# Validate that required arguments are provided
+if [ -z "$CONTROLPLANE_HOSTNAME" ] || [ -z "$CONTROLPLANE_PORT" ] || [ -z "$NODES_FILE" ] || [ -z "$NODE_TYPE" ]; then
+    echo "Error: Missing required arguments."
+    echo "Usage: $0 --control-plane-hostname <str> --control-plane-port <str> --nodes-file <nodes_file> --node-type <control-plane|worker-node> --set-hostname-to <str OPTIONAL> [--dry-run]"
+    exit 1
+fi
+
+# Ensure that 'control-plane' or 'worker-node' is provided as node type
+if [[ "$NODE_TYPE" != "control-plane" && "$NODE_TYPE" != "worker-node" ]]; then
+    echo "Error: 'control-plane' or 'worker-node' must be provided as the node type."
+    exit 1
+fi
+
+# Ensure the YAML file exists
+if [ ! -f "$NODES_FILE" ]; then
+    echo "Error: Node YAML file '$NODES_FILE' not found."
+    exit 1
+fi
+
+if [ ! -z "$SET_HOSTNAME_TO" ]; then
+    # Set hostname
+    sudo hostnamectl set-hostname "$SET_HOSTNAME_TO"
+    echo "Hostname set to $SET_HOSTNAME_TO"
+
+    CURRENT_HOSTNAME=$(eval hostname)
+fi
 
 
-install_cilium () {
-    ################################################################################################################
-    # if kube-proxy has been installed:
-    kubectl -n kube-system delete ds kube-proxy
-    # Delete the configmap as well to avoid kube-proxy being reinstalled during a Kubeadm upgrade (works only for K8s 1.19 and newer)
-    kubectl -n kube-system delete cm kube-proxy
-    # Run on each node with root permissions:
-    sudo iptables-save | grep -v KUBE | sudo iptables-restore
-    ################################################################################################################
-    sudo sysctl -w net.ipv4.conf.ens192.rp_filter=2
-    ################################################################################################################
-    helm repo add cilium https://helm.cilium.io/ --force-update
-    helm repo update
-    ################################################################################################################
-    CILIUM_CLI_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
-    curl -L --fail --remote-name-all https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}
-    sha256sum --check cilium-linux-${CLI_ARCH}.tar.gz.sha256sum
-    sudo tar xzvfC cilium-linux-${CLI_ARCH}.tar.gz /usr/local/bin
-    rm cilium-linux-*
-    ################################################################################################################
-    add_bashcompletion cilium
-    ################################################################################################################
-    cilium install --version 1.17.1 --values ./cilium/values.yaml
-    cilium status --wait
-    ################################################################################################################
-    kubectl apply -f cilium/ingress.yaml
-    # delete default ingress
-    kubectl delete svc -n kube-system cilium-ingress
-    ################################################################################################################
 
-}
+
+
+# add_bashcompletion () {
+#     # Parse the application name as a function argument
+#     app="$1"
+
+#     if [ -z "$app" ]; then
+#         echo "Error: Application name must be provided."
+#         exit 1
+#     fi
+#     echo "Adding $app bash completion"
+#     COMPLETION_FILE="/etc/bash_completion.d/$app"
+
+#     # Assuming the application has a completion script available
+#     $app completion bash | sudo tee "$COMPLETION_FILE" >/dev/null
+
+#     echo "$app bash completion added successfully."
+#     source $COMPLETION_FILE
+# }
+
+
 
 add_bashcompletion () {
     # Parse the application name as a function argument
@@ -56,16 +124,92 @@ add_bashcompletion () {
 
     if [ -z "$app" ]; then
         echo "Error: Application name must be provided."
-        exit 1
+        return 1
     fi
-    echo "Adding $app bash completion"
+
     COMPLETION_FILE="/etc/bash_completion.d/$app"
 
-    # Assuming the application has a completion script available
-    $app completion bash | sudo tee "$COMPLETION_FILE" >/dev/null
+    for i in 1 2 3; do
+        NODE_VAR="NODE_$i"
+        CURRENT_NODE=${!NODE_VAR}
 
-    echo "$app bash completion added successfully."
+        echo "Adding $app bash completion for node: ${CURRENT_NODE}"
+
+        # Assuming the application has a completion script available
+        ssh -q ${CURRENT_NODE} """
+            $app completion bash | sudo tee "$COMPLETION_FILE" >/dev/null
+        """
+        echo "$app bash completion added successfully."
+    done
     source $COMPLETION_FILE
+}
+
+install_cilium () {
+    ################################################################################################################
+    # if kube-proxy has been installed:
+    echo "Ensuring that kube-proxy is not installed"
+    kubectl -n kube-system delete ds kube-proxy >/dev/null 2>&1 || true
+    # Delete the configmap as well to avoid kube-proxy being reinstalled during a Kubeadm upgrade (works only for K8s 1.19 and newer)
+    kubectl -n kube-system delete cm kube-proxy >/dev/null 2>&1 || true
+    # Run on each node with root permissions:
+    sudo iptables-save | grep -v KUBE | sudo iptables-restore  >/dev/null 2>&1
+    ################################################################################################################
+    echo "Ensuring that kube-proxy is not installed"
+    sudo sysctl -w net.ipv4.conf.ens192.rp_filter=2
+    sudo sysctl -w net.ipv4.conf.ens224.rp_filter=2
+    ################################################################################################################
+    echo "Adding cilium chart"
+    helm repo add cilium https://helm.cilium.io/ --force-update
+    helm repo update
+    ################################################################################################################
+    echo "Installing cilium cli"
+    CILIUM_CLI_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
+    curl -L --fail --remote-name-all https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}
+    sha256sum --check cilium-linux-${CLI_ARCH}.tar.gz.sha256sum
+    sudo tar xzvfC cilium-linux-${CLI_ARCH}.tar.gz /usr/local/bin
+    rm cilium-linux-*
+    ################################################################################################################
+    add_bashcompletion cilium
+
+
+    ################################################################################################################
+    echo "cleaning up cluster from previous cilium installs"
+    kubectl delete crd $(kubectl get crd | grep cilium | awk '{print $1}')  >/dev/null 2>&1 || true
+    for ns in $(kubectl get ns | grep cilium | awk '{print $1}'); do
+        kubectl delete ns $ns --grace-period=0 --force  >/dev/null 2>&1 || true
+    done
+    kubectl -n kube-system delete ds cilium --grace-period=0 --force  >/dev/null 2>&1 || true
+    kubectl -n kube-system delete ds cilium-operator --grace-period=0 --force  >/dev/null 2>&1 || true
+    kubectl delete configmap cilium-config -n kube-system  >/dev/null 2>&1 || true
+    for cr in $(kubectl get crd | grep cilium | awk '{print $1}'); do
+        kubectl get $cr -A --no-headers | awk '{print $2}' | xargs -I{} kubectl patch $cr {} --type=json -p '[{"op": "remove", "path": "/metadata/finalizers"}]'
+    done
+    kubectl delete networkpolicy --all -n kube-system
+    sudo iptables-save | grep -v CILIUM | sudo iptables-restore
+    kubectl -n kube-system delete ds -l k8s-app=cilium >/dev/null 2>&1 || true
+    kubectl -n kube-system delete ds -l io.cilium/app >/dev/null 2>&1 || true
+    kubectl -n kube-system delete ds -l name=cilium >/dev/null 2>&1 || true
+    kubectl -n kube-system delete ds -l app=cilium >/dev/null 2>&1 || true
+
+    kubectl -n kube-system delete deploy -l k8s-app=cilium >/dev/null 2>&1 || true
+    kubectl -n kube-system delete deploy -l io.cilium/app >/dev/null 2>&1 || true
+    kubectl -n kube-system delete deploy -l name=cilium >/dev/null 2>&1 || true
+    kubectl -n kube-system delete deploy -l app=cilium >/dev/null 2>&1 || true
+    ################################################################################################################
+    echo "Installing cilium version: '${CILIUM_VERSION}' using cilium cli "
+    echo "Cilium native routing subnet is: ${CONTROLPLANE_SUBNET}"
+    cilium install --version $CILIUM_VERSION \
+        --set ipv4NativeRoutingCIDR=${CONTROLPLANE_SUBNET} \
+        --set k8sServiceHost=10.96.0.1 \
+        --set k8sServicePort=443 \
+        --values ./cilium/values.yaml
+    cilium status --wait
+    ################################################################################################################
+    kubectl apply -f cilium/ingress.yaml
+    # delete default ingress
+    kubectl delete svc -n kube-system cilium-ingress
+    ################################################################################################################
+    echo "Finished installing cilium"
 }
 
 update_firewall() {
@@ -114,8 +258,9 @@ update_firewall() {
     #############################################################################
 
     # Kubectl API Server
-    sudo firewall-cmd --zone=public --add-port=6443/tcp --permanent
-    sudo firewall-cmd --zone=k8s --add-port=6443/tcp --permanent
+
+    sudo firewall-cmd --zone=public --add-port=${CONTROLPLANE_API_PORT}/tcp --permanent
+    sudo firewall-cmd --zone=k8s --add-port=${CONTROLPLANE_API_PORT}/tcp --permanent
 
     # Kubelet health and communication
     sudo firewall-cmd --zone=k8s --add-port=10248/tcp --permanent
@@ -457,7 +602,7 @@ prerequisites_requirements_checks() {
     CONFIG_FILE="/etc/containerd/config.toml"
 
     # Backup the original config file
-    cp -n $CONFIG_FILE "${CONFIG_FILE}.bak"
+    cp -f -n $CONFIG_FILE "${CONFIG_FILE}.bak"
 
     # Use sed to edit the config file
     sudo sed -i '/\[plugins."io.containerd.nri.v1.nri"\]/,/^$/{
@@ -482,13 +627,6 @@ prerequisites_requirements_checks() {
     # configuration for containerd
     configure_containerD
     # containerd containerd.io 1.7.25 bcc810d6
-    #############################################################################
-    # Install Kubernetes tools
-    # Fetch the latest stable full version (e.g., v1.32.2)
-    K8S_VERSION=$(curl -L -s https://dl.k8s.io/release/stable-1.txt)
-
-    # Extract only the major.minor version (e.g., 1.32)
-    K8S_MINOR_VERSION=$(echo $K8S_VERSION | cut -d'.' -f1,2)
 }
 
 # Function to update or add the PATH variable in /etc/environment
@@ -531,236 +669,239 @@ EOF
 
 
 
+install_cluster_prerequisites () {
 
+    for i in 2 3; do
+        NODE_VAR="NODE_$i"
+        CURRENT_NODE=${!NODE_VAR}
+        echo "installing kernel tools for node: ${CURRENT_NODE}"
+        ssh -q ${CURRENT_NODE} """
+            sudo dnf update -y
+            sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools
+            pip install yq
+        """
+        echo "Finished installing kernet tools node: ${CURRENT_NODE}"
+    done
 
+    # Call the function
+    prerequisites_requirements_checks
 
-# Initialize variables
-CURRENT_HOSTNAME=$(eval hostname)
-NODES_FILE=""
-NODE_TYPE=""
-DRY_RUN=false
-
-
-# Parse command-line arguments manually (including --dry-run)
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        -c|--control-plane-hostname)
-            CONTROLPLANE_HOSTNAME="$2"
-            shift 2
-            ;;
-        -p|--control-plane-port)
-            CONTROLPLANE_PORT="$2"
-            shift 2
-            ;;
-        -n|--nodes-file)
-            NODES_FILE="$2"
-            shift 2
-            ;;
-        -t|--node-type)
-            NODE_TYPE="$2"
-            shift 2
-            ;;
-        -n|--set-hostname-to)
-            SET_HOSTNAME_TO="$2"
-            shift 2
-            ;;
-        --dry-run)
-            DRY_RUN=true
-            echo "Dry run mode: No changes will be made."
-            shift
-            ;;
-        *)
-            echo "Unknown option: $1"
-            echo "Usage: $0 --control-plane-hostname <str> --control-plane-port <str> --nodes-file <nodes_file> --node-type <control-plane|worker-node|> --set-hostname-to <str OPTIONAL> [--dry-run] "
-            exit 1
-            ;;
-    esac
-done
-
-# Validate that required arguments are provided
-if [ -z "$CONTROLPLANE_HOSTNAME" ] || [ -z "$CONTROLPLANE_PORT" ] || [ -z "$NODES_FILE" ] || [ -z "$NODE_TYPE" ]; then
-    echo "Error: Missing required arguments."
-    echo "Usage: $0 --control-plane-hostname <str> --control-plane-port <str> --nodes-file <nodes_file> --node-type <control-plane|worker-node> --set-hostname-to <str OPTIONAL> [--dry-run]"
-    exit 1
-fi
-
-# Ensure that 'control-plane' or 'worker-node' is provided as node type
-if [[ "$NODE_TYPE" != "control-plane" && "$NODE_TYPE" != "worker-node" ]]; then
-    echo "Error: 'control-plane' or 'worker-node' must be provided as the node type."
-    exit 1
-fi
-
-# Ensure the YAML file exists
-if [ ! -f "$NODES_FILE" ]; then
-    echo "Error: Node YAML file '$NODES_FILE' not found."
-    exit 1
-fi
-
-if [ ! -z "$SET_HOSTNAME_TO" ]; then
-    # Set hostname
-    sudo hostnamectl set-hostname "$SET_HOSTNAME_TO"
-    echo "Hostname set to $SET_HOSTNAME_TO"
-
-    CURRENT_HOSTNAME=$(eval hostname)
-fi
-
-sudo dnf update -y
-sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools
-pip install yq
-
-# Call the function
-# prerequisites_requirements_checks
-
-
-# Convert YAML to JSON using yq
-if ! command_exists yq; then
-    echo "Error: 'yq' command not found. Please install yq to parse YAML files."
-    exit 1
-fi
-# Parse YAML file and append node and worker-node details to /etc/hosts
-if ! command_exists jq; then
-    echo "Error: 'jq' command not found. Please install jq to parse JSON files."
-    exit 1
-fi
-
-
-# Path to the YAML file
-NODES_FILE=hosts_file.yaml
-TARGET_FILE="/etc/hosts"
-# Extract the 'nodes' array from the YAML and process it with jq
-yq '.nodes' "$NODES_FILE" | jq -r '.[] | "\(.ip) \(.hostname)"' | while read -r line; do
-    # Append the entry to the file (e.g., /etc/hosts)
-    # Normalize spaces in the input line (collapse multiple spaces/tabs into one)
-    normalized_line=$(echo "$line" | sed 's/[[:space:]]\+/ /g')
-
-    # Check if the normalized line already exists in the target file by parsing each line
-    exists=false
-    while IFS= read -r target_line; do
-        # Normalize spaces in the target file line
-        normalized_target_line=$(echo "$target_line" | sed 's/[[:space:]]\+/ /g')
-
-        # Compare the normalized lines
-        if [[ "$normalized_line" == "$normalized_target_line" ]]; then
-            exists=true
-            break
-        fi
-    done < "$TARGET_FILE"
-
-    # Append the line to the target file if it doesn't exist
-    if [ "$exists" = false ]; then
-        echo "$line" | sudo tee -a "$TARGET_FILE" > /dev/null
-        echo "Host added: $line"
-    else
-        echo "Already exists: $line"
-        echo "Host already exists: $line"
+    # Convert YAML to JSON using yq
+    if ! command_exists yq; then
+        echo "Error: 'yq' command not found. Please install yq to parse YAML files."
+        exit 1
     fi
-done
+    # Parse YAML file and append node and worker-node details to /etc/hosts
+    if ! command_exists jq; then
+        echo "Error: 'jq' command not found. Please install jq to parse JSON files."
+        exit 1
+    fi
+    #########################################################
+    # Path to the YAML file
+    NODES_FILE=hosts_file.yaml
+    HOSTSFILE_PATH="/etc/hosts"
+    # Extract the 'nodes' array from the YAML and process it with jq
+    yq '.nodes' "$NODES_FILE" | jq -r '.[] | "\(.ip) \(.hostname)"' | while read -r line; do
+        # Append the entry to the file (e.g., /etc/hosts)
+        # Normalize spaces in the input line (collapse multiple spaces/tabs into one)
+        normalized_line=$(echo "$line" | sed 's/[[:space:]]\+/ /g')
 
+        # Check if the normalized line already exists in the target file by parsing each line
+        exists=false
+        while IFS= read -r target_line; do
+            # Normalize spaces in the target file line
+            normalized_target_line=$(echo "$target_line" | sed 's/[[:space:]]\+/ /g')
 
-# Disable swap for Kubernetes compatibility
-if sudo swapoff -a; then
-    echo "Swap disabled."
-else
-    echo "Warning: Failed to disable swap."
-fi
-sudo sed -i '/ swap / s/^/#/' /etc/fstab
+            # Compare the normalized lines
+            if [[ "$normalized_line" == "$normalized_target_line" ]]; then
+                exists=true
+                break
+            fi
+        done < "$HOSTSFILE_PATH"
 
-# Load required kernel modules for container runtime
-sudo tee /etc/modules-load.d/containerd.conf <<EOF
+        # Append the line to the target file if it doesn't exist
+        if [ "$exists" = false ]; then
+            echo "$line" | sudo tee -a "$HOSTSFILE_PATH" > /dev/null
+            echo "Host added: $line"
+        else
+            echo "Already exists: $line"
+            echo "Host already exists: $line"
+        fi
+    done
+    #########################################################
+    echo "Sending hosts file to nodes"
+    for i in 2 3; do
+        NODE_VAR="NODE_$i"
+        CURRENT_NODE=${!NODE_VAR}
+        echo "sending hosts file to target node: ${CURRENT_NODE}"
+        scp -q $HOSTSFILE_PATH ${CURRENT_NODE}:/tmp
+
+        echo "Applying changes on node: ${CURRENT_NODE}"
+        ssh -q ${CURRENT_NODE} """
+            sudo cp /tmp/hosts ${HOSTSFILE_PATH}
+        """
+        echo "Finished modifying hosts fileon node: ${CURRENT_NODE}"
+    done
+    #########################################################
+    # Disable swap for Kubernetes compatibility
+    # TODO per node:
+    if sudo swapoff -a; then
+        echo "Swap disabled."
+    else
+        echo "Warning: Failed to disable swap."
+    fi
+    sudo sed -i '/ swap / s/^/#/' /etc/fstab
+
+    # Load required kernel modules for container runtime
+    sudo tee /etc/modules-load.d/containerd.conf <<EOF
 overlay
 br_netfilter
 EOF
 
-sudo modprobe overlay
-sudo modprobe br_netfilter
+    sudo modprobe overlay
+    sudo modprobe br_netfilter
 
-# Configure sysctl settings for Kubernetes networking
-SYSCTL_CONF="/etc/sysctl.d/k8s.conf"
-sudo tee "$SYSCTL_CONF" <<EOF
+    # Configure sysctl settings for Kubernetes networking
+    SYSCTL_CONF="/etc/sysctl.d/k8s.conf"
+    sudo tee "$SYSCTL_CONF" <<EOF
 net.bridge.bridge-nf-call-iptables  = 1
 net.ipv4.ip_forward                 = 1
 net.bridge.bridge-nf-call-ip6tables = 1
 EOF
-sudo sysctl --system
+    sudo sysctl --system
 
-# Install dependencies
-if ! command_exists dnf; then
-    echo "Error: DNF package manager not found. Exiting."
-    exit 1
-fi
+    # Install dependencies
+    if ! command_exists dnf; then
+        echo "Error: DNF package manager not found. Exiting."
+        exit 1
+    fi
+    #############################################################################
+    # Add Docker repository and install containerd
+    DOCKER_REPO="https://download.docker.com/linux/centos/docker-ce.repo"
+    if ! sudo dnf config-manager --add-repo "$DOCKER_REPO"; then
+        echo "Error: Failed to add Docker repository."
+        exit 1
+    fi
+    #############################################################################
+    sudo dnf install -y containerd.io
+
+    # Configure containerd to use systemd cgroup driver
+    CONTAINERD_CONFIG="/etc/containerd/config.toml"
+    containerd config default | sudo tee "$CONTAINERD_CONFIG" >/dev/null 2>&1
+    sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' "$CONTAINERD_CONFIG"
+
+    # Restart and enable containerd
+    sudo systemctl restart containerd
+    sudo systemctl enable containerd
+    #############################################################################
+    install_kubetools
+}
 
 
-
-# Add Docker repository and install containerd
-DOCKER_REPO="https://download.docker.com/linux/centos/docker-ce.repo"
-if ! sudo dnf config-manager --add-repo "$DOCKER_REPO"; then
-    echo "Error: Failed to add Docker repository."
-    exit 1
-fi
-
-sudo dnf install -y containerd.io
-
-# Configure containerd to use systemd cgroup driver
-CONTAINERD_CONFIG="/etc/containerd/config.toml"
-containerd config default | sudo tee "$CONTAINERD_CONFIG" >/dev/null 2>&1
-sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' "$CONTAINERD_CONFIG"
-
-# Restart and enable containerd
-sudo systemctl restart containerd
-sudo systemctl enable containerd
-
-# Update Kubernetes repository to the latest minor version
-K8S_REPO_FILE="/etc/yum.repos.d/kubernetes.repo"
-
-echo "[kubernetes]
+install_kubetools () {
+    # Fetch Latest version from kube release....
+    if [ "$(echo "$FETCH_LATEST_KUBE" | tr '[:upper:]' '[:lower:]')" = "true" ]; then
+        echo "Fetching latest kuberentes version from stable-1..."
+        # Fetch the latest stable full version (e.g., v1.32.2)
+        K8S_MINOR_VERSION=$(curl -L -s https://dl.k8s.io/release/stable-1.txt)
+        #########################################################
+        # Extract only the major.minor version (e.g., 1.32)
+        K8S_MAJOR_VERSION=$(echo $K8S_MINOR_VERSION | cut -d'.' -f1,2)
+    fi
+    # ensure that the vars are set either from latest version or .env
+    if [ -z "$K8S_MAJOR_VERSION" ] || [ -z $K8S_MINOR_VERSION ]; then
+        echo "K8S_MAJOR_VERSION and/or K8S_MINOR_VERSION have not been set on .env file"
+        exit 2
+    fi
+    #########################################################
+    # Update Kubernetes repository to the latest minor version
+    K8S_REPO_FILE="/etc/yum.repos.d/kubernetes.repo"
+    K8S_REPO_CONTENT="""
+[kubernetes]
 name=Kubernetes
-baseurl=https://pkgs.k8s.io/core:/stable:/v$K8S_VERSION/rpm/
+baseurl=https://pkgs.k8s.io/core:/stable:/$K8S_MAJOR_VERSION/rpm/
 enabled=1
 gpgcheck=1
-gpgkey=https://pkgs.k8s.io/core:/stable:/v$K8S_VERSION/rpm/repodata/repomd.xml.key
-exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni" | sudo tee "$K8S_REPO_FILE" > /dev/null
+gpgkey=https://pkgs.k8s.io/core:/stable:/$K8S_MAJOR_VERSION/rpm/repodata/repomd.xml.key
+exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
+"""
 
-# Install Kubernetes components
-sudo dnf install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
+    for i in 1 2 3; do
+        NODE_VAR="NODE_$i"
+        CURRENT_NODE=${!NODE_VAR}
+        echo "sending k8s repo to target node: ${CURRENT_NODE}"
+        ssh -q ${CURRENT_NODE} "echo '$K8S_REPO_CONTENT' | sudo tee $K8S_REPO_FILE"
 
-# Enable and start kubelet
-sudo systemctl enable --now kubelet
+        echo "updating repos on target node: ${CURRENT_NODE}"
+        ssh -q ${CURRENT_NODE} "sudo dnf update"
 
-echo "Kubernetes prerequisites setup completed successfully."
+        #########################################################
+        echo "Removing prior installed versions on node: ${CURRENT_NODE}"
+        ssh -q ${CURRENT_NODE} """
+            sudo dnf remove -y kubelet kubeadm kubectl --disableexcludes=kubernetes
+        """
+        #########################################################
+        echo "installing k8s tools on node: ${CURRENT_NODE}"
+        ssh -q ${CURRENT_NODE} """
+            sudo dnf install -y kubelet-${K8S_MINOR_VERSION} kubeadm-${K8S_MINOR_VERSION} kubectl-${K8S_MINOR_VERSION} --disableexcludes=kubernetes
+            sudo systemctl enable --now kubelet
 
-echo "Adding Kubeadm bash completion"
-add_bashcompletion kubeadm
+        """
+    done
+    #########################################################
+    echo "Adding Kubeadm bash completion"
+    add_bashcompletion kubeadm
+    add_bashcompletion kubectl
+    #########################################################
+    echo "Kubernetes prerequisites setup completed successfully."
+    #########################################################
+}
 
-# Kubeadm init logic
-KUBE_ADM_COMMAND="sudo kubeadm "
 
-if [ "$NODE_TYPE" == "control-plane" ]; then
-    KUBE_ADM_COMMAND="$KUBE_ADM_COMMAND init --control-plane-endpoint=${CURRENT_HOSTNAME} --skip-phases=addon/kube-proxy "
+install_cluster () {
+    # Kubeadm init logic
+    KUBE_ADM_COMMAND="sudo kubeadm "
 
-    # Simulate Kubeadm init or worker-node node join
-    if [ "$DRY_RUN" = true ]; then
-        echo "Initializing dry-run for control plane node init..."
-        KUBE_ADM_COMMAND="$KUBE_ADM_COMMAND --dry-run "
+    if [ "$NODE_TYPE" == "control-plane" ]; then
+        KUBE_ADM_COMMAND="$KUBE_ADM_COMMAND init --control-plane-endpoint=${CURRENT_HOSTNAME} --skip-phases=addon/kube-proxy "
+
+        # Simulate Kubeadm init or worker-node node join
+        if [ "$DRY_RUN" = true ]; then
+            echo "Initializing dry-run for control plane node init..."
+            KUBE_ADM_COMMAND="$KUBE_ADM_COMMAND --dry-run "
+        else
+            echo "Initializing control plane node init..."
+        fi
+
+        echo "    with command: $KUBE_ADM_COMMAND"
+        # KUBEADM_INIT_OUTPUT=$(eval "$KUBE_ADM_COMMAND 2>&1")
+        LOGS_DIR=/var/log/kubeadm_init_errors.log
+        sudo touch ${LOGS_DIR}
+        sudo chmod 666 ${LOGS_DIR}
+
+        KUBEADM_INIT_OUTPUT=$(eval "$KUBE_ADM_COMMAND" 2> "${LOGS_DIR}")
+
+        if [[ $? -ne 0 ]]; then
+            echo "Error: Failed to run kubeadm init."
+            echo "$KUBEADM_INIT_OUTPUT"
+            exit 1
+        fi
+
     else
-        echo "Initializing control plane node init..."
-    fi
-
-    echo "    with command: $KUBE_ADM_COMMAND"
-    # KUBEADM_INIT_OUTPUT=$(eval "$KUBE_ADM_COMMAND 2>&1")
-    LOGS_DIR=/var/log/kubeadm_init_errors.log
-    sudo touch ${LOGS_DIR}
-    sudo chmod 666 ${LOGS_DIR}
-
-    KUBEADM_INIT_OUTPUT=$(eval "$KUBE_ADM_COMMAND" 2> "${LOGS_DIR}")
-
-    if [[ $? -ne 0 ]]; then
-        echo "Error: Failed to run kubeadm init."
-        echo "$KUBEADM_INIT_OUTPUT"
+        echo "Error: Invalid node type. Use 'control-plane' or 'worker-node'."
         exit 1
     fi
 
+    echo "unintaing the control-plane node"
+    kubectl taint nodes $NODE_1 node-role.kubernetes.io/control-plane:NoSchedule-
+
+    echo "Kubernetes control-plane node setup completed."
+}
+
+
+generate_join_configs () {
     # Extract the token and CA hash from the kubeadm init output
-    JOIN_TOKEN=$(echo "$KUBEADM_INIT_OUTPUT" | grep -oP 'token \K[^\s]+')
+    JOIN_TOKEN=$(echo "$KUBEADM_INIT_OUTPUT" | grep -oP 'token \K[^\s]+' | tr -d '\n')
     CA_SHA256=$(echo "$KUBEADM_INIT_OUTPUT" | grep -oP 'discovery-token-ca-cert-hash sha256:\K([a-f0-9]+)' | tr -d '\n')
 
     if [ "$DRY_RUN" = true ]; then
@@ -769,12 +910,9 @@ if [ "$NODE_TYPE" == "control-plane" ]; then
         echo "Control plane initialized successfully."
         # Copy kubeconfig for kubectl access
         mkdir -p $HOME/.kube
-        sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+        sudo cp -f -i /etc/kubernetes/admin.conf $HOME/.kube/config
         sudo chown $(id -u):$(id -g) $HOME/.kube/config
     fi
-
-    CONTROLPLANE_ADDRESS=$(eval ip -o -4 addr show $CONTROLPLANE_INGRESS_INTER | awk '{print $4}' | cut -d/ -f1)  # 192.168.66.129
-
 
         JOIN_YAML=./worker-node-join.yaml
         cat <<EOF | sudo tee "$JOIN_YAML" > /dev/null
@@ -809,44 +947,49 @@ discovery:
 
 controlPlane:
     localAPIEndpoint:
-        advertiseAddress: ${NEW_CONTROLPLANE_ADDRESS}  # Replace with the IP address of the new control plane node
-        bindPort: ${NEW_CONTROLPLANE_API_PORT}
+        advertiseAddress: ${CONTROLPLANE_ADDRESS}  # Replace with the IP address of the new control plane node
+        bindPort: ${CONTROLPLANE_API_PORT}
     # certificateKey: "e6a2eb8381237ab72a4fa94f30285ec12a9694d750b9785706a83bfcbbbd2204"  # not sure
 EOF
         echo "Join YAML files created at $JOIN_YAML."
+}
+
+
+workers_join_cluster () {
+    for i in 2 3; do
+        NODE_VAR="NODE_$i"
+        CURRENT_NODE=${!NODE_VAR}
+        echo "sending worker join JoinConfiguration to target node: ${CURRENT_NODE}"
+        scp -q ./worker-node-join.yaml ${CURRENT_NODE}:/tmp
+
+        echo "sending PKI cert to target node: ${CURRENT_NODE}"
+        sudo cat /etc/kubernetes/pki/ca.crt | ssh -q ${CURRENT_NODE} "sudo tee /etc/kubernetes/pki/ca.crt > /dev/null && sudo chmod 644 /etc/kubernetes/pki/ca.crt"
+
+        echo "sending cluster config to target node: ${CURRENT_NODE}"
+        sudo cat /etc/kubernetes/admin.conf | ssh -q ${CURRENT_NODE} """
+            sudo tee /etc/kubernetes/admin.conf > /dev/null
+            sudo chmod 600 /etc/kubernetes/admin.conf
+            mkdir -p $HOME/.kube
+            sudo cp -f -i /etc/kubernetes/admin.conf $HOME/.kube/config
+            sudo chown $(id -u):$(id -g) $HOME/.kube/config
+        """
+
+        echo "updating certs"
+        ssh -q ${CURRENT_NODE} "sudo update-ca-trust"
+
+        echo "Applying JoinConfiguration on node: ${CURRENT_NODE}"
+        ssh -q ${CURRENT_NODE} """
+            sudo kubeadm join --config /tmp/worker-node-join.yaml
+        """
+        echo "Finished joining cluster on node: ${CURRENT_NODE}"
+    done
+}
 
 
 
 
 
 
-
-
-
-# elif [ "$NODE_TYPE" == "worker-node" ]; then
-#     echo "Preparing worker-node node..."
-
-#     # Get the join command from the join_command.txt (assumes it was previously created by the control plane node)
-#     if [ ! -f join_command.txt ]; then
-#         echo "Error: join_command.txt not found. Ensure the control plane has been initialized."
-#         exit 1
-#     fi
-
-#     JOIN_CMD=$(cat join_command.txt)
-#     echo "Running join command for worker-node node: $JOIN_CMD"
-
-#     # Run the join command on the worker-node node
-#     sudo $JOIN_CMD
-
-else
-    echo "Error: Invalid node type. Use 'control-plane' or 'worker-node'."
-    exit 1
-fi
-
-echo "Kubernetes node setup completed."
-
-
-install_cilium
 
 install_longhorn_prerequisites() {
     ##################################################################
@@ -1092,13 +1235,20 @@ install_longhorn () {
     ##################################################################
 }
 
-##################################################################
-install_longhorn_prerequisites
-##################################################################
-install_longhorn
-##################################################################
+install_vault () {
+    ##################################################################
+    helm repo add hashicorp https://helm.releases.hashicorp.com --force-update
+    VAULT_VERSION=0.29.1
+    VAULT_NS=kube-system
+    VAULT_NS=vault-system
 
 
+    helm install vault hashicorp/vault -n $VAULT_NS \
+        --create-namespace --version $VAULT_VERSION \
+        -f vault/values.yaml
+    ##################################################################
+
+}
 install_certmanager () {
     ##################################################################
     # install cert-manager cli:
@@ -1113,10 +1263,81 @@ install_certmanager () {
     helm repo add jetstack https://charts.jetstack.io --force-update
     helm repo update
 
-    helm upgrade --install cert-manager jetstack/cert-manager  \
+    helm install cert-manager jetstack/cert-manager  \
         --version v${CERTMANAGER_VERSION} \
-        --namespace cert-manager \
+        --namespace kube-system \
         --create-namespace \
         -f certmanager/values.yaml
+
     ##################################################################
+    # test certmanager:
+    # Needs to be automated....
+    # kubectl apply -f certmanager/test-resources.yaml
+
+    # # Check the status, grep through the event types
+    # kubectl describe certificate -n cert-manager-test
+    # kubectl get secrets -n cert-manager-test
+
+    # # Clean up the test resources.
+    # kubectl delete -f certmanager/test-resources.yaml
+
+
+    # --cluster-resource-namespace=
+    }
+
+
+
+
+install_rancher () {
+
+    helm repo add rancher-stable https://releases.rancher.com/server-charts/stable
+    kubectl create namespace cattle-system
+
+    echo """Warning: Currently rancher supports kubeVersion up to 1.31.0
+    initiating workaround to force the install...
+    """
+    # install alpha v2.11.0-alpha13 --devel
+    # cd ./rancher
+    # helm pull rancher-stable/rancher --version ${RANCHER_VERSION}
+    # tar zxvf rancher-${RANCHER_VERSION}.tgz
+    # file_path=rancher/Chart.yaml
+    # sed -i 's/kubeVersion: < 1.32.0-0/kubeVersion: < 1.33.0/' ${file_path}
+    # tar cvf rancher-${RANCHER_VERSION}.tar rancher/
+    # gzip rancher-${RANCHER_VERSION}.tar -f
+    # rm -rf rancher
+    # rm -f rancher-${RANCHER_VERSION}.tgz
+    # cd ../
+
+    # helm install rancher rancher-stable/rancher \
+    helm install rancher ./rancher/rancher-${RANCHER_VERSION}.tar.gz \
+        --namespace ${RANCHER_NS} \
+        --set hostname=rancher.pfs.pack \
+        --set bootstrapPassword=${RANCHER_ADMIN_PASS}  \
+        --version ${RANCHER_VERSION}  \
+        -f rancher/values.yaml
+
+    kubectl -n cattle-system rollout status deploy/rancher
+
+
 }
+
+##################################################################
+# install_cluster_prerequisites
+
+install_cluster
+install_cilium
+
+
+# generate_join_configs
+
+# workers_join_cluster
+
+# install_vault
+# install_certmanager
+
+# install_rancher
+# ##################################################################
+# install_longhorn_prerequisites
+# ##################################################################
+# install_longhorn
+##################################################################
