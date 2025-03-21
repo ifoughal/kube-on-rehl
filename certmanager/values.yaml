@@ -33,8 +33,7 @@ config:
     verbosity: 5
     format: text
   leaderElectionConfig:
-    # namespace: kube-system
-    namespace: cert-manager
+    namespace: kube-system
   enableGatewayAPI: false
   # kubernetesAPIQPS: 9000
   # kubernetesAPIBurst: 9000
@@ -117,7 +116,7 @@ strategy: {}
 # This namespace allows you to define where the services are installed into.
 # If not set then they use the namespace of the release.
 # This is helpful when installing cert manager as a chart dependency (sub chart).
-namespace: "cert-manager"
+namespace: "kube-system"
 
 # Automounting API credentials for a particular pod.
 # +docs:property

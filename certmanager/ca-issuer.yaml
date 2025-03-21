@@ -1,32 +1,44 @@
-apiVersion: cert-manager.io/v1
-kind: Issuer
-metadata:
-  name: self-signed
-  namespace: cert-manager
-spec:
-  selfSigned: {}
+# ---
+# apiVersion: cert-manager.io/v1
+# kind: Certificate
+# metadata:
+#   name: ca-key-pair
+#   namespace: cert-manager
+# spec:
+#   isCA: true
+#   privateKey:
+#     algorithm: ECDSA
+#     size: 256
+#   secretName: ca
+#   commonName: ca
+#   issuerRef:
+#     name: self-signed
+#     kind: Issuer
 ---
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: ca
-  namespace: cert-manager
-spec:
-  isCA: true
-  privateKey:
-    algorithm: ECDSA
-    size: 256
-  secretName: ca
-  commonName: ca
-  issuerRef:
-    name: self-signed
-    kind: Issuer
----
+# duplicate this per namespace to have issuers.
+# the secretName is the private key that will be used to trust
+# newly generated certs, on a per NS basis.
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
   name: ca-issuer
-  namespace: cert-manager
+  namespace: kube-system
 spec:
   ca:
-    secretName: ca
+    secretName: ca-key-pair
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-cluster-issuer
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: your-email@email.com
+    privateKeySecretRef:
+      name: letsencrypt-cluster-issuer-key
+    solvers:
+    - http01:
+       ingress:
+         class: nginx
+---

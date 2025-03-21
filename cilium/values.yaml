@@ -1,6 +1,6 @@
 debug:
   # -- Enable debug logging
-  enabled: true
+  enabled: false
 
 nodeinit:
   # -- Enable the node initialization DaemonSet
@@ -124,7 +124,7 @@ envoy:
   securityContext:
     capabilities:
       envoy:
-      - NET_BIND_SERVICE
+      # - NET_BIND_SERVICE
       - NET_ADMIN
       - SYS_ADMIN
       keepCapNetBindService: true
@@ -136,12 +136,12 @@ envoy:
       enabled: true
       port: 9901
 
-securityContext:
-  capabilities:
-    envoy:
-    - NET_BIND_SERVICE
-    - NET_ADMIN
-    - SYS_ADMIN
+# securityContext:
+#   capabilities:
+#     envoy:
+#     - NET_BIND_SERVICE
+#     - NET_ADMIN
+#     - SYS_ADMIN
 #############################################################################################################
 # All nodes need to have a route to other nodes
 # so we can't just rely on the default route to get us there.
@@ -175,7 +175,9 @@ k8s:
 # direct routing and the Kubernetes CIDR is included in the native routing CIDR,
 # the user must configure the routes to reach pods, either manually or by
 # setting the auto-direct-node-routes flag.
-ipv4NativeRoutingCIDR: 10.66.65.0/24
+# ipv4NativeRoutingCIDR: 10.66.65.0/24
+# ipv4NativeRoutingCIDR: 10.66.130.0/24
+
 # ipv6NativeRoutingCIDR: "fd00::/64"
 
 
@@ -260,9 +262,9 @@ dnsProxy:
   # enableTransparentMode: true
 
 # # -- (string) Kubernetes service host - use "auto" for automatic lookup from the cluster-info ConfigMap
-# k8sServiceHost: auto
-k8sServiceHost: 10.96.0.1
-k8sServicePort: 443
+k8sServiceHost: auto
+# k8sServiceHost: 10.96.0.1
+# k8sServicePort: 443
 
 #############################################################################################################
 hubble:
@@ -375,11 +377,6 @@ maglev:
   # -- hashSeed is the cluster-wide base64 encoded seed for the hashing
   #     generated with: head -c12 /dev/urandom | base64 -w0
   hashSeed: TOrnUIrqFc4xkTMu
-
-
-
-
-
 #######################################################################
 # # Enable Prometheus metrics
 prometheus:

@@ -1,0 +1,79 @@
+# metadata:
+#   name: kafka-local
+#   annotations:
+#     storageclass.kubernetes.io/is-default-class: "false"
+# # indicates that this StorageClass does not support automatic provisioning
+# provisioner: kubernetes.io/no-provisioner
+# reclaimPolicy: Retain # default value is Delete
+# allowVolumeExpansion: true
+# # mountOptions:
+# # - discard # this might enable UNMAP / TRIM at the block storage layer
+# volumeBindingMode: WaitForFirstConsumer
+# # parameters:
+#   # NFS example:
+#   # ref: https://kubernetes.io/docs/concepts/storage/storage-classes/#nfs
+#   # server: nfs-server.example.com
+#   # path: /share
+#   # readOnly: "false"
+
+
+
+########################################
+# apiVersion: storage.k8s.io/v1
+# kind: StorageClass
+# metadata:
+#   name: longhorn-test
+# provisioner: driver.longhorn.io
+# allowVolumeExpansion: true
+# reclaimPolicy: Delete
+# volumeBindingMode: WaitForFirstConsumer
+# parameters:
+#   numberOfReplicas: "1"
+#   staleReplicaTimeout: "2880"
+#   fromBackup: ""
+#   fsType: "ext4"
+########################################
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: longhorn-volv-pvc
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn-static
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: volume-test
+  namespace: default
+spec:
+  nodeName: lorionstrm01vel
+  nodeSelector:
+    kubernetes.io/hostname: lorionstrm01vel
+  restartPolicy: Always
+  containers:
+  - name: volume-test
+    image: nginx:stable-alpine
+    imagePullPolicy: IfNotPresent
+    livenessProbe:
+      exec:
+        command:
+          - ls
+          - /tmp/hello/
+      initialDelaySeconds: 5
+      periodSeconds: 5
+    volumeMounts:
+    - name: volv
+      mountPath: /mnt/longhorn-1/
+    ports:
+    - containerPort: 80
+  volumes:
+  - name: volv
+    persistentVolumeClaim:
+      claimName: longhorn-volv-pvc
