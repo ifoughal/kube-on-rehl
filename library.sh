@@ -257,6 +257,7 @@ EOF
 }
 
 
+
 update_firewall() {
 
     CURRENT_NODE="$1"
@@ -443,3 +444,53 @@ update_firewall() {
 
 
 
+
+########################################################################
+
+
+# EXPERIMENTAL
+cilium_cleanup () {
+    # echo "📌 Unmounting and remounting BPF filesystem..."
+    # sudo umount /sys/fs/bpf 2>/dev/null
+    # sudo mount -t bpf bpf /sys/fs/bpf
+
+    # echo "📌 Removing Cilium BPF maps..."
+    # MAPS=$(sudo bpftool map show | awk '/cilium/ {print $1}')
+
+    # if [ -z "$MAPS" ]; then
+    #     echo "✅ No Cilium BPF maps found."
+    # else
+    #     for MAP_ID in $MAPS; do
+    #         echo "Deleting map ID $MAP_ID..."
+    #         sudo bpftool map delete id $MAP_ID || echo "⚠️ Failed to delete map $MAP_ID"
+    #     done
+    # fi
+
+    # echo "📌 Flushing IPVS tables..."
+    # sudo ipvsadm --clear
+
+    # echo "✅ Cleanup completed!"
+
+    echo "cleaning up cluster from previous cilium installs"
+    kubectl delete crd $(kubectl get crd | grep cilium | awk '{print $1}')  >/dev/null 2>&1 || true
+    for ns in $(kubectl get ns | grep cilium | awk '{print $1}'); do
+        kubectl delete ns $ns --grace-period=0 --force  >/dev/null 2>&1 || true
+    done
+    kubectl -n kube-system delete ds cilium --grace-period=0 --force  >/dev/null 2>&1 || true
+    kubectl -n kube-system delete ds cilium-operator --grace-period=0 --force  >/dev/null 2>&1 || true
+    kubectl delete configmap cilium-config -n kube-system  >/dev/null 2>&1 || true
+    for cr in $(kubectl get crd | grep cilium | awk '{print $1}'); do
+        kubectl get $cr -A --no-headers | awk '{print $2}' | xargs -I{} kubectl patch $cr {} --type=json -p '[{"op": "remove", "path": "/metadata/finalizers"}]'
+    done
+    kubectl delete networkpolicy --all -n kube-system
+    sudo iptables-save | grep -v CILIUM | sudo iptables-restore
+    kubectl -n kube-system delete ds -l k8s-app=cilium >/dev/null 2>&1 || true
+    kubectl -n kube-system delete ds -l io.cilium/app >/dev/null 2>&1 || true
+    kubectl -n kube-system delete ds -l name=cilium >/dev/null 2>&1 || true
+    kubectl -n kube-system delete ds -l app=cilium >/dev/null 2>&1 || true
+
+    kubectl -n kube-system delete deploy -l k8s-app=cilium >/dev/null 2>&1 || true
+    kubectl -n kube-system delete deploy -l io.cilium/app >/dev/null 2>&1 || true
+    kubectl -n kube-system delete deploy -l name=cilium >/dev/null 2>&1 || true
+    kubectl -n kube-system delete deploy -l app=cilium >/dev/null 2>&1 || true
+}
