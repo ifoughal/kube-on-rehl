@@ -92,81 +92,14 @@ fi
 
 
 
-configure_repos () {
-
-    CURRENT_HOST=$1
-    ssh -q $CURRENT_HOST """
-    set -e  # Exit on error
-
-    echo 'Configuring AlmaLinux 9 Repositories...'
-
-    # Define repo files
-    sudo tee /etc/yum.repos.d/almalinux.repo > /dev/null <<EOF
-[baseos]
-name=AlmaLinux 9 - BaseOS
-mirrorlist=https://mirrors.almalinux.org/mirrorlist/9/baseos
-enabled=1
-gpgcheck=1
-gpgkey=https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux
-
-[appstream]
-name=AlmaLinux 9 - AppStream
-mirrorlist=https://mirrors.almalinux.org/mirrorlist/9/appstream
-enabled=1
-gpgcheck=1
-gpgkey=https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux
-
-[crb]
-name=AlmaLinux 9 - CRB
-mirrorlist=https://mirrors.almalinux.org/mirrorlist/9/crb
-enabled=1
-gpgcheck=1
-gpgkey=https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux
-
-[extras]
-name=AlmaLinux 9 - Extras
-mirrorlist=https://mirrors.almalinux.org/mirrorlist/9/extras
-enabled=1
-gpgcheck=1
-gpgkey=https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux
-EOF
-
-    echo 'Fetching and importing AlmaLinux GPG keys...'
-    sudo curl -o /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux-9
-    sudo rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux
-
-    echo 'Enabling EPEL & CRB repositories...'
-    sudo dnf install -y epel-release epel-next-release
-    sudo dnf config-manager --set-enabled crb
-
-    echo 'Adding RPM Fusion Free & Non-Free Repositories...'
-    sudo dnf install -y https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm
-    # sudo dnf install -y https://mirrors.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-9.noarch.rpm
-
-    echo 'Cleaning up DNF cache and updating system...'
-    sudo dnf clean all
-    sudo dnf makecache
-    sudo dnf -y update
-    # echo 'Repositories configured successfully!'
-"""
-}
-
 
 ################################################################################################################################################################
 prerequisites_requirements_checks() {
     #########################################################################################
-    echo Check if the groups exist with the specified GIDs
     for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
         #####################################################################################
         NODE_VAR="NODE_$i"
         CURRENT_NODE=${!NODE_VAR}
-
-        #############################################################################
-        echo "Installing GO on node: $CURRENT_NODE"
-        install_go $CURRENT_NODE $GO_VERSION $TINYGO_VERSION
-        echo "Finished installing GO on node: $CURRENT_NODE"
-        echo end of test
-        exit 1
         #####################################################################################
         echo starting gid and uid configuration for node: $CURRENT_NODE
         echo Check if the visudo entry is appended for SUDO_GROUP: $SUDO_GROUP
@@ -426,14 +359,19 @@ EOF
         '
         echo "Finished installing containerD on node: $CURRENT_NODE"
         #############################################################################
-        echo "Enabling containerD NRI: on node: $CURRENT_NODE"
+        echo "Enabling containerD NRI with systemD and cgroups: on node: $CURRENT_NODE"
         ssh -q ${CURRENT_NODE} '
             CONFIG_FILE=/etc/containerd/config.toml
 
-            # Backup the original config file
+            #  pause version mismatch:
+            echo "Reseting containerD config to default."
+            containerd config default | sudo tee $CONFIG_FILE >/dev/null 2>&1
+
+
+            echo "Backup the original config file"
             cp -f -n $CONFIG_FILE ${CONFIG_FILE}.bak
 
-            # Use sed to edit the config file
+            echo "Configuring containerD for our cluster"
             sudo sed -i "/\[plugins.\"io.containerd.nri.v1.nri\"\]/,/^\[/{
                 s/disable = true/disable = false/;
                 s/disable_connections = true/disable_connections = false/;
@@ -444,8 +382,26 @@ EOF
                 s|socket_path = \".*\"|socket_path = \"/var/run/nri/nri.sock\"|;
             }" "$CONFIG_FILE"
 
+            sudo sed -i "s/SystemdCgroup = false/SystemdCgroup = true/g" "$CONFIG_FILE"
+            sudo sed -i "s|sandbox_image = \"registry.k8s.io/pause:3.8\"|sandbox_image = \"registry.k8s.io/pause:3.10\"|" "$CONFIG_FILE"
+
+
             sudo mkdir -p /etc/nri/conf.d /opt/nri/plugins
             sudo chown -R root:root /etc/nri /opt/nri
+
+            echo "Starting and enablingS containerD"
+            sudo systemctl enable containerd
+            sudo systemctl daemon-reload
+            sudo systemctl restart containerd
+
+            sleep 10
+            # Check if the containerd service is active
+            if systemctl is-active --quiet containerd.service; then
+                echo "ContainerD configuration updated successfully."
+            else
+                echo "ContainerD configuration failed, containerd service is not running..."
+                exit 1
+            fi
         '
         echo "Finished enabling containerD NRI: on node: $CURRENT_NODE"
         #############################################################################
@@ -453,13 +409,14 @@ EOF
         install_go $CURRENT_NODE $GO_VERSION $TINYGO_VERSION
         echo "Finished installing GO on node: $CURRENT_NODE"
         #############################################################################
-        # echo "Installing Helm on node: $CURRENT_NODE"
-        # install_helm $CURRENT_NODE
-        # echo "Finished installing Helm on node: $CURRENT_NODE"
-        # #############################################################################
-        # # configuration for containerd
-        # configure_containerD
-        # containerd containerd.io 1.7.25 bcc810d6
+        echo "Installing Helm on node: $CURRENT_NODE"
+        install_helm $CURRENT_NODE
+        add_bashcompletion $CURRENT_NODE helm
+        echo "Finished installing Helm on node: $CURRENT_NODE"
+        #############################################################################
+        echo "Configuring containerd for node: $CURRENT_NODE"
+        configure_containerD $CURRENT_NODE $HTTP_PROXY $HTTPS_PROXY $NO_PROXY $PAUSE_VERSION $SUDO_GROUP
+        echo "Finished configuration of containerd for node: $CURRENT_NODE"
         ################################################################
     done
 }

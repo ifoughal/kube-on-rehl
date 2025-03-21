@@ -1,32 +1,5 @@
 
 
-add_bashcompletion () {
-    # Parse the application name as a function argument
-    app="$1"
-
-    if [ -z "$app" ]; then
-        echo "Error: Application name must be provided."
-        return 1
-    fi
-
-    COMPLETION_FILE="/etc/bash_completion.d/$app"
-
-    for i in $(seq 1 "$NODES_COUNT"); do
-        NODE_VAR="NODE_$i"
-        CURRENT_NODE=${!NODE_VAR}
-
-        echo "Adding $app bash completion for node: ${CURRENT_NODE}"
-
-        # Assuming the application has a completion script available
-        ssh -q ${CURRENT_NODE} """
-            $app completion bash | sudo tee "$COMPLETION_FILE" >/dev/null
-        """
-        echo "$app bash completion added successfully."
-    done
-    source $COMPLETION_FILE
-}
-
-
 
 # Function to update or add the PATH variable in /etc/environment
 update_path() {
@@ -65,9 +38,6 @@ EOF
     # Print the updated PATH for verification
     echo "Updated PATH: $PATH"
 }
-
-
-
 
 
 install_go () {
@@ -125,25 +95,160 @@ install_go () {
     "
 }
 
-# if grep -q '^PATH=' \${file}; then
-#                     sudo sed -i "s\|^PATH=.*\|&:\${path}\|" \${file}
-#                 else
-#                     sudo sed -i "1i PATH=\$PATH:\${path}" \$file
-#                 fi
+
+configure_repos () {
+
+    CURRENT_HOST=$1
+    ssh -q $CURRENT_HOST """
+    set -e  # Exit on error
+
+    echo 'Configuring AlmaLinux 9 Repositories...'
+
+    # Define repo files
+    sudo tee /etc/yum.repos.d/almalinux.repo > /dev/null <<EOF
+[baseos]
+name=AlmaLinux 9 - BaseOS
+mirrorlist=https://mirrors.almalinux.org/mirrorlist/9/baseos
+enabled=1
+gpgcheck=1
+gpgkey=https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux
+
+[appstream]
+name=AlmaLinux 9 - AppStream
+mirrorlist=https://mirrors.almalinux.org/mirrorlist/9/appstream
+enabled=1
+gpgcheck=1
+gpgkey=https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux
+
+[crb]
+name=AlmaLinux 9 - CRB
+mirrorlist=https://mirrors.almalinux.org/mirrorlist/9/crb
+enabled=1
+gpgcheck=1
+gpgkey=https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux
+
+[extras]
+name=AlmaLinux 9 - Extras
+mirrorlist=https://mirrors.almalinux.org/mirrorlist/9/extras
+enabled=1
+gpgcheck=1
+gpgkey=https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux
+EOF
+
+    echo 'Fetching and importing AlmaLinux GPG keys...'
+    sudo curl -s -o /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux-9
+    sudo rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux
+
+    echo 'Enabling EPEL & CRB repositories...'
+    sudo dnf install -y epel-release epel-next-release
+    sudo dnf config-manager --set-enabled crb
+
+    echo 'Adding RPM Fusion Free & Non-Free Repositories...'
+    sudo dnf install -y https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm
+    # sudo dnf install -y https://mirrors.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-9.noarch.rpm
+
+    echo 'Cleaning up DNF cache and updating system...'
+    sudo dnf clean all
+    sudo dnf makecache
+    sudo dnf -y update
+    # echo 'Repositories configured successfully!'
+"""
+}
 
 
-# echo updating paths for GO
-# for file in "\${files[@]}"; do
-#     # update environemnt path:
-#     for path in "\${extra_paths[@]}"; do
-#         if grep -q '^PATH=' \${file}; then
-#             sudo sed -i "s|^PATH=.*|&:\${path}|" \${file}
-#         else
-#             sudo sed -i "1i PATH=\$PATH:\${path}" \$file
-#         fi
-#     done
-# done
-# echo Finished updating paths for GO
+add_bashcompletion () {
+    # Parse the application name as a function argument
+    CURRENT_NODE="$1"
+    app="$2"
+
+    if [ -z "$app" ]; then
+        echo "Error: Application name must be provided."
+        return 1
+    fi
+
+    COMPLETION_FILE="/etc/bash_completion.d/$app"
+
+    echo "Adding $app bash completion for node: ${CURRENT_NODE}"
+
+    # Assuming the application has a completion script available
+    ssh -q ${CURRENT_NODE} """
+        $app completion bash | sudo tee "$COMPLETION_FILE" >/dev/null
+    """
+    echo "$app bash completion added successfully."
+}
+
+
+install_helm () {
+    CURRENT_NODE=$1
+
+    ssh -q $CURRENT_NODE """
+        cd /tmp
+        curl -s https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        sudo ln -sf /usr/local/bin/helm /usr/bin/
+    """
+}
+
+
+configure_containerD () {
+    #############################################################################
+    # configure proxy:
+    CURRENT_NODE=$1
+    HTTP_PROXY=$2
+    HTTPS_PROXY=$3
+    NO_PROXY=$4
+    PAUSE_VERSION=$5
+    SUDO_GROUP=$6
+
+    ssh -q $CURRENT_NODE """
+        sudo mkdir -p /etc/systemd/system/containerd.service.d
+
+        cat <<EOF | sudo tee /etc/systemd/system/containerd.service.d/http-proxy.conf
+[Service]
+    Environment=\"HTTP_PROXY=$HTTP_PROXY\"
+    Environment=\"HTTPS_PROXY=$HTTPS_PROXY\"
+    Environment=\"NO_PROXY=$NO_PROXY\"
+EOF
+    #############################################################################
+    # ensure changes have been applied
+    if sudo containerd config dump | grep -q 'SystemdCgroup = true'; then
+        echo Cgroups configured accordingly for containerD
+    else
+        echo Failed to configure Cgroups configured for containerD
+        exit 1
+    fi
+
+    if sudo containerd config dump | grep -q 'sandbox_image = \"registry.k8s.io/pause:${PAUSE_VERSION}\"'; then
+        echo "set sandbox_image accordingly to pause version ${PAUSE_VERSION}"
+    else
+        echo "Failed to set sandbox_image to pause version ${PAUSE_VERSION}"
+        exit 1
+    fi
+    #############################################################################
+    sudo setfacl -m g:${SUDO_GROUP}:rw /var/run/containerd/containerd.sock
+    sudo setfacl -m g:wheel:rw /var/run/containerd/containerd.sock
+
+
+    """
+
+
+
+
+    # sudo systemctl enable containerd
+    # sudo systemctl daemon-reload
+    # sudo systemctl restart containerd
+
+    # sleep 10
+    # # Check if the containerd service is active
+    # if systemctl is-active --quiet containerd.service; then
+    #     echo "ContainerD configuration updated successfully."
+    # else
+    #     echo "ContainerD configuration failed, containerd service is not running..."
+    #     exit 1
+    # fi
+
+    # # check containerd version:
+    # containerd --version
+}
 
 
 update_firewall() {
