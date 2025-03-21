@@ -139,19 +139,25 @@ EOF
     sudo curl -s -o /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux-9
     sudo rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux
 
+    echo 'Cleaning up DNF cache and updating system...'
+    sudo dnf clean all
+    sudo dnf makecache
+    sudo dnf -y update
+
     echo 'Enabling EPEL & CRB repositories...'
-    sudo dnf install -y epel-release epel-next-release
+    sudo dnf install -y epel-release
     sudo dnf config-manager --set-enabled crb
 
     echo 'Adding RPM Fusion Free & Non-Free Repositories...'
+    # OSS repos:
     sudo dnf install -y https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm
-    # sudo dnf install -y https://mirrors.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-9.noarch.rpm
+    # Proprietary repos
+    sudo dnf install -y https://mirrors.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-9.noarch.rpm
 
     echo 'Cleaning up DNF cache and updating system...'
     sudo dnf clean all
     sudo dnf makecache
     sudo dnf -y update
-    # echo 'Repositories configured successfully!'
 """
 }
 
