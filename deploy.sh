@@ -745,7 +745,6 @@ join_cluster () {
         # echo "updating certs"
         # ssh -q ${CURRENT_NODE} "sudo update-ca-trust"
 
-
         echo "initiating cluster join for node: ${CURRENT_NODE}"
         ssh -q ${CURRENT_NODE} """
             echo "executing command: $JOIN_COMMAND_WORKERS"
@@ -758,9 +757,7 @@ join_cluster () {
 
 
 ################################################################################################################################################################
-# deploy_hostsfile
-
-
+deploy_hostsfile
 
 if [ "$PREREQUISITES" = true ]; then
     echo "Executing cluster prerequisites installation and checks"
@@ -771,13 +768,13 @@ else
 fi
 
 
-# install_kubetools
+install_kubetools
 
 
-# install_cluster
+install_cluster
 
 
-# install_cilium
+install_cilium
 
 
 join_cluster
