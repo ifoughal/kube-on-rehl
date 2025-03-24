@@ -9,6 +9,7 @@ DRY_RUN=false
 PREREQUISITES=false
 NODES_FILE=hosts_file.yaml
 HOSTSFILE_PATH="/etc/hosts"
+################################################################################################################################################################
 
 # Recommended kernel version
 recommended_rehl_version="4.18"
@@ -242,7 +243,71 @@ EOF
         # sudo make V=1
 
 
+        ################################################################################################################################################################
+        # Retrieve AlmaLinux version
+        # Retrieve AlmaLinux version
+        ALMALINUX_VERSION=$(grep -oP '(?<=VERSION_ID=")[^"]+' /etc/os-release)
 
+        # Retrieve Kernel version
+        KERNEL_VERSION=$(uname -r | sed 's/\.[^.]*$//')
+
+        # Construct the URL
+        base_url="https://repo.almalinux.org/vault"
+        url="${base_url}/${ALMALINUX_VERSION}/BaseOS/Source/Packages/kernel-${KERNEL_VERSION}.src.rpm"
+
+        # Check if the URL exists
+        if curl --output /dev/null --silent --head --fail "$url"; then
+            # Download the kernel source RPM
+            curl -O ${url}
+            echo "Downloaded kernel source RPM from ${url}"
+
+
+            # TODO, check on kernel compilation
+
+            echo "Install mock if not already installed"
+            sudo useradd mockbuild &> /dev/null
+            sudo dnf install mock -y
+
+
+            echo "Set the RPMBUILD environment variable to /tmp"
+            export RPMBUILD_DIR=/mnt/longhorn-1/rpmbuild
+
+            echo "Create the necessary directories"
+            mkdir -p ${RPMBUILD_DIR}/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+
+
+            # echo "Move the downloaded tarball to the SOURCES directory"
+            # mv linux-${KERNEL_VERSION}.tar.xz ${RPMBUILD_DIR}/SOURCES/
+
+
+            echo "Install the kernel source RPM to: ${RPMBUILD_DIR}"
+            # rpm -ivh kernel-${KERNEL_VERSION}.src.rpm
+            rpm -ivh --define "_topdir ${RPMBUILD_DIR}" kernel-${KERNEL_VERSION}.src.rpm
+
+            echo "Build the kernel using rpmbuild"
+            sudo dnf builddep ${RPMBUILD_DIR}/SPECS/kernel.spec -y
+
+
+            rpmbuild --define "_topdir ${RPMBUILD_DIR}" -ba ${RPMBUILD_DIR}/SPECS/kernel.spec
+
+
+
+
+
+            # mock -r almalinux-9-x86_64 --rebuild ~/rpmbuild/SRPMS/kernel-*.src.rpm
+            mock -r almalinux-9-x86_64 --rebuild  ${RPMBUILD_DIR}/SRPMS/kernel-*.src.rpm
+
+
+
+            echo "Kernel rebuild process completed."
+
+
+        else
+            echo "Error: The kernel source RPM for version ${KERNEL_VERSION} is not available at ${url}"
+        fi
+
+
+        ################################################################################################################################################################
 
         ssh  -q ${CURRENT_NODE} """
             # Check if bpftool is installed
@@ -756,25 +821,318 @@ join_cluster () {
 
 
 
+install_longhorn_prerequisites() {
+    ##################################################################
+    echo "installing required utilities for longhorn"
+    for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
+        NODE_VAR="NODE_$i"
+        CURRENT_NODE=${!NODE_VAR}
+
+        echo "installing longhorn prerequisites on node: ${CURRENT_NODE}"
+        ssh -q ${CURRENT_NODE} """
+            sudo dnf update >/dev/null 2>&1
+            sudo dnf install curl jq nfs-utils cryptsetup \
+                device-mapper iscsi-initiator-utils -y >/dev/null 2>&1
+        """
+    done
+    echo "Finished installing required utilities for longhorn"
+    ##################################################################
+    echo "Creating namespace: ${LONGHORN_NS} for longhorn"
+    kubectl create ns $LONGHORN_NS >/dev/null 2>&1 || true
+    #################################################################
+    echo "install NFS/iSCSI on the cluster"
+    # REF: https://github.com/longhorn/longhorn/tree/master/deploy/prerequisite
+    #
+    ERROR_RAISED=0
+    for service in "nfs" "iscsi"; do
+        echo "Started installation of ${service} on all nodes"
+        kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/${LONGHORN_VERSION}/deploy/prerequisite/longhorn-${service}-installation.yaml
+
+        upper_service=$(echo ${service} | awk '{print toupper($0)}')
+        TIMEOUT=180  # 3 minutes in seconds
+        START_TIME=$(date +%s)
+        while true; do
+            # Wait for the pods to be in Running state
+            echo "Waiting for Longhorn ${upper_service} installation pods to be in Running state..."
+            sleep 10
+
+            PODS=$(kubectl -n $LONGHORN_NS get pod | grep longhorn-${service}-installation)
+            RUNNING_COUNT=$(echo "$PODS" | grep -c "Running")
+            TOTAL_COUNT=$(echo "$PODS" | wc -l)
+
+            echo "Running Longhorn ${upper_service} install containers: ${RUNNING_COUNT}/${TOTAL_COUNT}"
+            if [[ $RUNNING_COUNT -eq $TOTAL_COUNT ]]; then
+                break
+            fi
+
+            CURRENT_TIME=$(date +%s)
+            ELAPSED_TIME=$((CURRENT_TIME - START_TIME))
+
+            if [[ $ELAPSED_TIME -ge $TIMEOUT ]]; then
+                echo "Timeout reached. Exiting script."
+                exit 1
+            fi
+        done
+
+
+        current_retry=0
+        max_retries=3
+        while true; do
+            current_retry=$((current_retry + 1))
+            echo "Checking Longhorn ${upper_service} setup completion... try N: ${current_retry}"
+            all_pods_up=1
+            # Get the logs of the service installation container
+            for POD_NAME in $(kubectl -n $LONGHORN_NS get pod | grep longhorn-${service}-installation | awk '{print $1}'); do
+                LOGS=$(kubectl -n $LONGHORN_NS logs $POD_NAME -c ${service}-installation)
+                if echo "$LOGS" | grep -q "${service} install successfully"; then
+                    echo "Longhorn ${upper_service} installation successful in pod $POD_NAME"
+                else
+                    echo "Longhorn ${upper_service} installation failed or incomplete in pod $POD_NAME"
+                    all_pods_up=0
+                fi
+            done
+
+            if [ $all_pods_up -eq 1 ]; then
+                break
+            fi
+            sleep 30
+            if [ $current_retry -eq $max_retries ]; then
+                echo "Reached maximum retry count: ${max_retries}. Exiting."
+                ERROR_RAISED=1
+                break
+            fi
+        done
+        kubectl delete -f https://raw.githubusercontent.com/longhorn/longhorn/${LONGHORN_VERSION}/deploy/prerequisite/longhorn-${service}-installation.yaml
+    done
+
+    if [ $ERROR_RAISED -eq 1 ]; then
+        exit 1
+    fi
+    echo "Finished installing NFS/iSCSI on the cluster."
+    ##################################################################
+    for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
+        NODE_VAR="NODE_$i"
+        CURRENT_NODE=${!NODE_VAR}
+        ##################################################################
+        echo "Checking if the containerd service is active on node: ${CURRENT_NODE}"
+        ssh -q ${CURRENT_NODE} '
+            if systemctl is-active --quiet iscsid; then
+                echo "iscsi deployed successfully."
+            else
+                echo "iscsi service is not running..."
+                exit 1
+            fi
+        '
+        echo "Finished checking if the containerd service is active on node: ${CURRENT_NODE}"
+        ##################################################################
+        echo "Ensure kernel support for NFS v4.1/v4.2: on node: ${CURRENT_NODE}"
+        ssh -q ${CURRENT_NODE} '
+            for ver in 1 2; do
+                if $(cat /boot/config-`uname -r`| grep -q "CONFIG_NFS_V4_${ver}=y"); then
+                    echo NFS v4.${ver} is supported
+                else
+                    echo ERROR: NFS v4.${ver} is not supported
+                    exit $ver
+                fi
+            done
+        '
+        ##################################################################
+
+        echo "enabling iscsi_tcp & dm_crypt on node: ${CURRENT_NODE}"
+        # Check if the module is already in the file
+        ssh -q ${CURRENT_NODE} '
+            # Ensure the iscsi_tcp module loads automatically on boot
+            MODULE_FILE="/etc/modules"
+            MODULE_NAME="iscsi_tcp"
+
+            if ! grep -q "^${MODULE_NAME}$" ${MODULE_FILE}; then
+                echo "${MODULE_NAME}" | sudo tee -a ${MODULE_FILE}
+                echo "Added ${MODULE_NAME} to ${MODULE_FILE}"
+            else
+                echo "${MODULE_NAME} is already present in ${MODULE_FILE}"
+            fi
+
+            # Load the iscsi_tcp module
+            sudo modprobe iscsi_tcp
+            echo "Loaded ${MODULE_NAME} module"
+
+            # Enable dm_crypt
+            sudo modprobe dm_crypt
+            echo "Loaded dm_crypt module"
+        '
+        echo "Finished enabling iscsi_tcp & dm_crypt on node: ${CURRENT_NODE}"
+        ##################################################################
+        echo "Started installing Longhorn-cli on node: ${CURRENT_NODE}"
+        ssh -q ${CURRENT_NODE} """
+            set -e  # Exit on error
+            set -o pipefail  # Fail if any piped command fails
+            if command -v longhornctl &> /dev/null; then
+                echo "longhornctl not found. Installing..."
+                CLI_ARCH=amd64
+                if [ "\$\(uname -m\)" = "aarch64" ]; then CLI_ARCH=arm64; fi
+                cd /tmp
+
+                # curl -sSfL -o longhornctl https://github.com/longhorn/cli/releases/download/\${LONGHORN_VERSION}/longhornctl-linux-\${CLI_ARCH}
+
+                url=https://github.com/longhorn/cli/releases/download/${LONGHORN_VERSION}/longhornctl-linux-\${CLI_ARCH}
+
+                # Check if the URL exists
+                if curl --output /dev/null --silent --head --fail \$url; then
+                    echo Downloading longhornctl from source
+                    curl -sSfL -o /tmp/longhornctl \${url}
+
+                    echo Moving longhornctl to /usr/local/bin
+                    sudo mv /tmp/longhornctl /usr/local/bin/
+
+                    echo Making longhornctl executable
+                    sudo chmod +x /usr/local/bin/longhornctl
+
+                    echo Creating symbolic link to /usr/bin
+                    sudo ln -sf /usr/local/bin/longhornctl /usr/bin
+                    echo longhornctl installed successfully.
+                else
+                    echo failed to download longhornctl from url: \${url}
+                    exit 1
+                fi
+            else
+                echo "longhornctl is already installed."
+            fi
+        """
+        echo "Finished installing Longhorn-cli on node: ${CURRENT_NODE}"
+
+    done
+    ##################################################################
+    echo "Running the environment check script on the cluster..."
+    url=https://raw.githubusercontent.com/longhorn/longhorn/${LONGHORN_VERSION}/scripts/environment_check.sh
+
+    if curl --output /dev/null --silent --head --fail $url; then
+        curl -sSfL -o /tmp/environment_check.sh ${url}
+        sudo chmod +x /tmp/environment_check.sh
+
+        OUTPUT=$(/tmp/environment_check.sh)
+
+        # Print the output
+        echo "$OUTPUT"
+        # Check for errors in the output
+        if echo "$OUTPUT" | grep -q '\[ERROR\]'; then
+            echo "Errors found in the environment check:"
+            echo "$OUTPUT" | grep '\[ERROR\]'
+            exit
+        else
+            echo "No errors found in the environment check."
+        fi
+    else
+        echo failed to download environment_check from url: ${url}
+        exit 1
+    fi
+    echo "Finished Running the environment check script on the cluster..."
+    ##################################################################
+    ##################################################################
+    echo "Check the prerequisites and configurations for Longhorn:"
+    echo "currently preflight doesnt support almalinux"
+    #  so if on almalinx; run os-camo o, alll nodes prior to check preflight
+    for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
+        NODE_VAR="NODE_$i"
+        CURRENT_NODE=${!NODE_VAR}
+
+        NODE_VAR="NODE_$i"
+        CURRENT_NODE=${!NODE_VAR}
+        echo "sending camo script to target node: ${CURRENT_NODE}"
+        scp -q ./longhorn/os-camo.sh ${CURRENT_NODE}:/tmp/
+        echo "Executing camofoulage on node: ${CURRENT_NODE}"
+        ssh -q ${CURRENT_NODE} """
+            sudo chmod +x /tmp/os-camo.sh
+            /tmp/os-camo.sh camo
+        """
+    done
+    ##################################################################
+    OUTPUT=$(longhornctl check preflight 2>&1)
+    echo "Started checking the longhorn preflight pre installation"
+    kubectl delete -n default daemonsets.apps longhorn-preflight-checker >/dev/null 2>&1 || true
+    # Check for errors in the output
+    if echo "$OUTPUT" | grep -q 'level\=error'; then
+        echo "Errors found in the environment check:"
+        echo "$OUTPUT" | grep 'level\=error'
+        exit 1
+    else
+        echo "No errors found during the longhornctl preflight environment check."
+    fi
+    echo "Finished checking the preflight of longhorn"
+    ##################################################################
+    echo "Installing the preflight of longhorn"
+    OUTPUT=$(longhornctl install preflight 2>&1)
+    kubectl delete -n default daemonsets.apps longhorn-preflight-checker >/dev/null 2>&1 || true
+    # Print the output
+    # Check for errors in the output
+    if echo "$OUTPUT" | grep -q 'level\=error'; then
+        echo "Errors found during the in longhornctl install preflight"
+        echo "$OUTPUT" | grep 'level\=error'
+        exit 1
+    else
+        echo "No errors found in the environment check."
+    fi
+    echo "Finished installing the preflight of longhorn"
+    ##################################################################
+    # check the preflight again after install:
+    echo "Started checking the longhorn preflight post installation"
+    OUTPUT=$(longhornctl check preflight 2>&1)
+    kubectl delete -n default daemonsets.apps longhorn-preflight-checker >/dev/null 2>&1 || true
+    # Print the output
+    # Check for errors in the output
+    if echo "$OUTPUT" | grep -q 'level\=error'; then
+        echo "Errors found in the environment check:"
+        echo "$OUTPUT" | grep 'level\=error'
+        exit 1
+    else
+        echo "No errors found during the longhornctl preflight environment check."
+    fi
+    echo "Finished checking the longhorn preflight post installation"
+    ##################################################################
+    # revert camo:
+    for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
+        NODE_VAR="NODE_$i"
+        CURRENT_NODE=${!NODE_VAR}
+
+        echo "Resetting camofoulage on node: ${CURRENT_NODE}"
+        ssh -q ${CURRENT_NODE} /tmp/os-camo.sh revert
+    done
+    #################################################################
+}
+
+
+
+# install_longhorn () {
+#     helm repo add longhorn https://charts.longhorn.io
+#     helm repo update
+
+#     helm install longhorn longhorn/longhorn \
+#         --namespace longhorn-system --create-namespace \
+#         --version $LONGHORN_VERSION -f values.yaml
+
+# }
 ################################################################################################################################################################
-deploy_hostsfile
+# deploy_hostsfile
 
-if [ "$PREREQUISITES" = true ]; then
-    echo "Executing cluster prerequisites installation and checks"
-    # prerequisites_requirements
-    install_cilium_prerequisites
-else
-    echo "Cluster prerequisites have been skipped"
-fi
-
-
-install_kubetools
+# if [ "$PREREQUISITES" = true ]; then
+#     echo "Executing cluster prerequisites installation and checks"
+#     # prerequisites_requirements
+#     install_cilium_prerequisites
+# else
+#     echo "Cluster prerequisites have been skipped"
+# fi
 
 
-install_cluster
+# install_kubetools
 
 
-install_cilium
+# install_cluster
 
 
-join_cluster
+# install_cilium
+
+# join_cluster
+################################################################################################################################################################
+# in dev:
+
+install_longhorn_prerequisites
+
