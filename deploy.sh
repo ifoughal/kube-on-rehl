@@ -246,65 +246,65 @@ EOF
         ################################################################################################################################################################
         # Retrieve AlmaLinux version
         # Retrieve AlmaLinux version
-        ALMALINUX_VERSION=$(grep -oP '(?<=VERSION_ID=")[^"]+' /etc/os-release)
+        # ALMALINUX_VERSION=$(grep -oP '(?<=VERSION_ID=")[^"]+' /etc/os-release)
 
-        # Retrieve Kernel version
-        KERNEL_VERSION=$(uname -r | sed 's/\.[^.]*$//')
+        # # Retrieve Kernel version
+        # KERNEL_VERSION=$(uname -r | sed 's/\.[^.]*$//')
 
-        # Construct the URL
-        base_url="https://repo.almalinux.org/vault"
-        url="${base_url}/${ALMALINUX_VERSION}/BaseOS/Source/Packages/kernel-${KERNEL_VERSION}.src.rpm"
+        # # Construct the URL
+        # base_url="https://repo.almalinux.org/vault"
+        # url="${base_url}/${ALMALINUX_VERSION}/BaseOS/Source/Packages/kernel-${KERNEL_VERSION}.src.rpm"
 
-        # Check if the URL exists
-        if curl --output /dev/null --silent --head --fail "$url"; then
-            # Download the kernel source RPM
-            curl -O ${url}
-            echo "Downloaded kernel source RPM from ${url}"
-
-
-            # TODO, check on kernel compilation
-
-            echo "Install mock if not already installed"
-            sudo useradd mockbuild &> /dev/null
-            sudo dnf install mock -y
+        # # Check if the URL exists
+        # if curl --output /dev/null --silent --head --fail "$url"; then
+        #     # Download the kernel source RPM
+        #     curl -O ${url}
+        #     echo "Downloaded kernel source RPM from ${url}"
 
 
-            echo "Set the RPMBUILD environment variable to /tmp"
-            export RPMBUILD_DIR=/mnt/longhorn-1/rpmbuild
+        #     # TODO, check on kernel compilation
 
-            echo "Create the necessary directories"
-            mkdir -p ${RPMBUILD_DIR}/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-
-
-            # echo "Move the downloaded tarball to the SOURCES directory"
-            # mv linux-${KERNEL_VERSION}.tar.xz ${RPMBUILD_DIR}/SOURCES/
+        #     echo "Install mock if not already installed"
+        #     sudo useradd mockbuild &> /dev/null
+        #     sudo dnf install mock -y
 
 
-            echo "Install the kernel source RPM to: ${RPMBUILD_DIR}"
-            # rpm -ivh kernel-${KERNEL_VERSION}.src.rpm
-            rpm -ivh --define "_topdir ${RPMBUILD_DIR}" kernel-${KERNEL_VERSION}.src.rpm
+        #     echo "Set the RPMBUILD environment variable to /tmp"
+        #     export RPMBUILD_DIR=/mnt/longhorn-1/rpmbuild
 
-            echo "Build the kernel using rpmbuild"
-            sudo dnf builddep ${RPMBUILD_DIR}/SPECS/kernel.spec -y
-
-
-            rpmbuild --define "_topdir ${RPMBUILD_DIR}" -ba ${RPMBUILD_DIR}/SPECS/kernel.spec
+        #     echo "Create the necessary directories"
+        #     mkdir -p ${RPMBUILD_DIR}/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
 
 
+        #     # echo "Move the downloaded tarball to the SOURCES directory"
+        #     # mv linux-${KERNEL_VERSION}.tar.xz ${RPMBUILD_DIR}/SOURCES/
+
+
+        #     echo "Install the kernel source RPM to: ${RPMBUILD_DIR}"
+        #     # rpm -ivh kernel-${KERNEL_VERSION}.src.rpm
+        #     rpm -ivh --define "_topdir ${RPMBUILD_DIR}" kernel-${KERNEL_VERSION}.src.rpm
+
+        #     echo "Build the kernel using rpmbuild"
+        #     sudo dnf builddep ${RPMBUILD_DIR}/SPECS/kernel.spec -y
+
+
+        #     rpmbuild --define "_topdir ${RPMBUILD_DIR}" -ba ${RPMBUILD_DIR}/SPECS/kernel.spec
 
 
 
-            # mock -r almalinux-9-x86_64 --rebuild ~/rpmbuild/SRPMS/kernel-*.src.rpm
-            mock -r almalinux-9-x86_64 --rebuild  ${RPMBUILD_DIR}/SRPMS/kernel-*.src.rpm
+
+
+        #     # mock -r almalinux-9-x86_64 --rebuild ~/rpmbuild/SRPMS/kernel-*.src.rpm
+        #     mock -r almalinux-9-x86_64 --rebuild  ${RPMBUILD_DIR}/SRPMS/kernel-*.src.rpm
 
 
 
-            echo "Kernel rebuild process completed."
+        #     echo "Kernel rebuild process completed."
 
 
-        else
-            echo "Error: The kernel source RPM for version ${KERNEL_VERSION} is not available at ${url}"
-        fi
+        # else
+        #     echo "Error: The kernel source RPM for version ${KERNEL_VERSION} is not available at ${url}"
+        # fi
 
 
         ################################################################################################################################################################
@@ -492,6 +492,10 @@ EOF
 
 ########################################################################
 install_kubetools () {
+    #########################################################
+    # cilium must be reinstalled if kubelet is reinstalled
+    sudo cilium uninstall --wait  >/dev/null 2>&1 || true
+    #########################################################
     # Fetch Latest version from kube release....
     if [ "$(echo "$FETCH_LATEST_KUBE" | tr '[:upper:]' '[:lower:]')" = "true" ]; then
         echo "Fetching latest kuberentes version from stable-1..."
@@ -628,12 +632,18 @@ deploy_hostsfile () {
 
 
 install_cluster () {
+    #########################################################
+    # cilium must be reinstalled if kubelet is reinstalled
+    sudo cilium uninstall --wait  >/dev/null 2>&1 || true
+    #########################################################
     # cleaning prior deployments:
     for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
         NODE_VAR="NODE_$i"
         CURRENT_NODE=${!NODE_VAR}
+        ################################################################################################################
         echo "Cleaning up k8s prior installs for node: ${CURRENT_NODE}"
         ssh -q ${CURRENT_NODE} """
+            sudo cilium uninstall --wait
             sudo kubeadm reset -f
             sudo rm -rf $HOME/.kube/* /root/.kube/* /etc/cni/net.d/*  /etc/kubernetes/pki/*
         """
@@ -728,8 +738,6 @@ install_cilium () {
             sha256sum --check cilium-linux-\${CLI_ARCH}.tar.gz.sha256sum
             sudo tar xzvfC cilium-linux-\${CLI_ARCH}.tar.gz /usr/local/bin
             rm cilium-linux-*
-
-
         """
         add_bashcompletion ${CURRENT_NODE}  cilium
         echo "Finished installing cilium cli"
@@ -751,7 +759,8 @@ install_cilium () {
     cilium install --version $CILIUM_VERSION \
         --set ipv4NativeRoutingCIDR=${CONTROLPLANE_SUBNET} \
         --set k8sServiceHost=auto \
-        --values ./cilium/values.yaml # \
+        --values ./cilium/values.yaml \
+        --set maglev.hashSeed=$(head -c12 /dev/urandom | base64 -w0)
         # TODO add nodes count here....
         # --set k8sServiceHost=10.96.0.1 \
         # --set k8sServicePort=443 \
@@ -773,6 +782,9 @@ install_cilium () {
     ################################################################################################################
     sleep 30
     ################################################################################################################
+    kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator
+    sleep 50
+    kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator
     echo "waiting for cilium to go up"
     cilium status --wait >/dev/null 2>&1
     ################################################################################################################
@@ -790,7 +802,8 @@ join_cluster () {
 
 
 
-    for i in $(seq "2" "$((2 + NODES_COUNT - 1))"); do
+    # for i in $(seq "2" "$((2 + NODES_COUNT - 1))"); do
+    for i in $(seq 2 "$((2 + NODES_COUNT - 2))"); do
         NODE_VAR="NODE_$i"
         CURRENT_NODE=${!NODE_VAR}
 
@@ -798,10 +811,10 @@ join_cluster () {
 
         echo "sending cluster config to target node: ${CURRENT_NODE}"
         sudo cat /etc/kubernetes/admin.conf | ssh -q ${CURRENT_NODE} """
-            sudo tee /etc/kubernetes/admin.conf > /dev/null
+            sudo tee -p /etc/kubernetes/admin.conf > /dev/null
             sudo chmod 600 /etc/kubernetes/admin.conf
             mkdir -p $HOME/.kube
-            sudo cp -f -i /etc/kubernetes/admin.conf $HOME/.kube/config
+            sudo cp -f -i /etc/kubernetes/admin.conf $HOME/.kube/config >/dev/null 2>&1
             sudo chown $(id -u):$(id -g) $HOME/.kube/config
         """
 
@@ -812,6 +825,7 @@ join_cluster () {
 
         echo "initiating cluster join for node: ${CURRENT_NODE}"
         ssh -q ${CURRENT_NODE} """
+            sudo rm -rf /etc/kubernetes/kubelet.conf /etc/kubernetes/pki/*
             echo "executing command: $JOIN_COMMAND_WORKERS"
             eval sudo ${JOIN_COMMAND_WORKERS}
         """
@@ -1101,25 +1115,66 @@ install_longhorn_prerequisites() {
 
 
 
-# install_longhorn () {
-#     helm repo add longhorn https://charts.longhorn.io
-#     helm repo update
+install_longhorn () {
+    ##################################################################
+    echo "adding longhorn repo to Helm"
+    helm repo add longhorn https://charts.longhorn.io --force-update
+    helm repo update
+    ##################################################################
+    # TODO on all nodes:
+    # for i in 1 2 3; do
+    #     NODE_VAR="NODE_$i"
+    #     CURRENT_NODE=${!NODE_VAR}
+    #     echo "Resetting volumes on node: ${CURRENT_NODE}"
+    #     ssh -q ${CURRENT_NODE} "sudo rm -rf /mnt/longhorn-1/*"
+    # done
+    ##################################################################
+    echo "Started deploying longhorn in ns $LONGHORN_NS"
+    output=$(helm install longhorn longhorn/longhorn  \
+        --namespace $LONGHORN_NS  \
+        --version ${LONGHORN_VERSION} -f ./longhorn/values.yaml 2>&1)
 
-#     helm install longhorn longhorn/longhorn \
-#         --namespace longhorn-system --create-namespace \
-#         --version $LONGHORN_VERSION -f values.yaml
+    # Check if the Helm install command was successful
+    if [ ! $? -eq 0 ]; then
+        echo -e "Failed to install Longhorn:\n\t${output}"
+        exit 1
+    fi
+    echo "Finished deploying longhorn in ns $LONGHORN_NS"
+    ##################################################################
+    # Wait for the pods to be running
+    echo "Waiting for Longhorn pods to be running..."
+    sleep 70  # approximate time for longhorn to boostrap
+    current_retry=0
+    max_retries=3
+    while true; do
+        current_retry=$((current_retry + 1))
+        if [ $current_retry -gt $max_retries ]; then
+            echo "Reached maximum retry count. Exiting."
+            exit 1
+        fi
+        echo "Checking Longhorn chart deployment completion... try N: $current_retry"
+        PODS=$(kubectl -n $LONGHORN_NS get pods --no-headers | grep -v 'Running\|Completed')
+        if [ -z "$PODS" ]; then
+            echo "All Longhorn pods are running."
+            break
+        else
+            echo "Waiting for pods to be ready..."
+        fi
+        sleep 60
+    done
+    ##################################################################
+}
 
-# }
 ################################################################################################################################################################
 # deploy_hostsfile
 
-# if [ "$PREREQUISITES" = true ]; then
-#     echo "Executing cluster prerequisites installation and checks"
-#     # prerequisites_requirements
-#     install_cilium_prerequisites
-# else
-#     echo "Cluster prerequisites have been skipped"
-# fi
+# # if [ "$PREREQUISITES" = true ]; then
+# #     echo "Executing cluster prerequisites installation and checks"
+# #     # prerequisites_requirements
+# #     install_cilium_prerequisites
+# # else
+# #     echo "Cluster prerequisites have been skipped"
+# # fi
 
 
 # install_kubetools
@@ -1130,9 +1185,11 @@ install_longhorn_prerequisites() {
 
 # install_cilium
 
-# join_cluster
+join_cluster
 ################################################################################################################################################################
 # in dev:
 
 install_longhorn_prerequisites
+
+install_longhorn
 

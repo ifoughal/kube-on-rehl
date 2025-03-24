@@ -376,7 +376,7 @@ maglev:
   tableSize: 65521
   # -- hashSeed is the cluster-wide base64 encoded seed for the hashing
   #     generated with: head -c12 /dev/urandom | base64 -w0
-  hashSeed: TOrnUIrqFc4xkTMu
+  # hashSeed: TOrnUIrqFc4xkTMu
 #######################################################################
 # # Enable Prometheus metrics
 prometheus:
