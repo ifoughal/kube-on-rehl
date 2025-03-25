@@ -5,6 +5,7 @@ debug:
 nodeinit:
   # -- Enable the node initialization DaemonSet
   enabled: false
+
 # nodePort.enabled is not needed if this is set to true.
 kubeProxyReplacement: true
 
@@ -23,6 +24,16 @@ ipv4:
  enabled: true
 ipv6:
  enabled: false
+
+#############################################################################################################
+gatewayAPI:
+  enabled: true
+  gatewayClass:
+    # -- Enable creation of GatewayClass resource
+    # The default value is 'auto' which decides according to presence of gateway.networking.k8s.io/v1/GatewayClass in the cluster.
+    # Other possible values are 'true' and 'false', which will either always or never create the GatewayClass, respectively.
+    create: 'true'
+# enabling gatewayAPI autoamtically enables and configured envoyConfig (envoyConfig.enabled=true)
 #############################################################################################################
 # mandatory for L4/L7 LB: (no tunelling)
 routingMode: native
@@ -41,18 +52,15 @@ routingMode: native
 # https://docs.cilium.io/en/stable/network/servicemesh/ingress/
 # l7Proxy: true
 # enableXTSocketFallback: false
-
-envoyConfig:
-  # -- Enable CiliumEnvoyConfig CRD
-  # CiliumEnvoyConfig CRD can also be implicitly enabled by other options.
-  enabled: false
-
+#############################################################################################################
 # we need to expose the LB to the host network
 # REF: https://docs.cilium.io/en/stable/network/servicemesh/ingress/#gs-ingress-host-network-mode
 # REF: https://github.com/kubernetes/ingress-nginx/blob/main/docs/deploy/baremetal.md
 ingressController:
-  enabled: true
-  default: true
+  # enabled: true
+  # default: true
+  enabled: false
+  default: false
   loadbalancerMode: dedicated  # loadbalancer per service to avoid paths collision
   enforceHttps: false
   service:
