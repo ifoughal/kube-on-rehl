@@ -16,9 +16,11 @@ recommended_rehl_version="4.18"
 ################################################################################################################################################################
 # reading .env file
 . .env
+# source .env
 ################################################################################################################################################################
 # import library function
 . library.sh
+# source library.sh
 ################################################################################################################################################################
 CONTROLPLANE_ADDRESS=$(eval ip -o -4 addr show $CONTROLPLANE_INGRESS_INTER | awk '{print $4}' | cut -d/ -f1)  # 192.168.66.129
 CONTROLPLANE_SUBNET=$(echo $CONTROLPLANE_ADDRESS | awk -F. '{print $1"."$2"."$3".0/24"}')
@@ -311,7 +313,7 @@ EOF
             # Check if bpftool is installed
             if ! command -v bpftool &> /dev/null; then
                 echo "bpftool not found. Installing..."
-                sudo dnf install -y bpftool
+                sudo dnf install -y bpftool  >/dev/null 2>&1
 
                 # Verify installation
                 if ! command -v bpftool &> /dev/null; then
@@ -420,9 +422,9 @@ EOF
         # install containerD
         log "INFO" "Installing containerD on node: $CURRENT_NODE"
         ssh  -q ${CURRENT_NODE} '
-            sudo dnf install -y yum-utils
-            sudo dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-            sudo dnf install containerd.io -y
+            sudo dnf install -y yum-utils  >/dev/null 2>&1
+            sudo dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo  >/dev/null 2>&1
+            sudo dnf install containerd.io -y  >/dev/null 2>&1
         '
         log "INFO" "Finished installing containerD on node: $CURRENT_NODE"
         #############################################################################
@@ -492,7 +494,7 @@ EOF
 install_kubetools () {
     #########################################################
     # cilium must be reinstalled if kubelet is reinstalled
-    sudo cilium uninstall --wait  >/dev/null 2>&1 || true
+    sudo cilium uninstall >/dev/null 2>&1 || true
     #########################################################
     # Fetch Latest version from kube release....
     if [ "$(echo "$FETCH_LATEST_KUBE" | tr '[:upper:]' '[:lower:]')" = "true" ]; then
@@ -532,13 +534,13 @@ exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
         #########################################################
         log "INFO" "Removing prior installed versions on node: ${CURRENT_NODE}"
         ssh -q ${CURRENT_NODE} """
-            sudo dnf remove -y kubelet kubeadm kubectl --disableexcludes=kubernetes >/dev/null 2>&1
+            sudo dnf remove -y kubelet kubeadm kubectl --disableexcludes=kubernetes  >/dev/null 2>&1
         """
         #########################################################
         log "INFO" "installing k8s tools on node: ${CURRENT_NODE}"
         ssh -q ${CURRENT_NODE} """
-            sudo dnf install -y kubelet-${K8S_MINOR_VERSION} kubeadm-${K8S_MINOR_VERSION} kubectl-${K8S_MINOR_VERSION} --disableexcludes=kubernetes >/dev/null 2>&1
-            sudo systemctl enable --now kubelet
+            sudo dnf install -y kubelet-${K8S_MINOR_VERSION} kubeadm-${K8S_MINOR_VERSION} kubectl-${K8S_MINOR_VERSION} --disableexcludes=kubernetes  >/dev/null 2>&1
+            sudo systemctl enable --now kubelet  >/dev/null 2>&1
         """
         #########################################################
         log "INFO" "Adding Kubeadm bash completion"
@@ -559,9 +561,9 @@ deploy_hostsfile () {
         CURRENT_NODE=${!NODE_VAR}
         log "INFO" "installing tools for node: ${CURRENT_NODE}"
         ssh -q ${CURRENT_NODE} """
-            sudo dnf update -y
-            sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools
-            sudo pip install yq
+            sudo dnf update -y  >/dev/null 2>&1
+            sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools  >/dev/null 2>&1
+            sudo pip install yq  >/dev/null 2>&1
         """
         log "INFO" "Finished installing tools node: ${CURRENT_NODE}"
     done
@@ -635,14 +637,18 @@ install_cluster () {
         ################################################################################################################
         log "INFO" "Cleaning up k8s prior installs for node: ${CURRENT_NODE}"
         ssh -q ${CURRENT_NODE} """
-            sudo kubeadm reset -f
+            sudo kubeadm reset -f >/dev/null 2>&1 || true
             sudo rm -rf $HOME/.kube/* /root/.kube/* /etc/cni/net.d/*  /etc/kubernetes/pki/*
         """
     done
+
+    ####################################################################
+    log "INFO" "generating kubeadm init config file"
+    envsubst < init-config-template.yaml > init-config.yaml
     # Kubeadm init logic
     KUBE_ADM_COMMAND="sudo kubeadm "
     ####################################################################
-    KUBE_ADM_COMMAND="$KUBE_ADM_COMMAND init --control-plane-endpoint=${CURRENT_HOSTNAME} --skip-phases=addon/kube-proxy "
+    KUBE_ADM_COMMAND="$KUBE_ADM_COMMAND init --config init-config.yaml --skip-phases=addon/kube-proxy "
 
     # Simulate Kubeadm init or worker-node node join
     if [ "$DRY_RUN" = true ]; then
@@ -654,7 +660,7 @@ install_cluster () {
 
     log "INFO" "    with command: $KUBE_ADM_COMMAND"
     # KUBEADM_INIT_OUTPUT=$(eval "$KUBE_ADM_COMMAND 2>&1")
-    LOGS_DIR=/var/log/kubeadm_init_errors.log
+    LOGS_DIR=./kubeadm_init_errors.log
     sudo touch ${LOGS_DIR}
     sudo chmod 666 ${LOGS_DIR}
 
@@ -678,8 +684,8 @@ install_cluster () {
         sudo chown $(id -u):$(id -g) $HOME/.kube/config
 
         log "INFO" "unintaing the control-plane node"
-        kubectl taint nodes $NODE_1 node-role.kubernetes.io/control-plane:NoSchedule-
-        kubectl taint nodes $NODE_1 node.kubernetes.io/not-ready:NoSchedule-
+        kubectl taint nodes $NODE_1 node-role.kubernetes.io/control-plane:NoSchedule- >/dev/null 2>&1
+        kubectl taint nodes $NODE_1 node.kubernetes.io/not-ready:NoSchedule- >/dev/null 2>&1
         log "INFO" "sleeping for 30s to wait for Kubernetes control-plane node setup completion..."
         sleep 30
     fi
@@ -734,8 +740,8 @@ install_cilium () {
     done
     ################################################################################################################
     log "INFO" "Adding cilium chart"
-    helm repo add cilium https://helm.cilium.io/ --force-update
-    helm repo update
+    helm repo add cilium https://helm.cilium.io/ --force-update >/dev/null 2>&1
+    helm repo update >/dev/null 2>&1
     ################################################################################################################
     ################################################################################################################
     # cleaning up cilium and maglev tables
@@ -771,17 +777,21 @@ install_cilium () {
     # echo "Applying custom cilium ingress."
     # kubectl apply -f cilium/ingress.yaml
     log "INFO" "Removing default cilium ingress."
-    kubectl delete svc -n kube-system cilium-ingress
+    kubectl delete svc -n kube-system cilium-ingress >/dev/null 2>&1 || true
     ################################################################################################################
     sleep 30
     ################################################################################################################
-    kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator
+    log "INFO" "restarting cilium."
+    kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator  >/dev/null 2>&1 || true
     sleep 50
-    kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator
-    log "INFO" "waiting for cilium to go up"
+    log "INFO" "waiting for cilium to go up (5minutes timeout)"
     cilium status --wait >/dev/null 2>&1 || true
     ################################################################################################################
+    log "INFO" "Apply LB IPAM"
+    kubectl apply -f cilium/loadbalancer-ip-pool.yaml
+    ################################################################################################################
     log "INFO" "Finished installing cilium"
+    ################################################################################################################
 }
 
 
@@ -790,8 +800,6 @@ join_cluster () {
     log "INFO" "Generating join command"
     JOIN_COMMAND_WORKERS=$(kubeadm token create --print-join-command)
     JOIN_COMMAND_CP="${JOIN_COMMAND} --control-plane"
-
-
 
     # for i in $(seq "2" "$((2 + NODES_COUNT - 1))"); do
     for i in $(seq 2 "$((2 + NODES_COUNT - 2))"); do
@@ -815,8 +823,8 @@ join_cluster () {
         log "INFO" "initiating cluster join for node: ${CURRENT_NODE}"
         ssh -q ${CURRENT_NODE} """
             sudo rm -rf /etc/kubernetes/kubelet.conf /etc/kubernetes/pki/*
-            log "INFO" "executing command: $JOIN_COMMAND_WORKERS"
-            eval sudo ${JOIN_COMMAND_WORKERS}
+            echo "executing command: $JOIN_COMMAND_WORKERS"
+            eval sudo ${JOIN_COMMAND_WORKERS} >/dev/null 2>&1
         """
         log "INFO" "Finished joining cluster for node: ${CURRENT_NODE}"
     done
@@ -849,7 +857,7 @@ install_longhorn_prerequisites() {
     ERROR_RAISED=0
     for service in "nfs" "iscsi"; do
         log "INFO" "Started installation of ${service} on all nodes"
-        kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/${LONGHORN_VERSION}/deploy/prerequisite/longhorn-${service}-installation.yaml
+        kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/${LONGHORN_VERSION}/deploy/prerequisite/longhorn-${service}-installation.yaml >/dev/null 2>&1 || true
 
         upper_service=$(echo ${service} | awk '{print toupper($0)}')
         TIMEOUT=180  # 3 minutes in seconds
@@ -857,9 +865,17 @@ install_longhorn_prerequisites() {
         while true; do
             # Wait for the pods to be in Running state
             log "INFO" "Waiting for Longhorn ${upper_service} installation pods to be in Running state..."
-            sleep 10
-
-            PODS=$(kubectl -n $LONGHORN_NS get pod | grep longhorn-${service}-installation)
+            sleep 30
+            log "INFO" "Finished sleeping..."
+            log "INFO" "Getting pods from namespace: '${LONGHORN_NS}'"
+            PODS=$(kubectl -n $LONGHORN_NS get pod 2>/dev/null || true)
+            log "INFO" "Finished getting pods from namespace: '${LONGHORN_NS}'"
+            # Check if PODS is empty
+            if [ -z "$PODS" ]; then
+                log "WARNING" "No matching pods found for: 'longhorn-${service}-installation'"
+                continue
+            fi
+            PODS=$(echo $PODS | grep longhorn-${service}-installation)
             RUNNING_COUNT=$(echo "$PODS" | grep -c "Running")
             TOTAL_COUNT=$(echo "$PODS" | wc -l)
 
@@ -877,7 +893,6 @@ install_longhorn_prerequisites() {
             fi
         done
 
-
         current_retry=0
         max_retries=3
         while true; do
@@ -885,8 +900,8 @@ install_longhorn_prerequisites() {
             log "INFO" "Checking Longhorn ${upper_service} setup completion... try N: ${current_retry}"
             all_pods_up=1
             # Get the logs of the service installation container
-            for POD_NAME in $(kubectl -n $LONGHORN_NS get pod | grep longhorn-${service}-installation | awk '{print $1}'); do
-                LOGS=$(kubectl -n $LONGHORN_NS logs $POD_NAME -c ${service}-installation)
+            for POD_NAME in $(kubectl -n $LONGHORN_NS get pod | grep longhorn-${service}-installation | awk '{print $1}' || true); do
+                LOGS=$(kubectl -n $LONGHORN_NS logs $POD_NAME -c ${service}-installation || true)
                 if echo "$LOGS" | grep -q "${service} install successfully"; then
                     log "INFO" "Longhorn ${upper_service} installation successful in pod $POD_NAME"
                 else
@@ -905,7 +920,7 @@ install_longhorn_prerequisites() {
                 break
             fi
         done
-        kubectl delete -f https://raw.githubusercontent.com/longhorn/longhorn/${LONGHORN_VERSION}/deploy/prerequisite/longhorn-${service}-installation.yaml
+        kubectl delete -f https://raw.githubusercontent.com/longhorn/longhorn/${LONGHORN_VERSION}/deploy/prerequisite/longhorn-${service}-installation.yaml  >/dev/null 2>&1 || true
     done
 
     if [ $ERROR_RAISED -eq 1 ]; then
@@ -1099,6 +1114,7 @@ install_longhorn_prerequisites() {
         ssh -q ${CURRENT_NODE} /tmp/os-camo.sh revert
     done
     #################################################################
+    log "INFO" "Finished installing required utilities for longhorn"
 }
 
 
@@ -1141,7 +1157,7 @@ install_longhorn () {
             exit 1
         fi
         log "INFO" "Checking Longhorn chart deployment completion... try N: $current_retry"
-        PODS=$(kubectl -n $LONGHORN_NS get pods --no-headers | grep -v 'Running\|Completed')
+        PODS=$(kubectl -n $LONGHORN_NS get pods --no-headers | grep -v 'Running\|Completed' || true)
         if [ -z "$PODS" ]; then
             log "INFO" "All Longhorn pods are running."
             break
@@ -1151,37 +1167,42 @@ install_longhorn () {
         sleep 60
     done
     ##################################################################
+    log "INFO" "Applying longhorn HTTPRoute for ingress."
+    kubectl apply -f longhorn/http-routes.yaml
+    ##################################################################
     log "INFO" "Finished deploying Longhorn on the cluster."
 }
 
+install_gateway_CRDS () {
+    # this hits a bug described here: https://github.com/cilium/cilium/issues/38420
+    # log "INFO" "Installing Gateway API version: ${GATEWAY_VERSION} from the standard channel"
+    # kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_VERSION}/standard-install.yaml
 
+    # using experimental CRDS channel
+    log "INFO" "Installing Gateway API version: ${GATEWAY_VERSION} from the experimental channel"
+    kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_VERSION}/experimental-install.yaml
+    # kubectl rollout restart -n kube-system deployment cilium-operator
 
+    # log "INFO" "restarting cilium."
+    # kubectl rollout restart -n kube-system ds/cilium-envoy deployment/cilium-operator  >/dev/null 2>&1 || true
+    # sleep 30
+    log "INFO" "Installing Gateway API Experimental TLSRoute from the Experimental channel"
+    kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/${GATEWAY_VERSION}/config/crd/experimental/gateway.networking.k8s.io_tlsroutes.yaml
+}
 
 ################################################################################################################################################################
 install_gateway () {
     # prerequisites checks:
     # REF: https://docs.cilium.io/en/v1.17/network/servicemesh/gateway-api/gateway-api/#installation
     log "INFO" "ensuring prerequisites are met for Gateway API"
-
     # Check the value of enable-l7-proxy
     config_check "cilium config view" "kube-proxy-replacement" "true"
     config_check "cilium config view" "enable-l7-proxy" "true"
-
-
-
     log "INFO" "Finished checking prerequisites for Gateway API"
 
-
-    log "INFO" "Installing Gateway API version: ${GATEWAY_VERSION} from the standard channel"
-    kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_VERSION}/standard-install.yaml
-
-
-    log "INFO" "Installing Gateway API Experimental TLSRoute from the Experimental channel"
-    kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/${GATEWAY_VERSION}/config/crd/experimental/gateway.networking.k8s.io_tlsroutes.yaml
-
-
-
-
+    log "INFO" "Started deploying Gateway API"
+    kubectl apply -f cilium/http-gateway.yaml
+    log "INFO" "Finished deploying Gateway API"
 }
 
 ################################################################################################################################################################
@@ -1199,15 +1220,13 @@ deploy_hostsfile
 install_kubetools
 install_cluster
 
+install_gateway_CRDS
+
 install_cilium
 
 install_gateway
 
-
 join_cluster
-
-
-
 
 install_longhorn_prerequisites
 
@@ -1235,3 +1254,9 @@ install_longhorn
 # replace ingress class with gateway api
 #https://docs.cilium.io/en/v1.17/network/servicemesh/gateway-api/gateway-api/#installation
 # https://gateway-api.sigs.k8s.io/
+
+
+# tls passthrough:
+# When doing TLS Passthrough, backends will see Cilium Envoy’s IP address as the source of the forwarded TLS streams.
+# https://docs.cilium.io/en/v1.17/network/servicemesh/gateway-api/gateway-api/#tls-passthrough-and-source-ip-visibility
+
