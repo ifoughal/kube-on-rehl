@@ -43,10 +43,6 @@ while [[ $# -gt 0 ]]; do
             CONTROLPLANE_HOSTNAME="$2"
             shift 2
             ;;
-        -p|--control-plane-port)
-            CONTROLPLANE_PORT="$2"
-            shift 2
-            ;;
         -n|--nodes-file)
             NODES_FILE="$2"
             shift 2
@@ -67,7 +63,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 --control-plane-hostname <str> --control-plane-port <str> --nodes-file <nodes_file> --set-hostname-to <str OPTIONAL> [--dry-run] "
+            echo "Usage: $0 --control-plane-hostname <str> --nodes-file <nodes_file> --set-hostname-to <str OPTIONAL> [--dry-run] "
             exit 1
             ;;
     esac
@@ -75,9 +71,9 @@ done
 
 ################################################################################################################################################################
 # Validate that required arguments are provided
-if [ -z "$CONTROLPLANE_HOSTNAME" ] || [ -z "$CONTROLPLANE_PORT" ] || [ -z "$NODES_FILE" ]; then
+if [ -z "$CONTROLPLANE_HOSTNAME" ] || [ -z "$NODES_FILE" ]; then
     log "ERROR" "Missing required arguments."
-    log "ERROR" "$0 --control-plane-hostname <str> --control-plane-port <str> --nodes-file <nodes_file> --set-hostname-to <str OPTIONAL> [--dry-run]"
+    log "ERROR" "$0 --control-plane-hostname <str> --nodes-file <nodes_file> --set-hostname-to <str OPTIONAL> [--dry-run]"
     exit 1
 fi
 
@@ -783,7 +779,9 @@ install_cilium () {
     ################################################################################################################
     log "INFO" "restarting cilium."
     kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator  >/dev/null 2>&1 || true
-    sleep 50
+    sleep 15
+    kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator  >/dev/null 2>&1 || true
+    sleep 15
     log "INFO" "waiting for cilium to go up (5minutes timeout)"
     cilium status --wait >/dev/null 2>&1 || true
     ################################################################################################################
@@ -1126,12 +1124,12 @@ install_longhorn () {
     helm repo update
     ##################################################################
     # TODO on all nodes:
-    # for i in 1 2 3; do
-    #     NODE_VAR="NODE_$i"
-    #     CURRENT_NODE=${!NODE_VAR}
-    #     log "INFO" "Resetting volumes on node: ${CURRENT_NODE}"
-    #     ssh -q ${CURRENT_NODE} "sudo rm -rf /mnt/longhorn-1/*"
-    # done
+    for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
+        NODE_VAR="NODE_$i"
+        CURRENT_NODE=${!NODE_VAR}
+        log "INFO" "Resetting volumes on node: ${CURRENT_NODE}"
+        ssh -q ${CURRENT_NODE} "sudo rm -rf /mnt/longhorn-1/*"
+    done
     ##################################################################
     log "INFO" "Started deploying longhorn in ns $LONGHORN_NS"
     output=$(helm install longhorn longhorn/longhorn  \
@@ -1188,6 +1186,9 @@ install_gateway_CRDS () {
     # sleep 30
     log "INFO" "Installing Gateway API Experimental TLSRoute from the Experimental channel"
     kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/${GATEWAY_VERSION}/config/crd/experimental/gateway.networking.k8s.io_tlsroutes.yaml
+    ################################################################################################################################################################
+    log "INFO" "Applying hubble-ui HTTPRoute for ingress."
+    kubectl apply -f cilium/http-routes.yaml
 }
 
 ################################################################################################################################################################
@@ -1205,19 +1206,137 @@ install_gateway () {
     log "INFO" "Finished deploying Gateway API"
 }
 
+
+
+
+
+
+
+
+
+
+
+install_vault () {
+    ##################################################################
+    helm repo add hashicorp https://helm.releases.hashicorp.com --force-update
+    helm repo update
+
+
+
+    helm install vault hashicorp/vault -n $VAULT_NS \
+        --create-namespace --version $VAULT_VERSION \
+        -f vault/values.yaml
+    ##################################################################
+
+}
+
+
+
+install_rancher () {
+    helm repo add rancher-${RANCHER_BRANCH} https://releases.rancher.com/server-charts/${RANCHER_BRANCH} > /dev/null 2>&1 || true
+    helm repo update > /dev/null 2>&1 || true
+
+    kubectl uninstall -n $RANCHER_NS rancher > /dev/null 2>&1 || true
+
+
+    kubectl delete ns $RANCHER_NS > /dev/null 2>&1 || true
+
+
+    kubectl delete apiservice v1beta1.webhook.cert-manager.io > /dev/null 2>&1 || true
+
+    kubectl get namespace "${RANCHER_NS}" -o json \
+    | tr -d "\n" | sed "s/\"finalizers\": \[[^]]\+\]/\"finalizers\": []/" \
+    | kubectl replace --raw /api/v1/namespaces/${RANCHER_NS}/finalize -f - > /dev/null 2>&1 || true
+
+
+    kubectl create ns $RANCHER_NS > /dev/null 2>&1 || true
+
+    log "WARNING" """Warning: Currently rancher supports kubeVersion up to 1.31.0"
+    log "WARNING" "initiating workaround to force the install..."
+
+    DEVEL=""
+    if [ ${RANCHER_BRANCH} == "alpha" ]; then
+        DEVEL="--devel"
+    fi
+    # helm install rancher rancher-${RANCHER_BRANCH}/rancher \
+    # helm install rancher ./rancher/rancher-${RANCHER_VERSION}.tar.gz \
+    helm upgrade --install rancher rancher-${RANCHER_BRANCH}/rancher ${DEVEL} \
+        --namespace ${RANCHER_NS} # \
+        --set hostname=${RANCHER_FQDN} \
+        --set bootstrapPassword=${RANCHER_ADMIN_PASS}  \
+        --version ${RANCHER_VERSION}  \
+        -f rancher/values.yaml
+
+    kubectl -n $RANCHER_NS rollout status deploy/rancher
+}
+
+
+
+install_certmanager () {
+    ##################################################################
+    # install cert-manager cli:
+    for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
+        #####################################################################################
+        NODE_VAR="NODE_$i"
+        CURRENT_NODE=${!NODE_VAR}
+        #####################################################################################
+        log "INFO" "starting certmanager cli install for node: $CURRENT_NODE"
+        ssh -q ${CURRENT_NODE} """
+            set -e  # Exit on error
+            set -o pipefail  # Fail if any piped command fails
+            OS=\$(go env GOOS)
+            ARCH=\$(go env GOARCH)
+            curl -fsSL -o cmctl https://github.com/cert-manager/cmctl/releases/download/v${CERTMANAGER_CLI_VERSION}/cmctl_\${OS}_\${ARCH}
+            chmod +x cmctl
+            sudo mv cmctl /usr/bin
+            sudo ln -sf /usr/bin /usr/local/bin
+        """
+        add_bashcompletion $CURRENT_NODE cmctl
+        log "INFO" "Finished certmanager cli install for node: $CURRENT_NODE"
+    done
+    ##################################################################
+    # deploy cert-manager:
+    helm repo add jetstack https://charts.jetstack.io --force-update > /dev/null 2>&1 || true
+    helm repo update > /dev/null 2>&1 || true
+
+    log "INFO" "Started installing cert-manger on namespace: '${CERTMANAGER_NS}'"
+    helm install cert-manager jetstack/cert-manager  \
+        --version ${CERTMANAGER_VERSION} \
+        --namespace ${CERTMANAGER_NS} \
+        --create-namespace \
+        -f certmanager/values.yaml
+    log "INFO" "Finished installing cert-manger on namespace: '${CERTMANAGER_NS}'"
+
+    ##################################################################
+    # test certmanager:
+    # Needs to be automated....
+    # kubectl apply -f certmanager/test-resources.yaml
+
+    # # Check the status, grep through the event types
+    # kubectl describe certificate -n cert-manager-test
+    # kubectl get secrets -n cert-manager-test
+
+    # # Clean up the test resources.
+    # kubectl delete -f certmanager/test-resources.yaml
+
+
+    # --cluster-resource-namespace=
+}
+
+
 ################################################################################################################################################################
 deploy_hostsfile
 
-# if [ "$PREREQUISITES" = true ]; then
-#     log "INFO" "Executing cluster prerequisites installation and checks"
-#     # prerequisites_requirements
-#     install_cilium_prerequisites
-# else
-#     log "INFO" "Cluster prerequisites have been skipped"
-# fi
+# # if [ "$PREREQUISITES" = true ]; then
+# #     log "INFO" "Executing cluster prerequisites installation and checks"
+# #     # prerequisites_requirements
+# #     install_cilium_prerequisites
+# # else
+# #     log "INFO" "Cluster prerequisites have been skipped"
+# # fi
 
 
-install_kubetools
+# install_kubetools
 install_cluster
 
 install_gateway_CRDS
@@ -1226,11 +1345,20 @@ install_cilium
 
 install_gateway
 
-join_cluster
+# join_cluster
 
-install_longhorn_prerequisites
 
-install_longhorn
+install_certmanager
+
+
+# install_rancher
+
+# install_longhorn_prerequisites
+
+# install_longhorn
+
+# install_vault
+
 
 #  2>&1 || true
 ################################################################################################################################################################
