@@ -1,4 +1,39 @@
+log() {
+    # Define color codes
+    color_reset="\033[0m"    # reset to default
+    color_red="\033[0;31m" # Red
+    color_green="\033[0;32m" # Green
+    color_yellow="\033[0;33m"
+    color_blue="\033[0;34m"
+    color_magenta="\033[0;35m"
+    color_cyan="\033[0;36m"
 
+    local log_type="$1"
+    shift
+    local message="$@"
+    local datetime=$(date +"%Y-%m-%d %H:%M:%S,%3N")
+    local log_message="$datetime - deploy.sh - $log_type - $message"
+
+    # # Define color codes
+    # local color_reset="\033[0m"
+    # local color_debug="\033[0;36m"  # Cyan
+    # local color_info="\033[0;32m"
+    # local color_warning="\033[0;33m" # Yellow
+    # local color_error="\033[0;31m"
+
+    # Choose color based on log type
+    case "$log_type" in
+        DEBUG) color="$color_cyan" ;;
+        INFO) color="$color_green" ;;
+        WARNING) color="$color_yellow" ;;
+        ERROR) color="$color_red" ;;
+        # *) color="$color_reset" ;;
+    esac
+
+
+    # Print log message with color and append to log file
+    echo -e "${color}${log_message}${color_reset}" | tee -a config_check.log
+}
 
 
 # Function to update or add the PATH variable in /etc/environment
@@ -38,6 +73,32 @@ EOF
     # Print the updated PATH for verification
     echo "Updated PATH: $PATH"
 }
+
+
+config_check () {
+    local command="$1"
+    local key="$2"
+    local expected_value="$3"
+
+    # Execute the command and get the value for the specified key
+    value=$($command | grep -w "$key" | awk '{print $2}' || true)
+
+    # Check if the key was found
+    if [ -z "$value" ]; then
+        log "ERROR" "Key '$key' not found."
+        return 1
+    fi
+
+    # Check if the value matches the expected value
+    if [ "$value" == "$expected_value" ]; then
+        log "INFO" "The value of $key is $expected_value."
+    else
+        log "ERROR" "The value of '$key' expected to be: '$expected_value'. But Found: '$value'"
+        return 1
+    fi
+}
+
+
 
 
 install_go () {
