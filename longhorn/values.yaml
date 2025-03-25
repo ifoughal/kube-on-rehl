@@ -1,5 +1,3 @@
-namespaceOverride: "kube-system"
-
 service:
   ui:
     type: ClusterIP
