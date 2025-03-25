@@ -1,0 +1,31 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: http-gateway
+  namespace: kube-system
+spec:
+  gatewayClassName: cilium
+  infrastructure:
+    annotations:
+      io.cilium/lb-ipam-ips: "10.66.65.7"
+  listeners:
+  - allowedRoutes:
+      namespaces:
+        from: All
+    name: web-gw
+    port: 80
+    protocol: HTTP
+#   listeners:
+#   # - allowedRoutes:
+#   #     namespaces:
+#   #       from: All
+#   #   name: web-gw
+#   #   port: 80
+#   #   protocol: HTTP
+#   - name: hubble-ui
+#     protocol: HTTP
+#     port: 80
+#     # hostname: "hubble-ui.pfs.pack"
+#     allowedRoutes:
+#       namespaces:
+#         from: Same
