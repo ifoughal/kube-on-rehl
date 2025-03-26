@@ -638,7 +638,20 @@ install_cluster () {
             sudo rm -rf $HOME/.kube/* /root/.kube/* /etc/cni/net.d/*  /etc/kubernetes/pki/*
         """
     done
+    ##################################################################
+    log "INFO" "starting reseting host persistent volumes mounts"
+    for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
+        NODE_VAR="NODE_$i"
+        CURRENT_NODE=${!NODE_VAR}
+        log "INFO" "Reseting volumes on node: ${CURRENT_NODE}"
+        ssh -q ${CURRENT_NODE} """
+            sudo rm -rf "${EXTRAVOLUMES_ROOT}"/*
 
+            sudo mkdir -p "${EXTRAVOLUMES_ROOT}"/cilium/hubble-relay
+            sudo mkdir -p "${EXTRAVOLUMES_ROOT}"/cilium/hubble-relay
+        """
+    done
+    log "INFO" "finished reseting host persistent volumes mounts"
     ####################################################################
     log "INFO" "generating kubeadm init config file"
     envsubst < init-config-template.yaml > init-config.yaml
@@ -1138,14 +1151,6 @@ install_longhorn () {
     log "INFO" "Creating certmanager NS: '$LONGHORN_NS'"
     kubectl create ns $LONGHORN_NS > /dev/null 2>&1 || true
     ##################################################################
-    # TODO on all nodes:
-    for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
-        NODE_VAR="NODE_$i"
-        CURRENT_NODE=${!NODE_VAR}
-        log "INFO" "Resetting volumes on node: ${CURRENT_NODE}"
-        ssh -q ${CURRENT_NODE} "sudo rm -rf /mnt/longhorn-1/longhorn/*"
-    done
-    ##################################################################
     log "INFO" "Started deploying longhorn in ns $LONGHORN_NS"
     output=$(helm install longhorn longhorn/longhorn  \
         --namespace $LONGHORN_NS  \
@@ -1374,13 +1379,12 @@ free_space () {
 ################################################################################################################################################################
 deploy_hostsfile
 
-# if [ "$PREREQUISITES" = true ]; then
-#     log "INFO" "Executing cluster prerequisites installation and checks"
-#     prerequisites_requirements
-#     # install_cilium_prerequisites
-# else
-#     log "INFO" "Cluster prerequisites have been skipped"
-# fi
+if [ "$PREREQUISITES" = true ]; then
+    log "INFO" "Executing cluster prerequisites installation and checks"
+    prerequisites_requirements
+else
+    log "INFO" "Cluster prerequisites have been skipped"
+fi
 
 
 install_kubetools
