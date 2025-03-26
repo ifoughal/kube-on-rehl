@@ -201,6 +201,14 @@ nodeIPAM:
 enableLBIPAM: true
 
 ##############################################################################
+resources:
+  limits:
+    cpu: 4000m
+    memory: 4Gi
+  requests:
+    cpu: 100m
+    memory: 512Mi
+##############################################################################
 # if this configuration is changed, the cluster must be redeployed
 # ipam:
 #   # -- Configure IP Address Management mode.
@@ -294,7 +302,7 @@ hubble:
     clusterDomain: cluster.local
   relay:
     enabled: true
-    replicas: 1
+    replicas: 2
     # -- hubble-relay service configuration.
     service:
       # --- The type of service used for Hubble Relay access, either ClusterIP, NodePort or LoadBalancer.
@@ -306,9 +314,19 @@ hubble:
     listenHost: ""
     # -- Port to listen to.
     listenPort: "4245"
+    # -- Additional hubble-relay volumes.
+    extraVolumes:
+    - name: hubble-relay
+      hostPath:
+        path: /mnt/longhorn-1/extraVolumes/cilium/hubble-relay
+        type: Directory
+    # -- Additional hubble-relay volumeMounts.
+    extraVolumeMounts:
+    - name: hubble-relay
+      mountPath: /var/
   ui:
     enabled: True
-    replicas: 1
+    replicas: 2
     rollOutPods: True
     service:
       # -- Annotations to be added for the Hubble UI service
@@ -322,11 +340,25 @@ hubble:
     # It needs to be changed in case if ingress for hubble-ui is configured under some sub-path.
     # Trailing `/` is required for custom path, ex. `/service-map/`
     baseUrl: "/"
-    # # -- hubble-ui ingress configuration.
+    backend:
+      resources:
+        limits:
+          cpu: 1000m
+          memory: 1024M
+        requests:
+          cpu: 100m
+          memory: 64Mi
     frontend:
       server:
         ipv6:
           enabled: false
+      resources:
+        limits:
+          cpu: 1000m
+          memory: 1024M
+        requests:
+          cpu: 100m
+          memory: 64Mi
 #############################################################################################################
 
 # -- The agent can be put into one of the three policy enforcement modes:

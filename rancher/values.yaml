@@ -7,13 +7,25 @@ restrictedAdmin: false
 # Note, for new installations empty will default to strict on 2.9+, or system-store on 2.8 or older
 agentTLSMode: ""
 
+
+
+resources:
+  limits:
+    cpu: 4000m
+    memory: 4Gi
+  requests:
+    cpu: 100m
+    memory: 512Mi
+
+
+
 ### ingress ###
 # Readme for details and instruction on adding tls secrets.
 ingress:
   # If set to false, ingress will not be created
   # Defaults to true
   # options: true, false
-  enabled: false
+  enabled: true
   includeDefaultExtraAnnotations: true
   extraAnnotations: {}
   ingressClassName: ""
@@ -29,8 +41,10 @@ ingress:
 
   tls:
     # options: rancher, letsEncrypt, secret
-    source: rancher
+    source: secret
     secretName: tls-rancher-ingress
+
+tls: ingress
 
 
 ### LetsEncrypt config ###
@@ -54,7 +68,7 @@ noProxy: lorionstrm01vel,lorionstrm02vel,lorionstrm03vel,localhost,::1,127.0.0.0
 
 # Number of Rancher server replicas. Setting to negative number will dynamically between 0 and the abs(replicas) based on available nodes.
 # of available nodes in the cluster
-replicas: 3
+replicas: 1
 
 # Set priorityClassName to avoid eviction
 priorityClassName: rancher-critical
@@ -67,8 +81,8 @@ resources: {}
 useBundledSystemChart: false
 
 # Certmanager version compatibility
-certmanager:
-  version: "2.10.3"
+# certmanager:
+#   version: "2.10.3"
 
 # Rancher custom logos persistence
 customLogos:
