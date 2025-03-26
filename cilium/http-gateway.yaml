@@ -8,24 +8,42 @@ spec:
   infrastructure:
     annotations:
       io.cilium/lb-ipam-ips: "10.66.65.7"
+      lbipam.cilium.io/sharing-key: "kafkaCluster"
+      lbipam.cilium.io/sharing-cross-namespace: "*"
+      ingress.cilium.io/service-external-traffic-policy: Cluster
   listeners:
-  - allowedRoutes:
+  - name: shared-http
+    protocol: HTTP
+    port: 80
+    allowedRoutes:
       namespaces:
         from: All
-    name: web-gw
-    port: 80
-    protocol: HTTP
-#   listeners:
-#   # - allowedRoutes:
-#   #     namespaces:
-#   #       from: All
-#   #   name: web-gw
-#   #   port: 80
-#   #   protocol: HTTP
-#   - name: hubble-ui
-#     protocol: HTTP
-#     port: 80
-#     # hostname: "hubble-ui.pfs.pack"
-#     allowedRoutes:
-#       namespaces:
-#         from: Same
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: tls-gateway
+  namespace: kube-system
+spec:
+  gatewayClassName: cilium
+  infrastructure:
+    annotations:
+      io.cilium/lb-ipam-ips: "10.66.65.7"
+      lbipam.cilium.io/sharing-key: "kafkaCluster"
+      lbipam.cilium.io/sharing-cross-namespace: "*"
+      ingress.cilium.io/service-external-traffic-policy: Cluster
+  listeners:
+  - name: shared-tls
+    protocol: HTTPS
+    port: 443
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      certificateRefs:
+      - kind: Secret
+        name: shared-tls
+        # from: Selector
+        # selector:
+        #   matchLabels:
+        #     shared-gateway-access: "true"
