@@ -53,7 +53,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --with-prerequisites)
             PREREQUISITES=true
-            echo "Will install cluster prerequisites, manual nodes reboot is required."
+            log "WARNING" "Will install cluster prerequisites, manual nodes reboot is required."
             shift
             ;;
         --dry-run)
@@ -450,6 +450,7 @@ EOF
             sudo sed -i "s/SystemdCgroup = false/SystemdCgroup = true/g" "$CONFIG_FILE"
             sudo sed -i "s|sandbox_image = \"registry.k8s.io/pause:3.8\"|sandbox_image = \"registry.k8s.io/pause:3.10\"|" "$CONFIG_FILE"
 
+            sudo sed -i "s|root = \"/var/lib/containerd\"|root = \"/mnt/longhorn-1/var/lib/containerd\"|" "$CONFIG_FILE"
 
             sudo mkdir -p /etc/nri/conf.d /opt/nri/plugins
             sudo chown -R root:root /etc/nri /opt/nri
@@ -779,9 +780,8 @@ install_cilium () {
     ################################################################################################################
     log "INFO" "restarting cilium."
     kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator  >/dev/null 2>&1 || true
-    sleep 15
-    kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator  >/dev/null 2>&1 || true
-    sleep 15
+    sleep 45
+
     log "INFO" "waiting for cilium to go up (5minutes timeout)"
     cilium status --wait >/dev/null 2>&1 || true
     ################################################################################################################
@@ -1120,15 +1120,30 @@ install_longhorn_prerequisites() {
 install_longhorn () {
     ##################################################################
     log "INFO" "adding longhorn repo to Helm"
-    helm repo add longhorn https://charts.longhorn.io --force-update
-    helm repo update
+    helm repo add longhorn https://charts.longhorn.io --force-update > /dev/null 2>&1 || true
+    helm repo update > /dev/null 2>&1 || true
+    ##################################################################
+    log "INFO" "uninstalling and ensuring the cluster is cleaned from longhorn"
+    kubectl delete -n longhorn-system ds/longhorn-manager ds/longhorn-nfs-installation deployments/longhorn-ui deployments/longhorn-driver-deployer  jobs/longhorn-uninstall >/dev/null 2>&1 || true
+
+    helm uninstall -n $LONGHORN_NS longhorn > /dev/null 2>&1 || true
+    ##################################################################
+    log "INFO" "deleting longhorn NS"
+    kubectl delete ns $LONGHORN_NS --now=true & > /dev/null 2>&1 || true
+
+    kubectl get namespace "${LONGHORN_NS}" -o json \
+    | tr -d "\n" | sed "s/\"finalizers\": \[[^]]\+\]/\"finalizers\": []/" \
+    | kubectl replace --raw /api/v1/namespaces/${LONGHORN_NS}/finalize -f - > /dev/null 2>&1 || true
+    ##################################################################
+    log "INFO" "Creating certmanager NS: '$LONGHORN_NS'"
+    kubectl create ns $LONGHORN_NS > /dev/null 2>&1 || true
     ##################################################################
     # TODO on all nodes:
     for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
         NODE_VAR="NODE_$i"
         CURRENT_NODE=${!NODE_VAR}
         log "INFO" "Resetting volumes on node: ${CURRENT_NODE}"
-        ssh -q ${CURRENT_NODE} "sudo rm -rf /mnt/longhorn-1/*"
+        ssh -q ${CURRENT_NODE} "sudo rm -rf /mnt/longhorn-1/longhorn/*"
     done
     ##################################################################
     log "INFO" "Started deploying longhorn in ns $LONGHORN_NS"
@@ -1189,6 +1204,7 @@ install_gateway_CRDS () {
     ################################################################################################################################################################
     log "INFO" "Applying hubble-ui HTTPRoute for ingress."
     kubectl apply -f cilium/http-routes.yaml
+    ################################################################################################################################################################
 }
 
 ################################################################################################################################################################
@@ -1201,14 +1217,27 @@ install_gateway () {
     config_check "cilium config view" "enable-l7-proxy" "true"
     log "INFO" "Finished checking prerequisites for Gateway API"
 
+    log "INFO" "Started deploying TLS cert for TLS-HTTPS Gateway API"
+    mkdir -p cilium/certs/
+    SECRET_NAME=shared-tls
+    CERT_FILE="cilium/certs/${SECRET_NAME}.crt"
+    KEY_FILE="cilium/certs/${SECRET_NAME}.key"
+
+    log "INFO" "Generate self-signed certificate and key"
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout $KEY_FILE -out $CERT_FILE -subj "/CN=${CLUSTER_DNS_DOMAINS}"
+
+    log "INFO" "Creating rancher Kubernetes TLS secret"
+    kubectl create secret tls ${SECRET_NAME} --cert=$CERT_FILE --key=$KEY_FILE --namespace=kube-system
+    log "INFO" "Finished deploying TLS cert for TLS-HTTPS Gateway API"
+
     log "INFO" "Started deploying Gateway API"
     kubectl apply -f cilium/http-gateway.yaml
     log "INFO" "Finished deploying Gateway API"
+
+    log "INFO" "restarting cilium."
+    kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator  >/dev/null 2>&1 || true
+    sleep 45
 }
-
-
-
-
 
 
 
@@ -1233,25 +1262,25 @@ install_vault () {
 
 
 install_rancher () {
+    ##################################################################
+    log "INFO" "adding rancher repo to helm"
     helm repo add rancher-${RANCHER_BRANCH} https://releases.rancher.com/server-charts/${RANCHER_BRANCH} > /dev/null 2>&1 || true
     helm repo update > /dev/null 2>&1 || true
-
-    kubectl uninstall -n $RANCHER_NS rancher > /dev/null 2>&1 || true
-
-
-    kubectl delete ns $RANCHER_NS > /dev/null 2>&1 || true
-
-
-    kubectl delete apiservice v1beta1.webhook.cert-manager.io > /dev/null 2>&1 || true
+    ##################################################################
+    log "INFO" "uninstalling and ensuring the cluster is cleaned from rancher"
+    helm uninstall -n $RANCHER_NS rancher > /dev/null 2>&1 || true
+    ##################################################################
+    log "INFO" "deleting rancher NS"
+    kubectl delete ns $RANCHER_NS --now=true & > /dev/null 2>&1 || true
 
     kubectl get namespace "${RANCHER_NS}" -o json \
     | tr -d "\n" | sed "s/\"finalizers\": \[[^]]\+\]/\"finalizers\": []/" \
     | kubectl replace --raw /api/v1/namespaces/${RANCHER_NS}/finalize -f - > /dev/null 2>&1 || true
-
-
+    ##################################################################
+    log "INFO" "Creating rancher NS: '$RANCHER_NS'"
     kubectl create ns $RANCHER_NS > /dev/null 2>&1 || true
-
-    log "WARNING" """Warning: Currently rancher supports kubeVersion up to 1.31.0"
+    ##################################################################
+    log "WARNING" "Warning: Currently rancher supports kubeVersion up to 1.31.0"
     log "WARNING" "initiating workaround to force the install..."
 
     DEVEL=""
@@ -1260,14 +1289,27 @@ install_rancher () {
     fi
     # helm install rancher rancher-${RANCHER_BRANCH}/rancher \
     # helm install rancher ./rancher/rancher-${RANCHER_VERSION}.tar.gz \
-    helm upgrade --install rancher rancher-${RANCHER_BRANCH}/rancher ${DEVEL} \
-        --namespace ${RANCHER_NS} # \
+
+
+    log "INFO" "Started deploying rancher on the cluster"
+    helm install rancher rancher-${RANCHER_BRANCH}/rancher ${DEVEL} \
+        --namespace ${RANCHER_NS} \
         --set hostname=${RANCHER_FQDN} \
         --set bootstrapPassword=${RANCHER_ADMIN_PASS}  \
         --version ${RANCHER_VERSION}  \
-        -f rancher/values.yaml
+        -f rancher/values.yaml > /dev/null 2>&1
 
-    kubectl -n $RANCHER_NS rollout status deploy/rancher
+    # kubectl -n $RANCHER_NS rollout status deploy/rancher
+    log "INFO" "Finished deploying rancher on the cluster"
+
+    admin_url="https://rancher.pfs.pack/dashboard/?setup=$(kubectl get secret --namespace ${RANCHER_NS} bootstrap-secret -o go-template='{{.data.bootstrapPassword|base64decode}}')"
+    log "INFO" "Access the admin panel at: $admin_url"
+
+    admin_password=$(kubectl get secret --namespace ${RANCHER_NS} bootstrap-secret -o go-template='{{.data.bootstrapPassword|base64decode}}{{ "\n" }}')
+    log "INFO" "Admin bootstrap password is: ${admin_password}"
+    ##################################################################
+    log "INFO" "Applying rancher HTTPRoute for ingress."
+    kubectl apply -f rancher/http-routes.yaml
 }
 
 
@@ -1324,19 +1366,25 @@ install_certmanager () {
 }
 
 
+free_space () {
+    sudo journalctl --vacuum-time=2d
+    sudo rm -rf /var/log/*.log
+    sudo yum autoremove -y
+}
 ################################################################################################################################################################
 deploy_hostsfile
 
-# # if [ "$PREREQUISITES" = true ]; then
-# #     log "INFO" "Executing cluster prerequisites installation and checks"
-# #     # prerequisites_requirements
-# #     install_cilium_prerequisites
-# # else
-# #     log "INFO" "Cluster prerequisites have been skipped"
-# # fi
+# if [ "$PREREQUISITES" = true ]; then
+#     log "INFO" "Executing cluster prerequisites installation and checks"
+#     prerequisites_requirements
+#     # install_cilium_prerequisites
+# else
+#     log "INFO" "Cluster prerequisites have been skipped"
+# fi
 
 
-# install_kubetools
+install_kubetools
+
 install_cluster
 
 install_gateway_CRDS
@@ -1345,17 +1393,16 @@ install_cilium
 
 install_gateway
 
-# join_cluster
+join_cluster
 
 
 install_certmanager
 
 
-# install_rancher
+install_rancher
 
-# install_longhorn_prerequisites
-
-# install_longhorn
+install_longhorn_prerequisites
+install_longhorn
 
 # install_vault
 
