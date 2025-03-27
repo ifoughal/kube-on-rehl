@@ -32,7 +32,8 @@ gatewayAPI:
     # -- Enable creation of GatewayClass resource
     # The default value is 'auto' which decides according to presence of gateway.networking.k8s.io/v1/GatewayClass in the cluster.
     # Other possible values are 'true' and 'false', which will either always or never create the GatewayClass, respectively.
-    create: 'true'
+    create: "true"
+
 # enabling gatewayAPI autoamtically enables and configured envoyConfig (envoyConfig.enabled=true)
 #############################################################################################################
 # mandatory for L4/L7 LB: (no tunelling)
@@ -243,7 +244,7 @@ operator:
   # dnsPolicy: "None"
   dnsPolicy: "Default"
   # We have  3 nodes
-  replicas: 1
+  replicas: 3
 
 #############################################################################################################
 # dnsPolicy: "None"
@@ -302,7 +303,7 @@ hubble:
     clusterDomain: cluster.local
   relay:
     enabled: true
-    replicas: 2
+    replicas: 3
     # -- hubble-relay service configuration.
     service:
       # --- The type of service used for Hubble Relay access, either ClusterIP, NodePort or LoadBalancer.
@@ -326,7 +327,7 @@ hubble:
       mountPath: /var/
   ui:
     enabled: True
-    replicas: 2
+    replicas: 3
     rollOutPods: True
     service:
       # -- Annotations to be added for the Hubble UI service
