@@ -76,7 +76,7 @@ config:
 #
 # Note that cert-manager uses leader election to ensure that there can
 # only be a single instance active at a time.
-replicaCount: 1
+replicaCount: 3
 
 podDisruptionBudget:
   # Enable or disable the PodDisruptionBudget resource.
@@ -253,7 +253,7 @@ nodeSelector:
 ingressShim: {}
 
 webhook:
-  replicaCount: 1
+  replicaCount: 3
   timeoutSeconds: 30
   # securePort: 10250, therefore will work out-of-the-box without needing to add firewall
   # rules or requiring NET_BIND_SERVICE capabilities to bind port numbers <1000.
@@ -329,7 +329,7 @@ cainjector:
   #
   # Note that cert-manager uses leader election to ensure that there can
   # only be a single instance active at a time.
-  replicaCount: 1
+  replicaCount: 3
   # Additional volumes to add to the cert-manager controller pod.
   volumes: []
   # Additional volume mounts to add to the cert-manager controller container.

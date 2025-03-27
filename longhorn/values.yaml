@@ -35,19 +35,35 @@ csi:
   snapshotterReplicaCount: ~
 
 defaultSettings:
+  autoSalvage: false   # set to true in prod
+  disableSchedulingOnCordonedNode: false
+  priorityClass: high-priority
+  replicaSoftAntiAffinity: false
+  replicaZoneSoftAntiAffinity: false
+  replicaDiskSoftAntiAffinity: false
+  volumeAttachmentRecoveryPolicy: never
+  defaultLonghornStaticStorageClass: longhorn-static
+  nodeDownPodDeletionPolicy: do-nothing
+
+  defaultReplicaCount: 3
+  defaultDataLocality: strict-local  # incompatible with ReadWriteMany (RWX)
+
+  # guaranteedEngineManagerCPU: 0.25
+  # guaranteedReplicaManagerCPU: 0.25
   backupTarget: ~
+  # backupTarget: s3://backupbucket@us-east-1/backupstore
   backupTargetCredentialSecret: ~
+
+
   allowRecurringJobWhileVolumeDetached: ~
   createDefaultDiskLabeledNodes: ~
-  defaultDataPath: /mnt/longhorn-1
-  defaultDataLocality: ~
-  replicaSoftAntiAffinity: ~
+  defaultDataPath: /mnt/longhorn-1/longhorn/
+  # defaultDataPath: /var/lib/longhorn/
+
   replicaAutoBalance: ~
   storageOverProvisioningPercentage: ~
   storageMinimalAvailablePercentage: ~
   upgradeChecker: ~
-  defaultReplicaCount: ~
-  defaultLonghornStaticStorageClass: ~
   backupstorePollInterval: ~
   failedBackupTTL: ~
   restoreVolumeRecurringJobs: ~
@@ -56,12 +72,7 @@ defaultSettings:
   supportBundleFailedHistoryLimit: ~
   taintToleration: ~
   systemManagedComponentsNodeSelector: ~
-  priorityClass: ~
-  autoSalvage: ~
   autoDeletePodWhenVolumeDetachedUnexpectedly: ~
-  disableSchedulingOnCordonedNode: ~
-  replicaZoneSoftAntiAffinity: ~
-  nodeDownPodDeletionPolicy: ~
   allowNodeDrainWithLastHealthyReplica: ~
   mkfsExt4Parameters: ~
   disableReplicaRebuild: ~
@@ -75,8 +86,7 @@ defaultSettings:
   concurrentAutomaticEngineUpgradePerNodeLimit: ~
   backingImageCleanupWaitInterval: ~
   backingImageRecoveryWaitInterval: ~
-  guaranteedEngineManagerCPU: ~
-  guaranteedReplicaManagerCPU: ~
+
   kubernetesClusterAutoscalerEnabled: ~
   orphanAutoDeletion: ~
   storageNetwork: ~
