@@ -1,6 +1,24 @@
 #!/bin/bash
 
+LONGHORN_LOGS="./logs/longhorn.log"
+VAULT_LOGS=./logs/vault.log
+CILIUM_LOGS=./logs/cilium.log
+KUBEADMINIT_LOGS=./logs/kubeadm_init_errors.log
 
+mkdir -p ./logs
+
+sudo touch ${LONGHORN_LOGS}
+sudo chmod 666 ${LONGHORN_LOGS}
+
+sudo touch ${CILIUM_LOGS}
+sudo chmod 666 ${CILIUM_LOGS}
+
+
+sudo touch ${VAULT_LOGS}
+sudo chmod 666 ${VAULT_LOGS}
+
+sudo touch ${KUBEADMINIT_LOGS}
+sudo chmod 666 ${KUBEADMINIT_LOGS}
 ################################################################################################################################################################
 # Initialize variables
 CURRENT_HOSTNAME=$(eval hostname)
@@ -25,7 +43,6 @@ recommended_rehl_version="4.18"
 CONTROLPLANE_ADDRESS=$(eval ip -o -4 addr show $CONTROLPLANE_INGRESS_INTER | awk '{print $4}' | cut -d/ -f1)  # 192.168.66.129
 CONTROLPLANE_SUBNET=$(echo $CONTROLPLANE_ADDRESS | awk -F. '{print $1"."$2"."$3".0/24"}')
 ################################################################################################################################################################
-
 
 set -e  # Exit on error
 set -o pipefail  # Fail if any piped command fails
@@ -53,7 +70,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --with-prerequisites)
             PREREQUISITES=true
-            log "WARNING" "Will install cluster prerequisites, manual nodes reboot is required."
             shift
             ;;
         --dry-run)
@@ -98,10 +114,17 @@ fi
 ################################################################################################################################################################
 prerequisites_requirements() {
     #########################################################################################
+    log "WARNING" "Will install cluster prerequisites, manual nodes reboot is required."
+    #########################################################################################
     for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
         #####################################################################################
         NODE_VAR="NODE_$i"
         CURRENT_NODE=${!NODE_VAR}
+
+        #####################################################################################
+        log "INFO" "Starting optimising dnf for node: $CURRENT_NODE"
+        optimize_dnf $CURRENT_NODE
+        log "INFO" "Finished optimising dnf for node: $CURRENT_NODE"
         #####################################################################################
         log "INFO" "starting gid and uid configuration for node: $CURRENT_NODE"
         log "INFO" "Check if the visudo entry is appended for SUDO_GROUP: $SUDO_GROUP"
@@ -670,11 +693,7 @@ install_cluster () {
 
     log "INFO" "    with command: $KUBE_ADM_COMMAND"
     # KUBEADM_INIT_OUTPUT=$(eval "$KUBE_ADM_COMMAND 2>&1")
-    LOGS_DIR=./kubeadm_init_errors.log
-    sudo touch ${LOGS_DIR}
-    sudo chmod 666 ${LOGS_DIR}
-
-    KUBEADM_INIT_OUTPUT=$(eval "$KUBE_ADM_COMMAND" 2> "${LOGS_DIR}")
+    KUBEADM_INIT_OUTPUT=$(eval "$KUBE_ADM_COMMAND" > "${KUBEADMINIT_LOGS}" 2>&1 || true)
 
     if [[ $? -ne 0 ]]; then
         log "ERROR" "Error: Failed to run kubeadm init."
@@ -703,6 +722,9 @@ install_cluster () {
 }
 
 
+
+
+
 install_cilium () {
     #########################################################
     log "WARNING" "cilium must be reinstalled as kubelet will be reinstalled"
@@ -719,14 +741,15 @@ install_cilium () {
         NODE_VAR="NODE_$i"
         CURRENT_NODE=${!NODE_VAR}
         ################################################################################################################
+        free_space $CURRENT_NODE
+        ################################################################################################################
         log "INFO" "setting public interface: ${PUBLIC_INGRESS_INTER} rp_filter to 1"
         log "INFO" "setting cluster interface: ${CONTROLPLANE_INGRESS_INTER} rp_filter to 2"
         ssh -q ${CURRENT_NODE} """
-            sudo sysctl -w net.ipv4.conf.${PUBLIC_INGRESS_INTER}.rp_filter=1
-            sudo sysctl -w net.ipv4.conf.$CONTROLPLANE_INGRESS_INTER.rp_filter=2
+            sudo sysctl -w net.ipv4.conf.${PUBLIC_INGRESS_INTER}.rp_filter=1 > /dev/null 2>&1
+            sudo sysctl -w net.ipv4.conf.$CONTROLPLANE_INGRESS_INTER.rp_filter=2 > /dev/null 2>&1
             sudo sysctl --system > /dev/null 2>&1
         """
-
         ################################################################################################################
         CILIUM_CLI_VERSION=$(curl --silent https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
 
@@ -737,51 +760,42 @@ install_cilium () {
             CLI_ARCH=amd64
             if [ "\$\(uname -m\)" = "aarch64" ]; then CLI_ARCH=arm64; fi
 
-            echo "CLI_ARCH for node: ${CURRENT_NODE} is: \${CLI_ARCH}"
+            # echo "CLI_ARCH for node: ${CURRENT_NODE} is: \${CLI_ARCH}"
 
             curl -s -L --fail --remote-name-all https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-\${CLI_ARCH}.tar.gz{,.sha256sum}
 
-            sha256sum --check cilium-linux-\${CLI_ARCH}.tar.gz.sha256sum
-            sudo tar xzvfC cilium-linux-\${CLI_ARCH}.tar.gz /usr/local/bin
+            sha256sum --check cilium-linux-\${CLI_ARCH}.tar.gz.sha256sum > /dev/null 2>&1
+            sudo tar xzvfC cilium-linux-\${CLI_ARCH}.tar.gz /usr/local/bin > /dev/null 2>&1
             rm cilium-linux-*
         """
         add_bashcompletion ${CURRENT_NODE}  cilium
         log "INFO" "Finished installing cilium cli"
     done
     ################################################################################################################
-    log "INFO" "Adding cilium chart"
-    helm repo add cilium https://helm.cilium.io/ --force-update >/dev/null 2>&1
-    helm repo update >/dev/null 2>&1
+    helm_chart_prerequisites "cilium" "https://helm.cilium.io" "$CILIUM_NS"
     ################################################################################################################
-    ################################################################################################################
-    # cleaning up cilium and maglev tables
-    # EXPERIMENTAL ONLY AND STILL UNDER TESTING....
-    # echo "Started cleanup completed!"
-    # cilium_cleanup
-    # echo "Cilium cleanup completed!"
-    ################################################################################################################
-    log "INFO" "Installing cilium version: '${CILIUM_VERSION}' using cilium cli"
+    # # cleaning up cilium and maglev tables
+    # # EXPERIMENTAL ONLY AND STILL UNDER TESTING....
+    # # echo "Started cleanup completed!"
+    # # cilium_cleanup
+    # # echo "Cilium cleanup completed!"
+    # ################################################################################################################
     log "INFO" "Cilium native routing subnet is: ${CONTROLPLANE_SUBNET}"
     HASH_SEED=$(head -c12 /dev/urandom | base64 -w0)
     log "INFO" "Cilium maglev hashseed is: ${HASH_SEED}"
 
-    cilium install --version $CILIUM_VERSION \
+    log "INFO" "Installing cilium version: '${CILIUM_VERSION}' using cilium cli"
+    OUTPUT=$(cilium install --version $CILIUM_VERSION \
         --set ipv4NativeRoutingCIDR=${CONTROLPLANE_SUBNET} \
         --set k8sServiceHost=auto \
         --values ./cilium/values.yaml \
-        --set maglev.hashSeed="${HASH_SEED}" 2>&1 || true
-        # TODO add nodes count here....
-        # --set k8sServiceHost=10.96.0.1 \
-        # --set k8sServicePort=443 \
-    ################################################################################################################
-    # sleep 30
-    # kubectl delete pods -A --all
+        --set maglev.hashSeed="${HASH_SEED}"  2>&1 || true)
 
-    # kubectl -n kube-system delete pod etcd-$NODE_1
-    # kubectl -n kube-system delete pod kube-apiserver-$NODE_1
-    # kubectl -n kube-system delete pod kube-controller-manager-$NODE_1
-    # kubectl -n kube-system delete pod kube-scheduler-$NODE_1
-    # kubectl -n kube-system get deployments,statefulsets,daemonsets -o name | xargs -I {} kubectl -n kube-system rollout restart {}
+
+    if echo $OUTPUT | grep "Error"; then
+        log "ERROR" "$OUTPUT"
+        exit 1
+    fi
     sleep 30
     ################################################################################################################
     # echo "Applying custom cilium ingress."
@@ -795,8 +809,8 @@ install_cilium () {
     kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator  >/dev/null 2>&1 || true
     sleep 45
 
-    log "INFO" "waiting for cilium to go up (5minutes timeout)"
-    cilium status --wait >/dev/null 2>&1 || true
+    # log "INFO" "waiting for cilium to go up (5minutes timeout)"
+    # cilium status --wait >/dev/null 2>&1 || true
     ################################################################################################################
     log "INFO" "Apply LB IPAM"
     kubectl apply -f cilium/loadbalancer-ip-pool.yaml
@@ -834,7 +848,7 @@ join_cluster () {
         log "INFO" "initiating cluster join for node: ${CURRENT_NODE}"
         ssh -q ${CURRENT_NODE} """
             sudo rm -rf /etc/kubernetes/kubelet.conf /etc/kubernetes/pki/*
-            echo "executing command: $JOIN_COMMAND_WORKERS"
+            # echo "executing command: $JOIN_COMMAND_WORKERS"
             eval sudo ${JOIN_COMMAND_WORKERS} >/dev/null 2>&1
         """
         log "INFO" "Finished joining cluster for node: ${CURRENT_NODE}"
@@ -844,6 +858,27 @@ join_cluster () {
 
 
 install_longhorn_prerequisites() {
+    ##################################################################
+    log "INFO" "Ensuring that 'noexec' is unset for '/var' on cluster nodes."
+
+    for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
+        NODE_VAR="NODE_$i"
+        CURRENT_NODE=${!NODE_VAR}
+
+        log "INFO" "Ensuring that 'noexec' is unset for '/var' on node: '${CURRENT_NODE}'"
+        ssh -q ${CURRENT_NODE} '
+            # Backup the current /etc/fstab file
+            sudo cp /etc/fstab /etc/fstab.bak
+
+            # Remove 'noexec' from the mount options for /var only
+            sudo sed -i '\''s|\(^/dev/[^[:space:]]\+\s\+/var\s\+[^[:space:]]\+\s\+[^[:space:]]*\),noexec|\1|'\'' /etc/fstab
+
+            # Remount the /var filesystem to apply changes
+            sudo mount -o remount /var
+        '
+        log "INFO" "Finished Ensuring that 'noexec' is unset for '/var' on node: '${CURRENT_NODE}'"
+    done
+    log "INFO" "Finished ensuring that 'noexec' is unset for '/var'  on cluster nodes."
     ##################################################################
     log "INFO" "installing required utilities for longhorn"
     for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
@@ -1129,6 +1164,28 @@ install_longhorn_prerequisites() {
 }
 
 
+create_namespace() {
+    local namespace=$1
+    local max_retries=5
+    local attempt=1
+
+    while [ $attempt -le $max_retries ]; do
+        kubectl create ns "$namespace" > /dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            echo "Namespace '$namespace' created successfully."
+            break
+        else
+            echo "Attempt $attempt/$max_retries failed to create namespace '$namespace'. Retrying in 10 seconds..."
+            attempt=$((attempt + 1))
+            sleep 10
+        fi
+    done
+
+    if [ $attempt -gt $max_retries ]; then
+        echo "Failed to create namespace '$namespace' after $max_retries attempts."
+    fi
+}
+
 
 install_longhorn () {
     ##################################################################
@@ -1148,13 +1205,13 @@ install_longhorn () {
     | tr -d "\n" | sed "s/\"finalizers\": \[[^]]\+\]/\"finalizers\": []/" \
     | kubectl replace --raw /api/v1/namespaces/${LONGHORN_NS}/finalize -f - > /dev/null 2>&1 || true
     ##################################################################
-    log "INFO" "Creating certmanager NS: '$LONGHORN_NS'"
-    kubectl create ns $LONGHORN_NS > /dev/null 2>&1 || true
+    log "INFO" "Creating longhorn NS: '$LONGHORN_NS'"
+    create_namespace  $LONGHORN_NS
     ##################################################################
     log "INFO" "Started deploying longhorn in ns $LONGHORN_NS"
     output=$(helm install longhorn longhorn/longhorn  \
         --namespace $LONGHORN_NS  \
-        --version ${LONGHORN_VERSION} -f ./longhorn/values.yaml 2>&1)
+        --version ${LONGHORN_VERSION} -f ./longhorn/values.yaml > "${LONGHORN_LOGS}" 2>&1 || true)
 
     # Check if the Helm install command was successful
     if [ ! $? -eq 0 ]; then
@@ -1245,23 +1302,51 @@ install_gateway () {
 }
 
 
+helm_chart_prerequisites () {
+    local CHART_NAME=$1
+    local CHART_REPO=$2
+    local CHART_NS=$3
+    local DELETE_NS=$4
 
+    ##################################################################
+    log "INFO" "adding $CHART_NAME repo to Helm"
+    helm repo add $CHART_NAME $CHART_REPO --force-update > /dev/null 2>&1 || true
+    helm repo update > /dev/null 2>&1 || true
+    ##################################################################
+    # log "INFO" "uninstalling and ensuring the cluster is cleaned from $CHART_NAME"
+    # kubectl delete -n $CHART_NS ds/vault-manager ds/vault-nfs-installation deployments/vault-ui deployments/vault-driver-deployer jobs/vault-uninstall >/dev/null 2>&1 || true
 
+    helm uninstall -n $CHART_NS $CHART_NAME > /dev/null 2>&1 || true
+    ##################################################################
+    if [ "$DELETE_NS" == "true" ] || [ "$DELETE_NS" == "1" ]; then
+        log "INFO" "deleting $CHART_NS namespace"
+        kubectl delete ns $CHART_NS --now=true & > /dev/null 2>&1 || true
 
+        kubectl get namespace "$CHART_NS" -o json \
+        | tr -d "\n" | sed "s/\"finalizers\": \[[^]]\+\]/\"finalizers\": []/" \
+        | kubectl replace --raw /api/v1/namespaces/$CHART_NS/finalize -f - > /dev/null 2>&1 || true
+        sleep 60
+        ##################################################################
+        log "INFO" "Creating $CHART_NS namespace: '$CHART_NS'"
+        kubectl create ns $CHART_NS > /dev/null 2>&1 || true
+        # ##################################################################
+    else
+        log "INFO" "Skipping deletion"
+    fi
+}
 
+        # --set server.dataStorage.mountPath="${EXTRAVOLUMES_ROOT}"/vault/data \
+        # --set server.auditStorage.mountPath="${EXTRAVOLUMES_ROOT}"/vault/audit \
 
 install_vault () {
     ##################################################################
-    helm repo add hashicorp https://helm.releases.hashicorp.com --force-update
-    helm repo update
-
-
-
+    helm_chart_prerequisites "hashicorp" " https://helm.releases.hashicorp.com" "$VAULT_NS" "true"
+    ##################################################################
+    log "INFO" "Installing hashicorp vault Helm chart"
     helm install vault hashicorp/vault -n $VAULT_NS \
         --create-namespace --version $VAULT_VERSION \
-        -f vault/values.yaml
+        -f vault/values.yaml > "${VAULT_LOGS}" 2>&1 || true
     ##################################################################
-
 }
 
 
@@ -1371,12 +1456,8 @@ install_certmanager () {
 }
 
 
-free_space () {
-    sudo journalctl --vacuum-time=2d
-    sudo rm -rf /var/log/*.log
-    sudo yum autoremove -y
-}
 ################################################################################################################################################################
+
 deploy_hostsfile
 
 if [ "$PREREQUISITES" = true ]; then
@@ -1386,7 +1467,6 @@ else
     log "INFO" "Cluster prerequisites have been skipped"
 fi
 
-
 install_kubetools
 
 install_cluster
@@ -1394,14 +1474,12 @@ install_cluster
 install_gateway_CRDS
 
 install_cilium
+join_cluster
 
 install_gateway
 
-join_cluster
-
 
 install_certmanager
-
 
 install_rancher
 
@@ -1410,6 +1488,7 @@ install_longhorn
 
 # install_vault
 
+log "INFO" "deployment finished"
 
 #  2>&1 || true
 ################################################################################################################################################################
