@@ -473,7 +473,7 @@ EOF
             sudo sed -i "s/SystemdCgroup = false/SystemdCgroup = true/g" "$CONFIG_FILE"
             sudo sed -i "s|sandbox_image = \"registry.k8s.io/pause:3.8\"|sandbox_image = \"registry.k8s.io/pause:3.10\"|" "$CONFIG_FILE"
 
-            sudo sed -i "s|root = \"/var/lib/containerd\"|root = \"/mnt/longhorn-1/var/lib/containerd\"|" "$CONFIG_FILE"
+            # sudo sed -i "s|root = \"/var/lib/containerd\"|root = \"/mnt/longhorn-1/var/lib/containerd\"|" "$CONFIG_FILE"
 
             sudo mkdir -p /etc/nri/conf.d /opt/nri/plugins
             sudo chown -R root:root /etc/nri /opt/nri
@@ -645,7 +645,7 @@ deploy_hostsfile () {
 }
 
 
-install_cluster () {
+reset_cluster () {
     #########################################################
     log "WARNING" "cilium must be reinstalled as kubelet will be reinstalled"
     sudo cilium uninstall  >/dev/null 2>&1 || true
@@ -676,6 +676,10 @@ install_cluster () {
     done
     log "INFO" "finished reseting host persistent volumes mounts"
     ####################################################################
+}
+
+
+install_cluster () {
     log "INFO" "generating kubeadm init config file"
     envsubst < init-config-template.yaml > init-config.yaml
     # Kubeadm init logic
@@ -725,7 +729,7 @@ install_cluster () {
 
 
 
-install_cilium () {
+install_cilium_prerequisites () {
     #########################################################
     log "WARNING" "cilium must be reinstalled as kubelet will be reinstalled"
     sudo cilium uninstall >/dev/null 2>&1 || true
@@ -780,6 +784,10 @@ install_cilium () {
     # # cilium_cleanup
     # # echo "Cilium cleanup completed!"
     # ################################################################################################################
+}
+
+
+install_cilium () {
     log "INFO" "Cilium native routing subnet is: ${CONTROLPLANE_SUBNET}"
     HASH_SEED=$(head -c12 /dev/urandom | base64 -w0)
     log "INFO" "Cilium maglev hashseed is: ${HASH_SEED}"
@@ -789,8 +797,14 @@ install_cilium () {
         --set ipv4NativeRoutingCIDR=${CONTROLPLANE_SUBNET} \
         --set k8sServiceHost=auto \
         --values ./cilium/values.yaml \
-        --set maglev.hashSeed="${HASH_SEED}"  2>&1 || true)
-
+        --set operator.replicas=${NODES_COUNT} \
+        --set hubble.relay.replicas=${NODES_COUNT} \
+        --set hubble.ui.replicas=${NODES_COUNT} \
+        --set maglev.hashSeed="${HASH_SEED}"  \
+        --set encryption.enabled=true \
+        --set encryption.nodeEncryption=true \
+        --set encryption.type=wireguard \
+        2>&1 || true)
 
     if echo $OUTPUT | grep "Error"; then
         log "ERROR" "$OUTPUT"
@@ -804,16 +818,15 @@ install_cilium () {
     kubectl delete svc -n kube-system cilium-ingress >/dev/null 2>&1 || true
     ################################################################################################################
     sleep 30
-    ################################################################################################################
-    log "INFO" "restarting cilium."
-    kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator  >/dev/null 2>&1 || true
-    sleep 45
-
     # log "INFO" "waiting for cilium to go up (5minutes timeout)"
     # cilium status --wait >/dev/null 2>&1 || true
     ################################################################################################################
     log "INFO" "Apply LB IPAM"
     kubectl apply -f cilium/loadbalancer-ip-pool.yaml
+    ################################################################################################################
+    sleep 180
+    log "INFO" "restarting cilium."
+    kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator  >/dev/null 2>&1 || true
     ################################################################################################################
     log "INFO" "Finished installing cilium"
     ################################################################################################################
@@ -849,7 +862,7 @@ join_cluster () {
         ssh -q ${CURRENT_NODE} """
             sudo rm -rf /etc/kubernetes/kubelet.conf /etc/kubernetes/pki/*
             # echo "executing command: $JOIN_COMMAND_WORKERS"
-            eval sudo ${JOIN_COMMAND_WORKERS} >/dev/null 2>&1
+            eval sudo ${JOIN_COMMAND_WORKERS} >/dev/null 2>&1 || true
         """
         log "INFO" "Finished joining cluster for node: ${CURRENT_NODE}"
     done
@@ -1189,29 +1202,24 @@ create_namespace() {
 
 install_longhorn () {
     ##################################################################
-    log "INFO" "adding longhorn repo to Helm"
-    helm repo add longhorn https://charts.longhorn.io --force-update > /dev/null 2>&1 || true
-    helm repo update > /dev/null 2>&1 || true
-    ##################################################################
-    log "INFO" "uninstalling and ensuring the cluster is cleaned from longhorn"
-    kubectl delete -n longhorn-system ds/longhorn-manager ds/longhorn-nfs-installation deployments/longhorn-ui deployments/longhorn-driver-deployer  jobs/longhorn-uninstall >/dev/null 2>&1 || true
-
-    helm uninstall -n $LONGHORN_NS longhorn > /dev/null 2>&1 || true
-    ##################################################################
-    log "INFO" "deleting longhorn NS"
-    kubectl delete ns $LONGHORN_NS --now=true & > /dev/null 2>&1 || true
-
-    kubectl get namespace "${LONGHORN_NS}" -o json \
-    | tr -d "\n" | sed "s/\"finalizers\": \[[^]]\+\]/\"finalizers\": []/" \
-    | kubectl replace --raw /api/v1/namespaces/${LONGHORN_NS}/finalize -f - > /dev/null 2>&1 || true
-    ##################################################################
-    log "INFO" "Creating longhorn NS: '$LONGHORN_NS'"
-    create_namespace  $LONGHORN_NS
+    helm_chart_prerequisites "longhorn" " https://charts.longhorn.io" "$LONGHORN_NS" "true"
     ##################################################################
     log "INFO" "Started deploying longhorn in ns $LONGHORN_NS"
     output=$(helm install longhorn longhorn/longhorn  \
         --namespace $LONGHORN_NS  \
-        --version ${LONGHORN_VERSION} -f ./longhorn/values.yaml > "${LONGHORN_LOGS}" 2>&1 || true)
+        --version ${LONGHORN_VERSION} \
+        -f ./longhorn/values.yaml \
+        --set defaultSettings.defaultReplicaCount=${NODES_COUNT} \
+        --set persistence.defaultClassReplicaCount=${NODES_COUNT} \
+        --set csi.attacherReplicaCount=${NODES_COUNT} \
+        --set csi.provisionerReplicaCount=${NODES_COUNT} \
+        --set csi.resizerReplicaCount=${NODES_COUNT} \
+        --set csi.snapshotterReplicaCount=${NODES_COUNT} \
+        --set longhornUI.replicas=${NODES_COUNT} \
+        --set longhornConversionWebhook.replicas=${NODES_COUNT} \
+        --set longhornAdmissionWebhook.replicas=${NODES_COUNT} \
+        --set longhornRecoveryBackend.replicas=${NODES_COUNT} \
+        > "${LONGHORN_LOGS}" 2>&1 || true)
 
     # Check if the Helm install command was successful
     if [ ! $? -eq 0 ]; then
@@ -1320,11 +1328,12 @@ helm_chart_prerequisites () {
     ##################################################################
     if [ "$DELETE_NS" == "true" ] || [ "$DELETE_NS" == "1" ]; then
         log "INFO" "deleting $CHART_NS namespace"
-        kubectl delete ns $CHART_NS --now=true & > /dev/null 2>&1 || true
+        kubectl delete ns $CHART_NS --now=true > /dev/null 2>&1 || true
 
-        kubectl get namespace "$CHART_NS" -o json \
+        kubectl get namespace "$CHART_NS" -o json 2>/dev/null \
         | tr -d "\n" | sed "s/\"finalizers\": \[[^]]\+\]/\"finalizers\": []/" \
         | kubectl replace --raw /api/v1/namespaces/$CHART_NS/finalize -f - > /dev/null 2>&1 || true
+
         sleep 60
         ##################################################################
         log "INFO" "Creating $CHART_NS namespace: '$CHART_NS'"
@@ -1345,7 +1354,10 @@ install_vault () {
     log "INFO" "Installing hashicorp vault Helm chart"
     helm install vault hashicorp/vault -n $VAULT_NS \
         --create-namespace --version $VAULT_VERSION \
-        -f vault/values.yaml > "${VAULT_LOGS}" 2>&1 || true
+        -f vault/values.yaml \
+        --set injector.replicas=${NODES_COUNT} \
+        --set server.ha.replicas=${NODES_COUNT} \
+        > "${VAULT_LOGS}" 2>&1 || true
     ##################################################################
 }
 
@@ -1383,10 +1395,11 @@ install_rancher () {
 
     log "INFO" "Started deploying rancher on the cluster"
     helm install rancher rancher-${RANCHER_BRANCH}/rancher ${DEVEL} \
+        --version ${RANCHER_VERSION}  \
         --namespace ${RANCHER_NS} \
         --set hostname=${RANCHER_FQDN} \
         --set bootstrapPassword=${RANCHER_ADMIN_PASS}  \
-        --version ${RANCHER_VERSION}  \
+        --set replicas=${NODES_COUNT} \
         -f rancher/values.yaml > /dev/null 2>&1
 
     # kubectl -n $RANCHER_NS rollout status deploy/rancher
@@ -1400,6 +1413,13 @@ install_rancher () {
     ##################################################################
     log "INFO" "Applying rancher HTTPRoute for ingress."
     kubectl apply -f rancher/http-routes.yaml
+    ##################################################################
+    sleep 120
+    log "INFO" "Removing completed pods"
+    kubectl delete pods -n ${RANCHER_NS} --field-selector=status.phase=Succeeded
+    ##################################################################
+    log "INFO" "Rancher installation completed."
+
 }
 
 
@@ -1436,6 +1456,9 @@ install_certmanager () {
         --version ${CERTMANAGER_VERSION} \
         --namespace ${CERTMANAGER_NS} \
         --create-namespace \
+        --set replicaCount=${NODES_COUNT} \
+        --set webhook.replicaCount=${NODES_COUNT} \
+        --set cainjector.replicaCount=${NODES_COUNT} \
         -f certmanager/values.yaml
     log "INFO" "Finished installing cert-manger on namespace: '${CERTMANAGER_NS}'"
 
@@ -1469,24 +1492,31 @@ fi
 
 install_kubetools
 
+reset_cluster
+
 install_cluster
 
 install_gateway_CRDS
 
+install_cilium_prerequisites
+
 install_cilium
+
 join_cluster
 
 install_gateway
 
-
 install_certmanager
+
+
+
 
 install_rancher
 
 install_longhorn_prerequisites
 install_longhorn
 
-# install_vault
+install_vault
 
 log "INFO" "deployment finished"
 
