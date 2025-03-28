@@ -6,9 +6,10 @@ service:
 
 persistence:
   defaultClass: true
-  defaultFsType: ext4
+  # defaultFsType: ext4
+  defaultFsType: xfs
   defaultMkfsParams: ""
-  defaultClassReplicaCount: 3
+  # defaultClassReplicaCount: 2
   defaultDataLocality: disabled # best-effort otherwise
   defaultReplicaAutoBalance: ignored # "disabled", "least-effort" or "best-effort" otherwise
   reclaimPolicy: Delete
@@ -29,10 +30,10 @@ persistence:
 
 csi:
   kubeletRootDir: ~
-  attacherReplicaCount: ~
-  provisionerReplicaCount: ~
-  resizerReplicaCount: ~
-  snapshotterReplicaCount: ~
+  # attacherReplicaCount: ~
+  # provisionerReplicaCount: ~
+  # resizerReplicaCount: ~
+  # snapshotterReplicaCount: ~
 
 defaultSettings:
   autoSalvage: false   # set to true in prod
@@ -45,7 +46,7 @@ defaultSettings:
   defaultLonghornStaticStorageClass: longhorn-static
   nodeDownPodDeletionPolicy: do-nothing
 
-  defaultReplicaCount: 3
+  # defaultReplicaCount: 2
   defaultDataLocality: strict-local  # incompatible with ReadWriteMany (RWX)
 
   # guaranteedEngineManagerCPU: 0.25
@@ -57,8 +58,8 @@ defaultSettings:
 
   allowRecurringJobWhileVolumeDetached: ~
   createDefaultDiskLabeledNodes: ~
-  defaultDataPath: /mnt/longhorn-1/longhorn/
-  # defaultDataPath: /var/lib/longhorn/
+  # defaultDataPath: /mnt/longhorn-1/longhorn/
+  defaultDataPath: /var/lib/longhorn/
 
   replicaAutoBalance: ~
   storageOverProvisioningPercentage: ~
@@ -144,7 +145,7 @@ longhornDriver:
   #  label-key2: "label-value2"
 
 longhornUI:
-  replicas: 3
+  # replicas: 2
   priorityClass: ~
   tolerations: []
   ## If you want to set tolerations for Longhorn UI Deployment, delete the `[]` in the line above
@@ -160,7 +161,7 @@ longhornUI:
   #  label-key2: "label-value2"
 
 longhornConversionWebhook:
-  replicas: 3
+  # replicas: 2
   priorityClass: ~
   tolerations: []
   ## If you want to set tolerations for Longhorn conversion webhook Deployment, delete the `[]` in the line above
@@ -176,7 +177,7 @@ longhornConversionWebhook:
   #  label-key2: "label-value2"
 
 longhornAdmissionWebhook:
-  replicas: 3
+  # replicas: 2
   priorityClass: ~
   tolerations: []
   ## If you want to set tolerations for Longhorn admission webhook Deployment, delete the `[]` in the line above
@@ -192,7 +193,7 @@ longhornAdmissionWebhook:
   #  label-key2: "label-value2"
 
 longhornRecoveryBackend:
-  replicas: 3
+  # replicas: 2
   priorityClass: ~
   tolerations: []
   ## If you want to set tolerations for Longhorn recovery backend Deployment, delete the `[]` in the line above
