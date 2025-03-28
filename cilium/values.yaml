@@ -244,7 +244,7 @@ operator:
   # dnsPolicy: "None"
   dnsPolicy: "Default"
   # We have  3 nodes
-  replicas: 3
+  # replicas: 2
 
 #############################################################################################################
 # dnsPolicy: "None"
@@ -303,7 +303,7 @@ hubble:
     clusterDomain: cluster.local
   relay:
     enabled: true
-    replicas: 3
+    # replicas: 2
     # -- hubble-relay service configuration.
     service:
       # --- The type of service used for Hubble Relay access, either ClusterIP, NodePort or LoadBalancer.
@@ -327,7 +327,7 @@ hubble:
       mountPath: /var/
   ui:
     enabled: True
-    replicas: 3
+    # replicas: 2
     rollOutPods: True
     service:
       # -- Annotations to be added for the Hubble UI service
