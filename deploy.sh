@@ -56,10 +56,10 @@ command_exists() {
 # Parse command-line arguments manually (including --dry-run)
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -c|--control-plane-hostname)
-            CONTROLPLANE_HOSTNAME="$2"
-            shift 2
-            ;;
+        # -c|--control-plane-hostname)
+        #     CONTROLPLANE_HOSTNAME="$2"
+        #     shift 2
+        #     ;;
         -n|--nodes-file)
             NODES_FILE="$2"
             shift 2
@@ -87,7 +87,7 @@ done
 
 ################################################################################################################################################################
 # Validate that required arguments are provided
-if [ -z "$CONTROLPLANE_HOSTNAME" ] || [ -z "$NODES_FILE" ]; then
+if [ -z "$NODES_FILE" ]; then   # [ -z "$CONTROLPLANE_HOSTNAME" ] ||
     log "ERROR" "Missing required arguments."
     log "ERROR" "$0 --control-plane-hostname <str> --nodes-file <nodes_file> --set-hostname-to <str OPTIONAL> [--dry-run]"
     exit 1
@@ -116,7 +116,7 @@ prerequisites_requirements() {
     #########################################################################################
     log "WARNING" "Will install cluster prerequisites, manual nodes reboot is required."
     #########################################################################################
-    for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
+    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
         #####################################################################################
         NODE_VAR="NODE_$i"
         CURRENT_NODE=${!NODE_VAR}
@@ -542,7 +542,7 @@ gpgcheck=1
 gpgkey=https://pkgs.k8s.io/core:/stable:/v$K8S_MAJOR_VERSION/rpm/repodata/repomd.xml.key
 exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
 """
-    for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
+    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
         NODE_VAR="NODE_$i"
         CURRENT_NODE=${!NODE_VAR}
         #########################################################
@@ -555,6 +555,7 @@ exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
         log "INFO" "Removing prior installed versions on node: ${CURRENT_NODE}"
         ssh -q ${CURRENT_NODE} """
             sudo dnf remove -y kubelet kubeadm kubectl --disableexcludes=kubernetes  >/dev/null 2>&1
+            sudo rm -rf /etc/kubernetes
         """
         #########################################################
         log "INFO" "installing k8s tools on node: ${CURRENT_NODE}"
@@ -576,7 +577,7 @@ exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
 
 deploy_hostsfile () {
     ################################################################
-    for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
+    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
         NODE_VAR="NODE_$i"
         CURRENT_NODE=${!NODE_VAR}
         log "INFO" "installing tools for node: ${CURRENT_NODE}"
@@ -629,7 +630,7 @@ deploy_hostsfile () {
     done
     #########################################################
     log "INFO" "Sending hosts file to nodes"
-    for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
+    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
         NODE_VAR="NODE_$i"
         CURRENT_NODE=${!NODE_VAR}
         log "INFO" "sending hosts file to target node: ${CURRENT_NODE}"
@@ -651,7 +652,7 @@ reset_cluster () {
     sudo cilium uninstall  >/dev/null 2>&1 || true
     #########################################################
     # cleaning prior deployments:
-    for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
+    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
         NODE_VAR="NODE_$i"
         CURRENT_NODE=${!NODE_VAR}
         ################################################################################################################
@@ -663,7 +664,7 @@ reset_cluster () {
     done
     ##################################################################
     log "INFO" "starting reseting host persistent volumes mounts"
-    for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
+    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
         NODE_VAR="NODE_$i"
         CURRENT_NODE=${!NODE_VAR}
         log "INFO" "Reseting volumes on node: ${CURRENT_NODE}"
@@ -697,10 +698,9 @@ install_cluster () {
 
     log "INFO" "    with command: $KUBE_ADM_COMMAND"
     # KUBEADM_INIT_OUTPUT=$(eval "$KUBE_ADM_COMMAND 2>&1")
-    KUBEADM_INIT_OUTPUT=$(eval "$KUBE_ADM_COMMAND" > "${KUBEADMINIT_LOGS}" 2>&1 || true)
+    KUBEADM_INIT_OUTPUT=$(eval "$KUBE_ADM_COMMAND"  2>&1 || true)
 
-    if [[ $? -ne 0 ]]; then
-        log "ERROR" "Error: Failed to run kubeadm init."
+    if echo $(echo "$KUBEADM_INIT_OUTPUT" | tr '[:upper:]' '[:lower:]') | grep "error"; then
         log "ERROR" "$KUBEADM_INIT_OUTPUT"
         exit 1
     fi
@@ -717,8 +717,8 @@ install_cluster () {
         sudo chown $(id -u):$(id -g) $HOME/.kube/config
 
         log "INFO" "unintaing the control-plane node"
-        kubectl taint nodes $NODE_1 node-role.kubernetes.io/control-plane:NoSchedule- >/dev/null 2>&1
-        kubectl taint nodes $NODE_1 node.kubernetes.io/not-ready:NoSchedule- >/dev/null 2>&1
+        kubectl taint nodes $CONTROL_PLANE_HOST node-role.kubernetes.io/control-plane:NoSchedule- >/dev/null 2>&1
+        kubectl taint nodes $CONTROL_PLANE_HOST node.kubernetes.io/not-ready:NoSchedule- >/dev/null 2>&1
         log "INFO" "sleeping for 30s to wait for Kubernetes control-plane node setup completion..."
         sleep 30
     fi
@@ -741,11 +741,11 @@ install_cilium_prerequisites () {
     # Run on each node with root permissions:
     sudo iptables-save | grep -v KUBE | sudo iptables-restore  >/dev/null 2>&1
     ################################################################################################################
-    for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
+    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
         NODE_VAR="NODE_$i"
         CURRENT_NODE=${!NODE_VAR}
         ################################################################################################################
-        free_space $CURRENT_NODE
+        # free_space $CURRENT_NODE
         ################################################################################################################
         log "INFO" "setting public interface: ${PUBLIC_INGRESS_INTER} rp_filter to 1"
         log "INFO" "setting cluster interface: ${CONTROLPLANE_INGRESS_INTER} rp_filter to 2"
@@ -788,6 +788,7 @@ install_cilium_prerequisites () {
 
 
 install_cilium () {
+    ################################################################################################################
     log "INFO" "Cilium native routing subnet is: ${CONTROLPLANE_SUBNET}"
     HASH_SEED=$(head -c12 /dev/urandom | base64 -w0)
     log "INFO" "Cilium maglev hashseed is: ${HASH_SEED}"
@@ -797,9 +798,9 @@ install_cilium () {
         --set ipv4NativeRoutingCIDR=${CONTROLPLANE_SUBNET} \
         --set k8sServiceHost=auto \
         --values ./cilium/values.yaml \
-        --set operator.replicas=${NODES_COUNT} \
-        --set hubble.relay.replicas=${NODES_COUNT} \
-        --set hubble.ui.replicas=${NODES_COUNT} \
+        --set operator.replicas=${REPLICAS} \
+        --set hubble.relay.replicas=${REPLICAS} \
+        --set hubble.ui.replicas=${REPLICAS} \
         --set maglev.hashSeed="${HASH_SEED}"  \
         --set encryption.enabled=true \
         --set encryption.nodeEncryption=true \
@@ -839,8 +840,8 @@ join_cluster () {
     JOIN_COMMAND_WORKERS=$(kubeadm token create --print-join-command)
     JOIN_COMMAND_CP="${JOIN_COMMAND} --control-plane"
 
-    # for i in $(seq "2" "$((2 + NODES_COUNT - 1))"); do
-    for i in $(seq 2 "$((2 + NODES_COUNT - 2))"); do
+    # for i in $(seq 2 "$((2 + NODES_LAST - 2))"); do
+    for i in $(seq 2 "$NODES_LAST"); do
         NODE_VAR="NODE_$i"
         CURRENT_NODE=${!NODE_VAR}
 
@@ -874,7 +875,7 @@ install_longhorn_prerequisites() {
     ##################################################################
     log "INFO" "Ensuring that 'noexec' is unset for '/var' on cluster nodes."
 
-    for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
+    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
         NODE_VAR="NODE_$i"
         CURRENT_NODE=${!NODE_VAR}
 
@@ -894,7 +895,7 @@ install_longhorn_prerequisites() {
     log "INFO" "Finished ensuring that 'noexec' is unset for '/var'  on cluster nodes."
     ##################################################################
     log "INFO" "installing required utilities for longhorn"
-    for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
+    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
         NODE_VAR="NODE_$i"
         CURRENT_NODE=${!NODE_VAR}
 
@@ -987,7 +988,7 @@ install_longhorn_prerequisites() {
     fi
     log "INFO" "Finished installing NFS/iSCSI on the cluster."
     ##################################################################
-    for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
+    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
         NODE_VAR="NODE_$i"
         CURRENT_NODE=${!NODE_VAR}
         ##################################################################
@@ -1107,7 +1108,7 @@ install_longhorn_prerequisites() {
     log "INFO" "Check the prerequisites and configurations for Longhorn:"
     log "INFO" "currently preflight doesnt support almalinux"
     #  so if on almalinx; run os-camo o, alll nodes prior to check preflight
-    for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
+    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
         NODE_VAR="NODE_$i"
         CURRENT_NODE=${!NODE_VAR}
 
@@ -1165,7 +1166,7 @@ install_longhorn_prerequisites() {
     log "INFO" "Finished checking the longhorn preflight post installation"
     ##################################################################
     # revert camo:
-    for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
+    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
         NODE_VAR="NODE_$i"
         CURRENT_NODE=${!NODE_VAR}
 
@@ -1209,16 +1210,16 @@ install_longhorn () {
         --namespace $LONGHORN_NS  \
         --version ${LONGHORN_VERSION} \
         -f ./longhorn/values.yaml \
-        --set defaultSettings.defaultReplicaCount=${NODES_COUNT} \
-        --set persistence.defaultClassReplicaCount=${NODES_COUNT} \
-        --set csi.attacherReplicaCount=${NODES_COUNT} \
-        --set csi.provisionerReplicaCount=${NODES_COUNT} \
-        --set csi.resizerReplicaCount=${NODES_COUNT} \
-        --set csi.snapshotterReplicaCount=${NODES_COUNT} \
-        --set longhornUI.replicas=${NODES_COUNT} \
-        --set longhornConversionWebhook.replicas=${NODES_COUNT} \
-        --set longhornAdmissionWebhook.replicas=${NODES_COUNT} \
-        --set longhornRecoveryBackend.replicas=${NODES_COUNT} \
+        --set defaultSettings.defaultReplicaCount=${REPLICAS} \
+        --set persistence.defaultClassReplicaCount=${REPLICAS} \
+        --set csi.attacherReplicaCount=${REPLICAS} \
+        --set csi.provisionerReplicaCount=${REPLICAS} \
+        --set csi.resizerReplicaCount=${REPLICAS} \
+        --set csi.snapshotterReplicaCount=${REPLICAS} \
+        --set longhornUI.replicas=${REPLICAS} \
+        --set longhornConversionWebhook.replicas=${REPLICAS} \
+        --set longhornAdmissionWebhook.replicas=${REPLICAS} \
+        --set longhornRecoveryBackend.replicas=${REPLICAS} \
         > "${LONGHORN_LOGS}" 2>&1 || true)
 
     # Check if the Helm install command was successful
@@ -1355,8 +1356,8 @@ install_vault () {
     helm install vault hashicorp/vault -n $VAULT_NS \
         --create-namespace --version $VAULT_VERSION \
         -f vault/values.yaml \
-        --set injector.replicas=${NODES_COUNT} \
-        --set server.ha.replicas=${NODES_COUNT} \
+        --set injector.replicas=${REPLICAS} \
+        --set server.ha.replicas=${REPLICAS} \
         > "${VAULT_LOGS}" 2>&1 || true
     ##################################################################
 }
@@ -1364,23 +1365,25 @@ install_vault () {
 
 
 install_rancher () {
-    ##################################################################
-    log "INFO" "adding rancher repo to helm"
-    helm repo add rancher-${RANCHER_BRANCH} https://releases.rancher.com/server-charts/${RANCHER_BRANCH} > /dev/null 2>&1 || true
-    helm repo update > /dev/null 2>&1 || true
-    ##################################################################
-    log "INFO" "uninstalling and ensuring the cluster is cleaned from rancher"
-    helm uninstall -n $RANCHER_NS rancher > /dev/null 2>&1 || true
-    ##################################################################
-    log "INFO" "deleting rancher NS"
-    kubectl delete ns $RANCHER_NS --now=true & > /dev/null 2>&1 || true
+    helm_chart_prerequisites "rancher" "https://releases.rancher.com/server-charts/${RANCHER_BRANCH}" "$RANCHER_NS" "true"
 
-    kubectl get namespace "${RANCHER_NS}" -o json \
-    | tr -d "\n" | sed "s/\"finalizers\": \[[^]]\+\]/\"finalizers\": []/" \
-    | kubectl replace --raw /api/v1/namespaces/${RANCHER_NS}/finalize -f - > /dev/null 2>&1 || true
-    ##################################################################
-    log "INFO" "Creating rancher NS: '$RANCHER_NS'"
-    kubectl create ns $RANCHER_NS > /dev/null 2>&1 || true
+    # ##################################################################
+    # log "INFO" "adding rancher repo to helm"
+    # helm repo add rancher-${RANCHER_BRANCH} https://releases.rancher.com/server-charts/${RANCHER_BRANCH} > /dev/null 2>&1 || true
+    # helm repo update > /dev/null 2>&1 || true
+    # ##################################################################
+    # log "INFO" "uninstalling and ensuring the cluster is cleaned from rancher"
+    # helm uninstall -n $RANCHER_NS rancher > /dev/null 2>&1 || true
+    # ##################################################################
+    # log "INFO" "deleting rancher NS"
+    # kubectl delete ns $RANCHER_NS --now=true & > /dev/null 2>&1 || true
+
+    # kubectl get namespace "${RANCHER_NS}" -o json \
+    # | tr -d "\n" | sed "s/\"finalizers\": \[[^]]\+\]/\"finalizers\": []/" \
+    # | kubectl replace --raw /api/v1/namespaces/${RANCHER_NS}/finalize -f - > /dev/null 2>&1 || true
+    # ##################################################################
+    # log "INFO" "Creating rancher NS: '$RANCHER_NS'"
+    # kubectl create ns $RANCHER_NS > /dev/null 2>&1 || true
     ##################################################################
     log "WARNING" "Warning: Currently rancher supports kubeVersion up to 1.31.0"
     log "WARNING" "initiating workaround to force the install..."
@@ -1399,7 +1402,7 @@ install_rancher () {
         --namespace ${RANCHER_NS} \
         --set hostname=${RANCHER_FQDN} \
         --set bootstrapPassword=${RANCHER_ADMIN_PASS}  \
-        --set replicas=${NODES_COUNT} \
+        --set replicas=${REPLICAS} \
         -f rancher/values.yaml > /dev/null 2>&1
 
     # kubectl -n $RANCHER_NS rollout status deploy/rancher
@@ -1427,7 +1430,7 @@ install_rancher () {
 install_certmanager () {
     ##################################################################
     # install cert-manager cli:
-    for i in $(seq "$NODE_OFFSET" "$((NODE_OFFSET + NODES_COUNT - 1))"); do
+    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
         #####################################################################################
         NODE_VAR="NODE_$i"
         CURRENT_NODE=${!NODE_VAR}
@@ -1448,17 +1451,20 @@ install_certmanager () {
     done
     ##################################################################
     # deploy cert-manager:
-    helm repo add jetstack https://charts.jetstack.io --force-update > /dev/null 2>&1 || true
-    helm repo update > /dev/null 2>&1 || true
+    helm_chart_prerequisites "jetstack" "https://charts.jetstack.io" "$CERTMANAGER_VERSION" "true"
+    ##################################################################
+
+    # helm repo add jetstack https://charts.jetstack.io --force-update > /dev/null 2>&1 || true
+    # helm repo update > /dev/null 2>&1 || true
 
     log "INFO" "Started installing cert-manger on namespace: '${CERTMANAGER_NS}'"
     helm install cert-manager jetstack/cert-manager  \
         --version ${CERTMANAGER_VERSION} \
         --namespace ${CERTMANAGER_NS} \
         --create-namespace \
-        --set replicaCount=${NODES_COUNT} \
-        --set webhook.replicaCount=${NODES_COUNT} \
-        --set cainjector.replicaCount=${NODES_COUNT} \
+        --set replicaCount=${REPLICAS} \
+        --set webhook.replicaCount=${REPLICAS} \
+        --set cainjector.replicaCount=${REPLICAS} \
         -f certmanager/values.yaml
     log "INFO" "Finished installing cert-manger on namespace: '${CERTMANAGER_NS}'"
 
@@ -1481,16 +1487,16 @@ install_certmanager () {
 
 ################################################################################################################################################################
 
-deploy_hostsfile
+# deploy_hostsfile
 
-if [ "$PREREQUISITES" = true ]; then
-    log "INFO" "Executing cluster prerequisites installation and checks"
-    prerequisites_requirements
-else
-    log "INFO" "Cluster prerequisites have been skipped"
-fi
+# if [ "$PREREQUISITES" = true ]; then
+#     log "INFO" "Executing cluster prerequisites installation and checks"
+#     prerequisites_requirements
+# else
+#     log "INFO" "Cluster prerequisites have been skipped"
+# fi
 
-install_kubetools
+# install_kubetools
 
 reset_cluster
 
@@ -1509,16 +1515,19 @@ install_gateway
 install_certmanager
 
 
+# install_rancher
 
+# install_longhorn_prerequisites
+# install_longhorn
 
-install_rancher
-
-install_longhorn_prerequisites
-install_longhorn
-
-install_vault
+# install_vault
 
 log "INFO" "deployment finished"
+
+
+# ./deploy.sh --control-plane-hostname lorionstrm02vel --nodes-file hosts_file.yaml --with-prerequisites
+
+
 
 #  2>&1 || true
 ################################################################################################################################################################
