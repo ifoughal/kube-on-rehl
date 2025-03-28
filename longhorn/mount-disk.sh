@@ -66,11 +66,27 @@ mkfs.xfs /dev/sdb1
 
 #############################################
 # extend a specific volume:
+DISK=/dev/sdb
+SUB_DISK=2
+
 VOLUME_PATH=/var
 VOLUME_TO_EXTEND=/dev/rootvg/lv_var
 
-# Extend rootvg:
-vgextend rootvg ${DISK}
+PARTITION_SIZE="+10G"
+
+sudo fdisk "$DISK" <<EOF
+n
+${SUB_DISK}
+
+${PARTITION_SIZE}
+w
+EOF
+
+
+SUB_DISK=${DISK}${SUB_DISK}    # EG: /dev/sdb2
+
+# # Extend rootvg:
+vgextend rootvg ${SUB_DISK}
 
 lvextend -L+10G $VOLUME_TO_EXTEND
 # if ext4
