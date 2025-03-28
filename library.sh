@@ -36,6 +36,35 @@ log() {
 }
 
 
+optimize_dnf() {
+  # Enable Delta RPMs
+  sudo sed -i '/^deltarpm=/d' /etc/dnf/dnf.conf
+  echo "deltarpm=true" | sudo tee -a /etc/dnf/dnf.conf
+
+  # Increase Download Threads
+  sudo sed -i '/^max_parallel_downloads=/d' /etc/dnf/dnf.conf
+  echo "max_parallel_downloads=10" | sudo tee -a /etc/dnf/dnf.conf
+
+  # Adjust Metadata Expiration
+  sudo sed -i '/^metadata_expire=/d' /etc/dnf/dnf.conf
+  echo "metadata_expire=1h" | sudo tee -a /etc/dnf/dnf.conf
+
+  # Enable Fastest Mirror Plugin
+  sudo sed -i '/^fastestmirror=/d' /etc/dnf/dnf.conf
+  echo "fastestmirror=true" | sudo tee -a /etc/dnf/dnf.conf
+
+  # Clean DNF Cache
+  sudo dnf clean all
+  sudo dnf clean packages
+  sudo dnf clean metadata
+
+  # Update System
+  sudo dnf update -y
+
+  echo "DNF cache cleaned and system updated successfully."
+}
+
+
 # Function to update or add the PATH variable in /etc/environment
 update_path() {
     local NEW_PATH="export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
