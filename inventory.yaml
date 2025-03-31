@@ -1,0 +1,13 @@
+hosts:
+- hostname: control-plane-1
+  ip: 192.168.66.129
+  role: control-plane
+
+- hostname: worker-node-1
+  ip: 192.168.66.131
+  role: worker
+
+- hostname: worker-node-2
+  ip: 192.168.66.133
+  role: worker
+

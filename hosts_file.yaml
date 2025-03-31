@@ -1,7 +1,0 @@
-nodes:
-- ip: 10.10.10.100
-  hostname: my-control-plane-node-1
-- ip: 10.10.10.101
-  hostname: my-worker-node-2
-- ip: 10.10.10.102
-  hostname: my-worker-node-3
