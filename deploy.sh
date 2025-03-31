@@ -119,7 +119,7 @@ if [ "$VERBOSE" = true ]; then
     VERBOSE_2=""
 else
     VERBOSE_1=" 1> /dev/null "
-    VERBOSE_2="2>/dev/null 1>&2"
+    VERBOSE_2=">/dev/null 2>&1"
 fi
 
 ################################################################################################################################################################
@@ -142,9 +142,9 @@ prerequisites_requirements() {
         ssh -q ${CURRENT_NODE} """
             bash -c '''
                 if echo '$SUDO_PASSWORD' | sudo -S grep -q \"^%$SUDO_GROUP[[:space:]]\\+ALL=(ALL)[[:space:]]\\+NOPASSWD:ALL\" /etc/sudoers.d/10_sudo_users_groups; then
-                    echo \"Visudo entry for $SUDO_GROUP is appended correctly.\"
+                    echo \"Visudo entry for $SUDO_GROUP is appended correctly.\" ${VERBOSE_1}
                 else
-                    echo \"Visudo entry for $SUDO_GROUP is not found.\"
+                    echo \"Visudo entry for $SUDO_GROUP is not found.\" ${VERBOSE_1}
                     echo '$SUDO_PASSWORD' | sudo -S bash -c \"\"\"echo %$SUDO_GROUP       ALL\=\\\(ALL\\\)       NOPASSWD\:ALL >> /etc/sudoers.d/10_sudo_users_groups \"\"\"
                 fi
             '''
@@ -159,10 +159,10 @@ prerequisites_requirements() {
         log "INFO" "Check if the groups exists with the specified GIDs for node: ${CURRENT_NODE}"
         ssh  -q ${CURRENT_NODE} """
             if getent group $SUDO_GROUP | grep -q "${SUDO_GROUP}:"; then
-                echo "'${SUDO_GROUP}' Group exists."
+                echo "'${SUDO_GROUP}' Group exists." ${VERBOSE_1}
             else
                 echo "'${SUDO_GROUP}' Group does not exist, creating..."
-                echo "$SUDO_PASSWORD" | sudo -S groupadd ${SUDO_GROUP}
+                echo "$SUDO_PASSWORD" | sudo -S groupadd ${SUDO_GROUP} ${VERBOSE_1}
             fi
         """
         # Check if the SSH command failed
@@ -170,19 +170,19 @@ prerequisites_requirements() {
             log "ERROR" "Error occurred while configuring sudo group on node ${CURRENT_NODE}. Exiting script."
             exit 1  # This will stop the script execution
         fi
-        log "INFO" "Finished check if the groups exists with the specified GIDs for node: ${CURRENT_NODE}"
+        log "INFO" "Finished checking / creating the the sudoer groups with the specified GIDs for node: ${CURRENT_NODE}"
         #####################################################################################
         log "INFO" "Check if the user '${SUDO_USERNAME}' exists for node: ${CURRENT_NODE}"
-        ssh  -q ${CURRENT_NODE} """
+        ssh -q ${CURRENT_NODE} """
             if id "$SUDO_USERNAME" &>/dev/null; then
-                echo "User $SUDO_USERNAME exists."
-                id "$SUDO_USERNAME"
+                echo "User $SUDO_USERNAME exists." ${VERBOSE_1}
                 echo "$SUDO_PASSWORD" | sudo -S  bash -c \"\"\"usermod -aG wheel,$SUDO_GROUP -s /bin/bash -m -d /home/$SUDO_USERNAME "$SUDO_USERNAME" \"\"\"
             else
-                echo "User $SUDO_USERNAME does not exist."
+                echo "User $SUDO_USERNAME does not exist." ${VERBOSE_1}
                 echo "$SUDO_PASSWORD" | sudo -S bash -c \"\"\"useradd -m -s /bin/bash -G wheel,$SUDO_GROUP "$SUDO_USERNAME" \"\"\"
             fi
         """
+
         # Check if the SSH command failed
         if [ $? -ne 0 ]; then
             log "ERROR" "Error occurred while configuring user on node ${CURRENT_NODE}. Exiting script."
@@ -211,7 +211,7 @@ EOF
         ssh  -q ${CURRENT_NODE} """
             # Check if the kernel is recent enough
             kernel_version=\$(uname -r)
-            echo "Kernel version: \$kernel_version"
+            echo "Kernel version: \$kernel_version" ${VERBOSE_1}
             #####################################################################################
             # TODO
             # # Compare kernel versions
@@ -230,7 +230,7 @@ EOF
         fi
         log "INFO" "Finished installing kernet tools node: ${CURRENT_NODE}"
         #####################################################################################
-        log "INFO" "Checking eBPF support for node: ${CURRENT_NODE}"
+        # log "INFO" "Checking eBPF support for node: ${CURRENT_NODE}"
         # cd /usr/src/kernels/$(uname -r)
         # make menuconfig
         # Navigate to:
@@ -338,11 +338,11 @@ EOF
 
 
         ################################################################################################################################################################
-
+        log "INFO" "Checking eBPF support for node: ${CURRENT_NODE}"
         ssh  -q ${CURRENT_NODE} """
             # Check if bpftool is installed
             if ! command -v bpftool &> /dev/null; then
-                echo "bpftool not found. Installing..."
+                echo "bpftool not found. Installing..." ${VERBOSE_1}
                 sudo dnf install -y bpftool  >/dev/null 2>&1
 
                 # Verify installation
@@ -375,16 +375,16 @@ EOF
         #####################################################################################
         # Ensure that bpf is mounted
         log "INFO" "Checking if bpf is mounted for node: ${CURRENT_NODE}"
-        ssh  -q ${CURRENT_NODE} '
-            mount_output=$(mount | grep /sys/fs/bpf)
-            echo mount_output: \$mount_output
-            if [[ -n "$mount_output" ]]; then
-                echo "bpf is mounted: $mount_output"
+        ssh  -q ${CURRENT_NODE} """
+            mount_output=\$(mount | grep /sys/fs/bpf)
+            echo mount_output: \$mount_output ${VERBOSE_1}
+            if [[ -n "\$mount_output" ]]; then
+                echo "bpf is mounted: \$mount_output" ${VERBOSE_1}
             else
                 echo "Error ebpf is not mounted. You may need to mount it manually."
                 exit 1
             fi
-        '
+        """
         log "INFO" "Finished checking if bpf is mounted for node: ${CURRENT_NODE}"
         #####################################################################################
         #
@@ -407,27 +407,29 @@ EOF
         log "INFO" "Finished Disabling swap for node: ${CURRENT_NODE}"
         #################################################################
         log "INFO" "Disable SELinux temporarily and modify config for persistence"
-        ssh  -q ${CURRENT_NODE} '
+        ssh  -q ${CURRENT_NODE} """
             if sudo setenforce 0 2>/dev/null; then
-                echo "SELinux set to permissive mode temporarily."
+                echo "SELinux set to permissive mode temporarily." ${VERBOSE_1}
             else
-                echo "Warning: Failed to set SELinux to permissive mode. It may already be disabled."
+                echo "ERROR: Failed to set SELinux to permissive mode. It may already be disabled."
+                exit 1
             fi
 
             if sudo sed -i --follow-symlinks 's/^SELINUX=enforcing/SELINUX=permissive/g' /etc/selinux/config; then
-                echo "SELinux configuration updated."
+                echo "SELinux configuration updated."  ${VERBOSE_1}
             else
                 echo "Error: Failed to update SELinux configuration."
                 exit 1
             fi
 
-            if $(sestatus |grep -q "Current mode:                   permissive"); then
-                echo SELinux set to permissive.
+            if sestatus | sed -n '/Current mode:[[:space:]]*permissive/!q'; then
+                echo "SELinux is permissive" ${VERBOSE_1}
             else
-                echo ERROR, failed to set SELinux set to permissive.
+                echo "ERROR: SELinux is not permissive"
                 exit 1
             fi
-        '
+        """
+
         # Check if the SSH command failed
         if [ $? -ne 0 ]; then
             log "ERROR" "Error occurred while configuring SELinux node ${CURRENT_NODE}. Exiting script."
@@ -439,17 +441,34 @@ EOF
         # update_firewall $CURRENT_NODE
         #############################################################################
         log "INFO" "Configuring bridge network for node: $CURRENT_NODE"
-        ssh  -q ${CURRENT_NODE} '
-            sudo echo -e "overlay\nbr_netfilter" | sudo tee /etc/modules-load.d/containerd.conf
+        ssh  -q ${CURRENT_NODE} """
+            sudo echo -e "overlay\nbr_netfilter" | sudo tee /etc/modules-load.d/containerd.conf > /dev/null
             sudo modprobe overlay
             sudo modprobe br_netfilter
 
-            sudo echo -e "net.bridge.bridge-nf-call-iptables = 1\nnet.ipv4.ip_forward = 1\nnet.bridge.bridge-nf-call-ip6tables = 1" | sudo tee -a /etc/sysctl.d/k8s.conf
+
+            params=(
+                "net.bridge.bridge-nf-call-iptables=1"
+                "net.ipv4.ip_forward=1"
+                "net.bridge.bridge-nf-call-ip6tables=1"
+            )
+
+            # File to update
+            file="/etc/sysctl.d/k8s.conf"
+
+            # Loop through each parameter
+            for param in "\${params[@]}"; do
+                key=\$(echo "\$param" | cut -d= -f1)
+                value=\$(echo "\$param" | cut -d= -f2)
+
+                # Use sed to ensure the parameter is in the file with the correct value
+                sudo sed -i "/^\$key=/d" "\$file"
+                echo "\$param" | sudo tee -a "\$file" > /dev/null
+            done
             sudo sysctl --system ${VERBOSE_1}
-        '
+        """
         log "INFO" "Finished configuring bridge network for node: $CURRENT_NODE"
-        #############################################################################
-        # install containerD
+        ############################################################################
         log "INFO" "Installing containerD on node: $CURRENT_NODE"
         ssh  -q ${CURRENT_NODE} '
             sudo dnf install -y yum-utils  >/dev/null 2>&1
@@ -459,37 +478,37 @@ EOF
         log "INFO" "Finished installing containerD on node: $CURRENT_NODE"
         #############################################################################
         log "INFO" "Enabling containerD NRI with systemD and cgroups: on node: $CURRENT_NODE"
-        ssh -q ${CURRENT_NODE} '
+        ssh -q ${CURRENT_NODE} """
             CONFIG_FILE=/etc/containerd/config.toml
 
-            #  pause version mismatch:
-            echo "Reseting containerD config to default."
-            containerd config default | sudo tee $CONFIG_FILE >/dev/null 2>&1
+            # Pause version mismatch:
+            echo "Resetting containerD config to default." ${VERBOSE_1}
+            containerd config default | sudo tee \$CONFIG_FILE >/dev/null
 
+            echo "Backing up the original config file" ${VERBOSE_1}
+            cp -f -n \$CONFIG_FILE \${CONFIG_FILE}.bak
 
-            echo "Backup the original config file"
-            cp -f -n $CONFIG_FILE ${CONFIG_FILE}.bak
-
-            echo "Configuring containerD for our cluster"
-            sudo sed -i "/\[plugins.\"io.containerd.nri.v1.nri\"\]/,/^\[/{
+            echo "Configuring containerD for our cluster" ${VERBOSE_1}
+            sudo sed -i '/\[plugins\\.\"io\\.containerd\\.nri\\.v1\\.nri\"\]/,/^\[/{
                 s/disable = true/disable = false/;
                 s/disable_connections = true/disable_connections = false/;
-                s|plugin_config_path = \".*\"|plugin_config_path = \"/etc/nri/conf.d\"|;
-                s|plugin_path = \".*\"|plugin_path = \"/opt/nri/plugins\"|;
-                s|plugin_registration_timeout = \".*\"|plugin_registration_timeout = \"15s\"|;
-                s|plugin_request_timeout = \".*\"|plugin_request_timeout = \"12s\"|;
-                s|socket_path = \".*\"|socket_path = \"/var/run/nri/nri.sock\"|;
-            }" "$CONFIG_FILE"
+                s|plugin_config_path = ".*"|plugin_config_path = \"/etc/nri/conf.d\"|;
+                s|plugin_path = ".*"|plugin_path = \"/opt/nri/plugins\"|;
+                s|plugin_registration_timeout = ".*"|plugin_registration_timeout = \"15s\"|;
+                s|plugin_request_timeout = ".*"|plugin_request_timeout = \"12s\"|;
+                s|socket_path = ".*"|socket_path = \"/var/run/nri/nri.sock\"|;
+            }' "\$CONFIG_FILE"
 
-            sudo sed -i "s/SystemdCgroup = false/SystemdCgroup = true/g" "$CONFIG_FILE"
-            sudo sed -i "s|sandbox_image = \"registry.k8s.io/pause:3.8\"|sandbox_image = \"registry.k8s.io/pause:3.10\"|" "$CONFIG_FILE"
 
-            # sudo sed -i "s|root = \"/var/lib/containerd\"|root = \"/mnt/longhorn-1/var/lib/containerd\"|" "$CONFIG_FILE"
+            sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' "\$CONFIG_FILE"
+            sudo sed -i 's|sandbox_image = \"registry.k8s.io/pause:3.8\"|sandbox_image = \"registry.k8s.io/pause:3.10\"|' "\$CONFIG_FILE"
+
+            # sudo sed -i 's|root = \"/var/lib/containerd\"|root = \"/mnt/longhorn-1/var/lib/containerd\"|' "$CONFIG_FILE"
 
             sudo mkdir -p /etc/nri/conf.d /opt/nri/plugins
             sudo chown -R root:root /etc/nri /opt/nri
 
-            echo "Starting and enablingS containerD"
+            echo "Starting and enabling containerD" ${VERBOSE_1}
             sudo systemctl enable containerd
             sudo systemctl daemon-reload
             sudo systemctl restart containerd
@@ -497,12 +516,12 @@ EOF
             sleep 10
             # Check if the containerd service is active
             if systemctl is-active --quiet containerd.service; then
-                echo "ContainerD configuration updated successfully."
+                echo "ContainerD configuration updated successfully." ${VERBOSE_1}
             else
-                echo "ContainerD configuration failed, containerd service is not running..."
+                echo "ERROR: ContainerD configuration failed, containerd service is not running..."
                 exit 1
             fi
-        '
+        """
         log "INFO" "Finished enabling containerD NRI: on node: $CURRENT_NODE"
         #############################################################################
         log "INFO" "Installing GO on node: $CURRENT_NODE"
@@ -525,7 +544,7 @@ EOF
 install_kubetools () {
     #########################################################
     # cilium must be reinstalled if kubelet is reinstalled
-    sudo cilium uninstall >/dev/null 2>&1 || true
+    eval "sudo cilium uninstall ${VERBOSE_2}" || true
     #########################################################
     # Fetch Latest version from kube release....
     if [ "$(echo "$FETCH_LATEST_KUBE" | tr '[:upper:]' '[:lower:]')" = "true" ]; then
@@ -558,21 +577,21 @@ exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
         CURRENT_NODE=${!NODE_VAR}
         #########################################################
         log "INFO" "sending k8s repo version: ${K8S_MAJOR_VERSION} to target node: ${CURRENT_NODE}"
-        ssh -q ${CURRENT_NODE} "echo '$K8S_REPO_CONTENT' | sudo tee $K8S_REPO_FILE" >/dev/null 2>&1
+        ssh -q ${CURRENT_NODE} "echo '$K8S_REPO_CONTENT' | sudo tee $K8S_REPO_FILE" > /dev/null
         #########################################################
         log "INFO" "updating repos on target node: ${CURRENT_NODE}"
         ssh -q ${CURRENT_NODE} "sudo dnf update -y >/dev/null 2>&1"
         #########################################################
         log "INFO" "Removing prior installed versions on node: ${CURRENT_NODE}"
         ssh -q ${CURRENT_NODE} """
-            sudo dnf remove -y kubelet kubeadm kubectl --disableexcludes=kubernetes  >/dev/null 2>&1
+            sudo dnf remove -y kubelet kubeadm kubectl --disableexcludes=kubernetes   ${VERBOSE_1}
             sudo rm -rf /etc/kubernetes
         """
         #########################################################
         log "INFO" "installing k8s tools on node: ${CURRENT_NODE}"
         ssh -q ${CURRENT_NODE} """
-            sudo dnf install -y kubelet-${K8S_MINOR_VERSION} kubeadm-${K8S_MINOR_VERSION} kubectl-${K8S_MINOR_VERSION} --disableexcludes=kubernetes  >/dev/null 2>&1
-            sudo systemctl enable --now kubelet  >/dev/null 2>&1
+            sudo dnf install -y kubelet-${K8S_MINOR_VERSION} kubeadm-${K8S_MINOR_VERSION} kubectl-${K8S_MINOR_VERSION} --disableexcludes=kubernetes   ${VERBOSE_1}
+            sudo systemctl enable --now kubelet ${VERBOSE_2}
         """
         #########################################################
         log "INFO" "Adding Kubeadm bash completion"
@@ -581,7 +600,7 @@ exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
         #########################################################
     done
     #########################################################
-    echo "Kubernetes prerequisites setup completed successfully."
+    log "INFO" "Kubernetes prerequisites setup completed successfully."
     #########################################################
 }
 
@@ -593,9 +612,9 @@ deploy_hostsfile () {
         CURRENT_NODE=${!NODE_VAR}
         log "INFO" "installing tools for node: ${CURRENT_NODE}"
         ssh -q ${CURRENT_NODE} """
-            sudo dnf update -y  >/dev/null 2>&1
-            sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools  >/dev/null 2>&1
-            sudo pip install yq  >/dev/null 2>&1
+            sudo dnf update -y  ${VERBOSE_1}
+            sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools ${VERBOSE_1}
+            sudo pip install yq  ${VERBOSE_2}
         """
         log "INFO" "Finished installing tools node: ${CURRENT_NODE}"
     done
@@ -660,7 +679,7 @@ deploy_hostsfile () {
 reset_cluster () {
     #########################################################
     log "WARNING" "cilium must be reinstalled as kubelet will be reinstalled"
-    sudo cilium uninstall  >/dev/null 2>&1 || true
+    eval "sudo cilium uninstall ${VERBOSE_2}" || true
     #########################################################
     # cleaning prior deployments:
     for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
@@ -669,19 +688,15 @@ reset_cluster () {
         ################################################################################################################
         log "INFO" "Cleaning up k8s prior installs for node: ${CURRENT_NODE}"
         ssh -q ${CURRENT_NODE} """
-            sudo kubeadm reset -f >/dev/null 2>&1 || true
+            eval "sudo kubeadm reset -f ${VERBOSE_2}" || true
             sudo rm -rf \
-                $HOME/.kube/* \
+                \$HOME/.kube/* \
                 /root/.kube/* \
                 /etc/cni/net.d/* \
                 /etc/kubernetes/* \
         """
-    done
-    ##################################################################
-    log "INFO" "starting reseting host persistent volumes mounts"
-    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
-        NODE_VAR="NODE_$i"
-        CURRENT_NODE=${!NODE_VAR}
+        log "INFO" "Finished Cleaning up k8s prior installs for node: ${CURRENT_NODE}"
+        ####################################################################
         log "INFO" "Reseting volumes on node: ${CURRENT_NODE}"
         ssh -q ${CURRENT_NODE} """
             sudo rm -rf "${EXTRAVOLUMES_ROOT}"/*
@@ -689,8 +704,8 @@ reset_cluster () {
             sudo mkdir -p "${EXTRAVOLUMES_ROOT}"/cilium/hubble-relay
             sudo mkdir -p "${EXTRAVOLUMES_ROOT}"/cilium/hubble-relay
         """
+        log "INFO" "finished reseting host persistent volumes mounts on node: ${CURRENT_NODE}"
     done
-    log "INFO" "finished reseting host persistent volumes mounts"
     ####################################################################
 }
 
@@ -747,14 +762,15 @@ install_cluster () {
 install_cilium_prerequisites () {
     #########################################################
     log "WARNING" "cilium must be reinstalled as kubelet will be reinstalled"
-    sudo cilium uninstall >/dev/null 2>&1 || true
+    eval "sudo cilium uninstall ${VERBOSE_2}" || true
     ###############################################################################################################
     log "INFO" "Ensuring that kube-proxy is not installed"
-    kubectl -n kube-system delete ds kube-proxy >/dev/null 2>&1 || true
+    eval "kubectl -n kube-system delete ds kube-proxy ${VERBOSE_2}" || true
     # Delete the configmap as well to avoid kube-proxy being reinstalled during a Kubeadm upgrade (works only for K8s 1.19 and newer)
-    kubectl -n kube-system delete cm kube-proxy >/dev/null 2>&1 || true
+    eval "kubectl -n kube-system delete cm kube-proxy ${VERBOSE_2}" || true
     # Run on each node with root permissions:
-    sudo iptables-save | grep -v KUBE | sudo iptables-restore  >/dev/null 2>&1
+    # eval "$(sudo iptables-save | grep -v KUBE | sudo iptables-restore)  ${VERBOSE_1}
+
     ################################################################################################################
     for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
         NODE_VAR="NODE_$i"
@@ -791,7 +807,7 @@ install_cilium_prerequisites () {
         log "INFO" "Finished installing cilium cli"
     done
     ################################################################################################################
-    helm_chart_prerequisites "cilium" "https://helm.cilium.io" "$CILIUM_NS"
+    helm_chart_prerequisites "cilium" "https://helm.cilium.io" "$CILIUM_NS" "false" "false"
     ################################################################################################################
     # # cleaning up cilium and maglev tables
     # # EXPERIMENTAL ONLY AND STILL UNDER TESTING....
@@ -838,11 +854,11 @@ install_cilium () {
     # cilium status --wait >/dev/null 2>&1 || true
     ################################################################################################################
     log "INFO" "Apply LB IPAM"
-    kubectl apply -f cilium/loadbalancer-ip-pool.yaml
+    eval "kubectl apply -f cilium/loadbalancer-ip-pool.yaml ${VERBOSE_1}"
     ################################################################################################################
     sleep 180
     log "INFO" "restarting cilium."
-    kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator  >/dev/null 2>&1 || true
+    eval "kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator ${VERBOSE_1}" || true
     ################################################################################################################
     log "INFO" "Finished installing cilium"
     ################################################################################################################
@@ -915,15 +931,21 @@ install_longhorn_prerequisites() {
 
         log "INFO" "installing longhorn prerequisites on node: ${CURRENT_NODE}"
         ssh -q ${CURRENT_NODE} """
-            sudo dnf update >/dev/null 2>&1
+            sudo dnf update -y ${VERBOSE_2}
             sudo dnf install curl jq nfs-utils cryptsetup \
-                device-mapper iscsi-initiator-utils -y >/dev/null 2>&1
+                device-mapper iscsi-initiator-utils -y ${VERBOSE_2}
         """
     done
     log "INFO" "Finished installing required utilities for longhorn"
     ##################################################################
     log "INFO" "Creating namespace: ${LONGHORN_NS} for longhorn"
-    kubectl create ns $LONGHORN_NS >/dev/null 2>&1 || true
+    # kubectl create ns $LONGHORN_NS >/dev/null 2>&1 || true
+    helm_chart_prerequisites "longhorn" " https://charts.longhorn.io" "$LONGHORN_NS" "true" "true"
+
+
+
+    echo end of test
+    exit 1
     #################################################################
     log "INFO" "install NFS/iSCSI on the cluster"
     # REF: https://github.com/longhorn/longhorn/tree/master/deploy/prerequisite
@@ -1192,32 +1214,32 @@ install_longhorn_prerequisites() {
 }
 
 
-create_namespace() {
-    local namespace=$1
-    local max_retries=5
-    local attempt=1
+# create_namespace() {
+#     local namespace=$1
+#     local max_retries=5
+#     local attempt=1
 
-    while [ $attempt -le $max_retries ]; do
-        kubectl create ns "$namespace" ${VERBOSE_1}
-        if [ $? -eq 0 ]; then
-            echo "Namespace '$namespace' created successfully."
-            break
-        else
-            echo "Attempt $attempt/$max_retries failed to create namespace '$namespace'. Retrying in 10 seconds..."
-            attempt=$((attempt + 1))
-            sleep 10
-        fi
-    done
+#     while [ $attempt -le $max_retries ]; do
+#         kubectl create ns "$namespace" ${VERBOSE_1}
+#         if [ $? -eq 0 ]; then
+#             echo "Namespace '$namespace' created successfully."
+#             break
+#         else
+#             echo "Attempt $attempt/$max_retries failed to create namespace '$namespace'. Retrying in 10 seconds..."
+#             attempt=$((attempt + 1))
+#             sleep 10
+#         fi
+#     done
 
-    if [ $attempt -gt $max_retries ]; then
-        echo "Failed to create namespace '$namespace' after $max_retries attempts."
-    fi
-}
+#     if [ $attempt -gt $max_retries ]; then
+#         echo "Failed to create namespace '$namespace' after $max_retries attempts."
+#     fi
+# }
 
 
 install_longhorn () {
     ##################################################################
-    helm_chart_prerequisites "longhorn" " https://charts.longhorn.io" "$LONGHORN_NS" "true"
+    helm_chart_prerequisites "longhorn" " https://charts.longhorn.io" "$LONGHORN_NS" "true" "true"
     ##################################################################
     log "INFO" "Started deploying longhorn in ns $LONGHORN_NS"
     output=$(helm install longhorn longhorn/longhorn  \
@@ -1241,6 +1263,10 @@ install_longhorn () {
         log "ERROR" "Failed to install Longhorn:\n\t${output}"
         exit 1
     fi
+
+
+    echo end of test
+    exit 1
     log "INFO" "Finished deploying longhorn in ns $LONGHORN_NS"
     ##################################################################
     # Wait for the pods to be running
@@ -1278,17 +1304,17 @@ install_gateway_CRDS () {
 
     # using experimental CRDS channel
     log "INFO" "Installing Gateway API version: ${GATEWAY_VERSION} from the experimental channel"
-    kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_VERSION}/experimental-install.yaml
+    eval "kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_VERSION}/experimental-install.yaml ${VERBOSE_1}"
     # kubectl rollout restart -n kube-system deployment cilium-operator
 
     # log "INFO" "restarting cilium."
     # kubectl rollout restart -n kube-system ds/cilium-envoy deployment/cilium-operator  >/dev/null 2>&1 || true
     # sleep 30
     log "INFO" "Installing Gateway API Experimental TLSRoute from the Experimental channel"
-    kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/${GATEWAY_VERSION}/config/crd/experimental/gateway.networking.k8s.io_tlsroutes.yaml
+    eval "kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/${GATEWAY_VERSION}/config/crd/experimental/gateway.networking.k8s.io_tlsroutes.yaml ${VERBOSE_1}"
     ################################################################################################################################################################
     log "INFO" "Applying hubble-ui HTTPRoute for ingress."
-    kubectl apply -f cilium/http-routes.yaml
+    eval "kubectl apply -f cilium/http-routes.yaml ${VERBOSE_1}"
     ################################################################################################################################################################
 }
 
@@ -1309,18 +1335,18 @@ install_gateway () {
     KEY_FILE="cilium/certs/${SECRET_NAME}.key"
 
     log "INFO" "Generate self-signed certificate and key"
-    openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout $KEY_FILE -out $CERT_FILE -subj "/CN=${CLUSTER_DNS_DOMAINS}"
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout $KEY_FILE -out $CERT_FILE -subj "/CN=${CLUSTER_DNS_DOMAINS}" ${VERBOSE_1}
 
     log "INFO" "Creating rancher Kubernetes TLS secret"
-    kubectl create secret tls ${SECRET_NAME} --cert=$CERT_FILE --key=$KEY_FILE --namespace=kube-system
+    eval "kubectl create secret tls ${SECRET_NAME} --cert=$CERT_FILE --key=$KEY_FILE --namespace=kube-system  ${VERBOSE_1}"
     log "INFO" "Finished deploying TLS cert for TLS-HTTPS Gateway API"
 
     log "INFO" "Started deploying Gateway API"
-    kubectl apply -f cilium/http-gateway.yaml
+    eval "kubectl apply -f cilium/http-gateway.yaml ${VERBOSE_1}"
     log "INFO" "Finished deploying Gateway API"
 
     log "INFO" "restarting cilium."
-    kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator  >/dev/null 2>&1 || true
+    eval " kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator ${VERBOSE_1}" || true
     sleep 45
 }
 
@@ -1330,13 +1356,11 @@ helm_chart_prerequisites () {
     local CHART_REPO=$2
     local CHART_NS=$3
     local DELETE_NS=$4
-
-    # VERBOSE="> /dev/null 2>&1"
+    local CREATE_NS=$5
 
     ##################################################################
     log "INFO" "adding '$CHART_NAME' repo to Helm"
     eval "helm repo add ${CHART_NAME} $CHART_REPO --force-update ${VERBOSE_1}" || true
-    echo "helm repo add ${CHART_NAME} $CHART_REPO --force-update ${VERBOSE_1}"
     eval helm repo update ${VERBOSE_2} || true
     ##################################################################
     log "INFO" "uninstalling and ensuring the cluster is cleaned from $CHART_NAME"
@@ -1357,12 +1381,22 @@ helm_chart_prerequisites () {
             log "INFO" "sleeping for 60 seconds while deleting '$CHART_NS' namespace"
             sleep 60
         fi
-        ##################################################################
-        log "INFO" "Creating $CHART_NS namespace: '$CHART_NS'"
-        eval "kubectl create ns $CHART_NS ${VERBOSE_1}" || true
-        # ##################################################################
+
     else
-        log "INFO" "Skipping deletion"
+        log "INFO" "Skipping NS deletion"
+    fi
+
+    if [ "$CREATE_NS" == "true" ] || [ "$CREATE_NS" == "1" ]; then
+        ##################################################################
+        log "INFO" "Creating '$CHART_NS' chart namespace: '$CHART_NS'"
+        eval "kubectl create ns $CHART_NS ${VERBOSE_1}" || true
+        # create_namespace
+
+        echo end of test
+        exit
+        ##################################################################
+    else
+        log "INFO" "Skipping NS creation"
     fi
 }
 
@@ -1371,7 +1405,7 @@ helm_chart_prerequisites () {
 
 install_vault () {
     ##################################################################
-    helm_chart_prerequisites "hashicorp" " https://helm.releases.hashicorp.com" "$VAULT_NS" "true"
+    helm_chart_prerequisites "hashicorp" " https://helm.releases.hashicorp.com" "$VAULT_NS" "true" "true"
     ##################################################################
     log "INFO" "Installing hashicorp vault Helm chart"
     helm install vault hashicorp/vault -n $VAULT_NS \
@@ -1386,7 +1420,7 @@ install_vault () {
 
 
 install_rancher () {
-    helm_chart_prerequisites "rancher-${RANCHER_BRANCH}" "https://releases.rancher.com/server-charts/${RANCHER_BRANCH}" "$RANCHER_NS" "true"
+    helm_chart_prerequisites "rancher-${RANCHER_BRANCH}" "https://releases.rancher.com/server-charts/${RANCHER_BRANCH}" "$RANCHER_NS" "true" "true"
 
     # ##################################################################
     # log "INFO" "adding rancher repo to helm"
@@ -1475,7 +1509,7 @@ install_certmanager () {
     done
     ##################################################################
     # deploy cert-manager:
-    helm_chart_prerequisites "jetstack" "https://charts.jetstack.io" "$CERTMANAGER_NS" "true"
+    helm_chart_prerequisites "jetstack" "https://charts.jetstack.io" "$CERTMANAGER_NS" "true" "true"
     ##################################################################
     log "INFO" "Started installing cert-manger on namespace: '${CERTMANAGER_NS}'"
     helm install cert-manager jetstack/cert-manager  \
@@ -1509,38 +1543,44 @@ install_certmanager () {
 
 # deploy_hostsfile
 
+RESETED=0
 # if [ "$PREREQUISITES" = true ]; then
 #     log "INFO" "Executing cluster prerequisites installation and checks"
+#     reset_cluster
+#     RESETED=1
 #     prerequisites_requirements
 # else
 #     log "INFO" "Cluster prerequisites have been skipped"
 # fi
 
+if [ $RESETED -eq 0 ]; then
+    reset_cluster
+fi
+
 # install_kubetools
 
-# reset_cluster
 
-# install_cluster
+install_cluster
 
-# install_gateway_CRDS
+install_gateway_CRDS
 
-# install_cilium_prerequisites
+install_cilium_prerequisites
 
-# install_cilium
+install_cilium
 
-# join_cluster
+join_cluster
 
-# install_gateway
+install_gateway
 
 # install_certmanager
 
 
-install_rancher
+# install_rancher
 
-install_longhorn_prerequisites
-install_longhorn
+# install_longhorn_prerequisites
+# install_longhorn
 
-install_vault
+# install_vault
 
 log "INFO" "deployment finished"
 

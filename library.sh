@@ -37,31 +37,34 @@ log() {
 
 
 optimize_dnf() {
-  # Enable Delta RPMs
-  sudo sed -i '/^deltarpm=/d' /etc/dnf/dnf.conf
-  echo "deltarpm=true" | sudo tee -a /etc/dnf/dnf.conf
+    CURRENT_NODE=$1
 
-  # Increase Download Threads
-  sudo sed -i '/^max_parallel_downloads=/d' /etc/dnf/dnf.conf
-  echo "max_parallel_downloads=10" | sudo tee -a /etc/dnf/dnf.conf
+    ssh -q $CURRENT_NODE """
+        # Enable Delta RPMs
+        sudo sed -i '/^deltarpm=/d' /etc/dnf/dnf.conf
+        echo "deltarpm=true" | sudo tee -a /etc/dnf/dnf.conf > /dev/null
 
-  # Adjust Metadata Expiration
-  sudo sed -i '/^metadata_expire=/d' /etc/dnf/dnf.conf
-  echo "metadata_expire=1h" | sudo tee -a /etc/dnf/dnf.conf
+        # Increase Download Threads
+        sudo sed -i '/^max_parallel_downloads=/d' /etc/dnf/dnf.conf
+        echo "max_parallel_downloads=10" | sudo tee -a /etc/dnf/dnf.conf > /dev/null
 
-  # Enable Fastest Mirror Plugin
-  sudo sed -i '/^fastestmirror=/d' /etc/dnf/dnf.conf
-  echo "fastestmirror=true" | sudo tee -a /etc/dnf/dnf.conf
+        # Adjust Metadata Expiration
+        sudo sed -i '/^metadata_expire=/d' /etc/dnf/dnf.conf
+        echo "metadata_expire=1h" | sudo tee -a /etc/dnf/dnf.conf > /dev/null
 
-  # Clean DNF Cache
-  sudo dnf clean all
-  sudo dnf clean packages
-  sudo dnf clean metadata
+        # Enable Fastest Mirror Plugin
+        sudo sed -i '/^fastestmirror=/d' /etc/dnf/dnf.conf
+        echo "fastestmirror=true" | sudo tee -a /etc/dnf/dnf.conf > /dev/null
 
-  # Update System
-  sudo dnf update -y
+        # Clean DNF Cache
+        sudo dnf clean all > /dev/null
+        sudo dnf clean packages > /dev/null
+        sudo dnf clean metadata > /dev/null
 
-  echo "DNF cache cleaned and system updated successfully."
+        # Update System
+        sudo dnf update -y  > /dev/null
+        # echo "DNF cache cleaned and system updated successfully."
+    """
 }
 
 
@@ -135,11 +138,11 @@ install_go () {
     GO_VERSION=$2
     TINYGO_VERSION=$3
 
-    ssh -q $CURRENT_NODE "
+    ssh -q $CURRENT_NODE """
         cd /tmp
 
         # install Go
-        echo installing go version: ${GO_VERSION}
+        echo installing go version: ${GO_VERSION} ${VERBOSE_1}
         wget -q https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz
         sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
 
@@ -159,30 +162,30 @@ install_go () {
             \"/usr/local/tinygo/bin\"
         )
 
-        echo \"Updating paths for GO\"
+        echo \"Updating paths for GO\" ${VERBOSE_1}
         for file in \"\${files[@]}\"; do
-            echo \"Updating environment for path: \${file}\"
+            echo \"Updating environment for path: \${file}\" ${VERBOSE_1}
 
             for path in \"\${extra_paths[@]}\"; do
-                echo \"  Checking path: \$path\"
+                echo \"  Checking path: \$path\" ${VERBOSE_1}
 
                 # Check if the export PATH line exists
                 if grep -q 'export PATH=' \"\$file\"; then
                     # Ensure the path is not already appended
                     if ! grep -q \"\$path\" \"\$file\"; then
-                        echo \"Appending \$path to \$file\"
+                        echo \"Appending \$path to \$file\" ${VERBOSE_1}
                         sudo sed -i \"s|^export PATH=.*|&:\${path}|\" \"\$file\"
                     else
-                        echo \"\$path already exists in \$file\"
+                        echo \"\$path already exists in \$file\" ${VERBOSE_1}
                     fi
                 else
-                    echo \"export PATH not found, adding export line\"
+                    echo \"export PATH not found, adding export line\" ${VERBOSE_1}
                     echo \"export PATH=\\\$PATH:\${path}\" | sudo tee -a \"\$file\" > /dev/null
                 fi
             done
         done
 
-    "
+    """
 }
 
 
@@ -192,7 +195,7 @@ configure_repos () {
     ssh -q $CURRENT_HOST """
     set -e  # Exit on error
 
-    echo 'Configuring AlmaLinux 9 Repositories...'
+    echo 'Configuring AlmaLinux 9 Repositories...' ${VERBOSE_1}
 
     # Define repo files
     sudo tee /etc/yum.repos.d/almalinux.repo > /dev/null <<EOF
@@ -225,29 +228,29 @@ gpgcheck=1
 gpgkey=https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux
 EOF
 
-    echo 'Fetching and importing AlmaLinux GPG keys...'
+    echo 'Fetching and importing AlmaLinux GPG keys...' ${VERBOSE_1}
     sudo curl -s -o /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux-9
-    sudo rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux >/dev/null 2>&1
+    sudo rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux ${VERBOSE_1}
 
-    echo 'Cleaning up DNF cache and updating system...'
-    sudo dnf clean all >/dev/null 2>&1
-    sudo dnf makecache >/dev/null 2>&1
-    sudo dnf -y update >/dev/null 2>&1
+    echo 'Cleaning up DNF cache and updating system...' ${VERBOSE_1}
+    sudo dnf clean all  ${VERBOSE_1}
+    sudo dnf makecache  ${VERBOSE_1}
+    sudo dnf -y update  ${VERBOSE_1}
 
-    echo 'Enabling EPEL & CRB repositories...'
-    sudo dnf install -y epel-release >/dev/null 2>&1
-    sudo dnf config-manager --set-enabled crb >/dev/null 2>&1
+    echo 'Enabling EPEL & CRB repositories...' ${VERBOSE_1}
+    sudo dnf install -y epel-release  ${VERBOSE_1}
+    sudo dnf config-manager --set-enabled crb  ${VERBOSE_1}
 
-    echo 'Adding RPM Fusion Free & Non-Free Repositories...'
+    echo 'Adding RPM Fusion Free & Non-Free Repositories...' ${VERBOSE_1}
     # OSS repos:
-    sudo dnf install -y https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm >/dev/null 2>&1
+    sudo dnf install -y https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm  ${VERBOSE_1}
     # Proprietary repos
-    sudo dnf install -y https://mirrors.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-9.noarch.rpm >/dev/null 2>&1
+    sudo dnf install -y https://mirrors.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-9.noarch.rpm  ${VERBOSE_1}
 
-    echo 'Cleaning up DNF cache and updating system...'
-    sudo dnf clean all >/dev/null 2>&1
-    sudo dnf makecache >/dev/null 2>&1
-    sudo dnf -y update >/dev/null 2>&1
+    echo 'Cleaning up DNF cache and updating system...' ${VERBOSE_1}
+    sudo dnf clean all  ${VERBOSE_1}
+    sudo dnf makecache  ${VERBOSE_1}
+    sudo dnf -y update  ${VERBOSE_1}
 """
 }
 
@@ -258,19 +261,19 @@ add_bashcompletion () {
     app="$2"
 
     if [ -z "$app" ]; then
-        echo "Error: Application name must be provided."
-        return 1
+        log "ERROR" "Application name must be provided."
+        exit 1
     fi
 
     COMPLETION_FILE="/etc/bash_completion.d/$app"
 
-    echo "Adding $app bash completion for node: ${CURRENT_NODE}"
+    log "INFO" "Adding $app bash completion for node: ${CURRENT_NODE}"
 
     # Assuming the application has a completion script available
     ssh -q ${CURRENT_NODE} """
         $app completion bash | sudo tee "$COMPLETION_FILE" >/dev/null
     """
-    echo "$app bash completion added successfully."
+    log "INFO" "$app bash completion added successfully."
 }
 
 
@@ -279,8 +282,8 @@ install_helm () {
 
     ssh -q $CURRENT_NODE """
         cd /tmp
-        curl -s https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-        sudo ln -sf /usr/local/bin/helm /usr/bin/
+        curl -s https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash ${VERBOSE_1}
+        sudo ln -sf /usr/local/bin/helm /usr/bin/  ${VERBOSE_1}
     """
 }
 
@@ -298,7 +301,7 @@ configure_containerD () {
     ssh -q $CURRENT_NODE """
         sudo mkdir -p /etc/systemd/system/containerd.service.d
 
-        cat <<EOF | sudo tee /etc/systemd/system/containerd.service.d/http-proxy.conf
+        cat <<EOF | sudo tee /etc/systemd/system/containerd.service.d/http-proxy.conf  ${VERBOSE_1}
 [Service]
     Environment=\"HTTP_PROXY=$HTTP_PROXY\"
     Environment=\"HTTPS_PROXY=$HTTPS_PROXY\"
@@ -307,16 +310,16 @@ EOF
     #############################################################################
     # ensure changes have been applied
     if sudo containerd config dump | grep -q 'SystemdCgroup = true'; then
-        echo Cgroups configured accordingly for containerD
+        echo "Cgroups configured accordingly for containerD"  ${VERBOSE_1}
     else
-        echo Failed to configure Cgroups configured for containerD
+        echo "ERROR: Failed to configure Cgroups configured for containerD"
         exit 1
     fi
 
     if sudo containerd config dump | grep -q 'sandbox_image = \"registry.k8s.io/pause:${PAUSE_VERSION}\"'; then
-        echo "set sandbox_image accordingly to pause version ${PAUSE_VERSION}"
+        echo "set sandbox_image accordingly to pause version ${PAUSE_VERSION}"  ${VERBOSE_1}
     else
-        echo "Failed to set sandbox_image to pause version ${PAUSE_VERSION}"
+        echo "ERROR: Failed to set sandbox_image to pause version ${PAUSE_VERSION}"
         exit 1
     fi
     #############################################################################
