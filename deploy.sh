@@ -43,7 +43,7 @@ recommended_rehl_version="4.18"
 CONTROLPLANE_ADDRESS=$(eval ip -o -4 addr show $CONTROLPLANE_INGRESS_INTER | awk '{print $4}' | cut -d/ -f1)  # 192.168.66.129
 CONTROLPLANE_SUBNET=$(echo $CONTROLPLANE_ADDRESS | awk -F. '{print $1"."$2"."$3".0/24"}')
 ################################################################################################################################################################
-
+VERBOSE=false
 set -e  # Exit on error
 set -o pipefail  # Fail if any piped command fails
 
@@ -70,6 +70,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --with-prerequisites)
             PREREQUISITES=true
+            shift
+            ;;
+        -v|--verbose)
+            VERBOSE=true
             shift
             ;;
         --dry-run)
@@ -108,8 +112,15 @@ if [ ! -z "$SET_HOSTNAME_TO" ]; then
     CURRENT_HOSTNAME=$(eval hostname)
 fi
 
+echo VERBOSE: $VERBOSE
 
-
+if [ "$VERBOSE" = true ]; then
+    VERBOSE_1=""
+    VERBOSE_2=""
+else
+    VERBOSE_1=" 1> /dev/null "
+    VERBOSE_2="2>/dev/null 1>&2"
+fi
 
 ################################################################################################################################################################
 prerequisites_requirements() {
@@ -434,7 +445,7 @@ EOF
             sudo modprobe br_netfilter
 
             sudo echo -e "net.bridge.bridge-nf-call-iptables = 1\nnet.ipv4.ip_forward = 1\nnet.bridge.bridge-nf-call-ip6tables = 1" | sudo tee -a /etc/sysctl.d/k8s.conf
-            sudo sysctl --system > /dev/null 2>&1
+            sudo sysctl --system ${VERBOSE_1}
         '
         log "INFO" "Finished configuring bridge network for node: $CURRENT_NODE"
         #############################################################################
@@ -659,7 +670,11 @@ reset_cluster () {
         log "INFO" "Cleaning up k8s prior installs for node: ${CURRENT_NODE}"
         ssh -q ${CURRENT_NODE} """
             sudo kubeadm reset -f >/dev/null 2>&1 || true
-            sudo rm -rf $HOME/.kube/* /root/.kube/* /etc/cni/net.d/*  /etc/kubernetes/pki/*
+            sudo rm -rf \
+                $HOME/.kube/* \
+                /root/.kube/* \
+                /etc/cni/net.d/* \
+                /etc/kubernetes/* \
         """
     done
     ##################################################################
@@ -750,9 +765,9 @@ install_cilium_prerequisites () {
         log "INFO" "setting public interface: ${PUBLIC_INGRESS_INTER} rp_filter to 1"
         log "INFO" "setting cluster interface: ${CONTROLPLANE_INGRESS_INTER} rp_filter to 2"
         ssh -q ${CURRENT_NODE} """
-            sudo sysctl -w net.ipv4.conf.${PUBLIC_INGRESS_INTER}.rp_filter=1 > /dev/null 2>&1
-            sudo sysctl -w net.ipv4.conf.$CONTROLPLANE_INGRESS_INTER.rp_filter=2 > /dev/null 2>&1
-            sudo sysctl --system > /dev/null 2>&1
+            sudo sysctl -w net.ipv4.conf.${PUBLIC_INGRESS_INTER}.rp_filter=1 ${VERBOSE_1}
+            sudo sysctl -w net.ipv4.conf.$CONTROLPLANE_INGRESS_INTER.rp_filter=2 ${VERBOSE_1}
+            sudo sysctl --system ${VERBOSE_1}
         """
         ################################################################################################################
         CILIUM_CLI_VERSION=$(curl --silent https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
@@ -768,8 +783,8 @@ install_cilium_prerequisites () {
 
             curl -s -L --fail --remote-name-all https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-\${CLI_ARCH}.tar.gz{,.sha256sum}
 
-            sha256sum --check cilium-linux-\${CLI_ARCH}.tar.gz.sha256sum > /dev/null 2>&1
-            sudo tar xzvfC cilium-linux-\${CLI_ARCH}.tar.gz /usr/local/bin > /dev/null 2>&1
+            sha256sum --check cilium-linux-\${CLI_ARCH}.tar.gz.sha256sum ${VERBOSE_1}
+            sudo tar xzvfC cilium-linux-\${CLI_ARCH}.tar.gz /usr/local/bin ${VERBOSE_1}
             rm cilium-linux-*
         """
         add_bashcompletion ${CURRENT_NODE}  cilium
@@ -861,7 +876,6 @@ join_cluster () {
 
         log "INFO" "initiating cluster join for node: ${CURRENT_NODE}"
         ssh -q ${CURRENT_NODE} """
-            sudo rm -rf /etc/kubernetes/kubelet.conf /etc/kubernetes/pki/*
             # echo "executing command: $JOIN_COMMAND_WORKERS"
             eval sudo ${JOIN_COMMAND_WORKERS} >/dev/null 2>&1 || true
         """
@@ -1184,7 +1198,7 @@ create_namespace() {
     local attempt=1
 
     while [ $attempt -le $max_retries ]; do
-        kubectl create ns "$namespace" > /dev/null 2>&1
+        kubectl create ns "$namespace" ${VERBOSE_1}
         if [ $? -eq 0 ]; then
             echo "Namespace '$namespace' created successfully."
             break
@@ -1317,28 +1331,35 @@ helm_chart_prerequisites () {
     local CHART_NS=$3
     local DELETE_NS=$4
 
-    ##################################################################
-    log "INFO" "adding $CHART_NAME repo to Helm"
-    helm repo add $CHART_NAME $CHART_REPO --force-update > /dev/null 2>&1 || true
-    helm repo update > /dev/null 2>&1 || true
-    ##################################################################
-    # log "INFO" "uninstalling and ensuring the cluster is cleaned from $CHART_NAME"
-    # kubectl delete -n $CHART_NS ds/vault-manager ds/vault-nfs-installation deployments/vault-ui deployments/vault-driver-deployer jobs/vault-uninstall >/dev/null 2>&1 || true
+    # VERBOSE="> /dev/null 2>&1"
 
-    helm uninstall -n $CHART_NS $CHART_NAME > /dev/null 2>&1 || true
+    ##################################################################
+    log "INFO" "adding '$CHART_NAME' repo to Helm"
+    eval "helm repo add ${CHART_NAME} $CHART_REPO --force-update ${VERBOSE_1}" || true
+    echo "helm repo add ${CHART_NAME} $CHART_REPO --force-update ${VERBOSE_1}"
+    eval helm repo update ${VERBOSE_2} || true
+    ##################################################################
+    log "INFO" "uninstalling and ensuring the cluster is cleaned from $CHART_NAME"
+    # kubectl delete -n $CHART_NS ds/vault-manager ds/vault-nfs-installation deployments/vault-ui deployments/vault-driver-deployer jobs/vault-uninstall >/dev/null 2>&1 || true
+    eval "helm uninstall -n $CHART_NS $CHART_NAME ${VERBOSE_2}" || true
     ##################################################################
     if [ "$DELETE_NS" == "true" ] || [ "$DELETE_NS" == "1" ]; then
-        log "INFO" "deleting $CHART_NS namespace"
-        kubectl delete ns $CHART_NS --now=true > /dev/null 2>&1 || true
+        log "INFO" "deleting '$CHART_NS' namespace"
+        eval "kubectl delete ns $CHART_NS --now=true --ignore-not-found ${VERBOSE_1}"
 
-        kubectl get namespace "$CHART_NS" -o json 2>/dev/null \
-        | tr -d "\n" | sed "s/\"finalizers\": \[[^]]\+\]/\"finalizers\": []/" \
-        | kubectl replace --raw /api/v1/namespaces/$CHART_NS/finalize -f - > /dev/null 2>&1 || true
+        output=$(kubectl get ns $CHART_NS --ignore-not-found)
 
-        sleep 60
+        if [ ! -z "$output"]; then
+            log "INFO" "Force deleting '$CHART_NS' namespace"
+            kubectl get namespace "$CHART_NS" -o json 2>/dev/null \
+            | tr -d "\n" | sed "s/\"finalizers\": \[[^]]\+\]/\"finalizers\": []/" \
+            | kubectl replace --raw /api/v1/namespaces/$CHART_NS/finalize -f - ${VERBOSE_2} || true
+            log "INFO" "sleeping for 60 seconds while deleting '$CHART_NS' namespace"
+            sleep 60
+        fi
         ##################################################################
         log "INFO" "Creating $CHART_NS namespace: '$CHART_NS'"
-        kubectl create ns $CHART_NS > /dev/null 2>&1 || true
+        eval "kubectl create ns $CHART_NS ${VERBOSE_1}" || true
         # ##################################################################
     else
         log "INFO" "Skipping deletion"
@@ -1365,31 +1386,32 @@ install_vault () {
 
 
 install_rancher () {
-    helm_chart_prerequisites "rancher" "https://releases.rancher.com/server-charts/${RANCHER_BRANCH}" "$RANCHER_NS" "true"
+    helm_chart_prerequisites "rancher-${RANCHER_BRANCH}" "https://releases.rancher.com/server-charts/${RANCHER_BRANCH}" "$RANCHER_NS" "true"
 
     # ##################################################################
     # log "INFO" "adding rancher repo to helm"
-    # helm repo add rancher-${RANCHER_BRANCH} https://releases.rancher.com/server-charts/${RANCHER_BRANCH} > /dev/null 2>&1 || true
-    # helm repo update > /dev/null 2>&1 || true
+    # helm repo add rancher-${RANCHER_BRANCH} https://releases.rancher.com/server-charts/${RANCHER_BRANCH} ${VERBOSE_1} || true
+    # helm repo update ${VERBOSE_1} || true
     # ##################################################################
     # log "INFO" "uninstalling and ensuring the cluster is cleaned from rancher"
-    # helm uninstall -n $RANCHER_NS rancher > /dev/null 2>&1 || true
+    # helm uninstall -n $RANCHER_NS rancher ${VERBOSE_1} || true
     # ##################################################################
     # log "INFO" "deleting rancher NS"
-    # kubectl delete ns $RANCHER_NS --now=true & > /dev/null 2>&1 || true
+    # kubectl delete ns $RANCHER_NS --now=true & ${VERBOSE_1} || true
 
     # kubectl get namespace "${RANCHER_NS}" -o json \
     # | tr -d "\n" | sed "s/\"finalizers\": \[[^]]\+\]/\"finalizers\": []/" \
-    # | kubectl replace --raw /api/v1/namespaces/${RANCHER_NS}/finalize -f - > /dev/null 2>&1 || true
+    # | kubectl replace --raw /api/v1/namespaces/${RANCHER_NS}/finalize -f - ${VERBOSE_1} || true
     # ##################################################################
     # log "INFO" "Creating rancher NS: '$RANCHER_NS'"
-    # kubectl create ns $RANCHER_NS > /dev/null 2>&1 || true
+    # kubectl create ns $RANCHER_NS ${VERBOSE_1} || true
     ##################################################################
     log "WARNING" "Warning: Currently rancher supports kubeVersion up to 1.31.0"
     log "WARNING" "initiating workaround to force the install..."
 
     DEVEL=""
     if [ ${RANCHER_BRANCH} == "alpha" ]; then
+        log "WARNING" "Deploying rancher from alpha branch..."
         DEVEL="--devel"
     fi
     # helm install rancher rancher-${RANCHER_BRANCH}/rancher \
@@ -1397,14 +1419,16 @@ install_rancher () {
 
 
     log "INFO" "Started deploying rancher on the cluster"
-    helm install rancher rancher-${RANCHER_BRANCH}/rancher ${DEVEL} \
+    eval """
+        helm install rancher rancher-${RANCHER_BRANCH}/rancher ${DEVEL} \
         --version ${RANCHER_VERSION}  \
         --namespace ${RANCHER_NS} \
         --set hostname=${RANCHER_FQDN} \
         --set bootstrapPassword=${RANCHER_ADMIN_PASS}  \
         --set replicas=${REPLICAS} \
-        -f rancher/values.yaml > /dev/null 2>&1
-
+        -f rancher/values.yaml ${VERBOSE_1} \
+        ${VERBOSE_1}
+    """
     # kubectl -n $RANCHER_NS rollout status deploy/rancher
     log "INFO" "Finished deploying rancher on the cluster"
 
@@ -1417,7 +1441,7 @@ install_rancher () {
     log "INFO" "Applying rancher HTTPRoute for ingress."
     kubectl apply -f rancher/http-routes.yaml
     ##################################################################
-    sleep 120
+    sleep 150
     log "INFO" "Removing completed pods"
     kubectl delete pods -n ${RANCHER_NS} --field-selector=status.phase=Succeeded
     ##################################################################
@@ -1451,12 +1475,8 @@ install_certmanager () {
     done
     ##################################################################
     # deploy cert-manager:
-    helm_chart_prerequisites "jetstack" "https://charts.jetstack.io" "$CERTMANAGER_VERSION" "true"
+    helm_chart_prerequisites "jetstack" "https://charts.jetstack.io" "$CERTMANAGER_NS" "true"
     ##################################################################
-
-    # helm repo add jetstack https://charts.jetstack.io --force-update > /dev/null 2>&1 || true
-    # helm repo update > /dev/null 2>&1 || true
-
     log "INFO" "Started installing cert-manger on namespace: '${CERTMANAGER_NS}'"
     helm install cert-manager jetstack/cert-manager  \
         --version ${CERTMANAGER_VERSION} \
@@ -1498,29 +1518,29 @@ install_certmanager () {
 
 # install_kubetools
 
-reset_cluster
+# reset_cluster
 
-install_cluster
+# install_cluster
 
-install_gateway_CRDS
+# install_gateway_CRDS
 
-install_cilium_prerequisites
+# install_cilium_prerequisites
 
-install_cilium
+# install_cilium
 
-join_cluster
+# join_cluster
 
-install_gateway
+# install_gateway
 
-install_certmanager
+# install_certmanager
 
 
-# install_rancher
+install_rancher
 
-# install_longhorn_prerequisites
-# install_longhorn
+install_longhorn_prerequisites
+install_longhorn
 
-# install_vault
+install_vault
 
 log "INFO" "deployment finished"
 
