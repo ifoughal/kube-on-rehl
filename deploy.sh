@@ -83,7 +83,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 --control-plane-hostname <str> --nodes-file <nodes_file> --set-hostname-to <str OPTIONAL> [--dry-run] "
+            echo "Usage: $0 --nodes-file <nodes_file> --set-hostname-to <str OPTIONAL> [--dry-run] "
             exit 1
             ;;
     esac
@@ -91,9 +91,9 @@ done
 
 ################################################################################################################################################################
 # Validate that required arguments are provided
-if [ -z "$NODES_FILE" ]; then   # [ -z "$CONTROLPLANE_HOSTNAME" ] ||
+if [ -z "$NODES_FILE" ]; then
     log "ERROR" "Missing required arguments."
-    log "ERROR" "$0 --control-plane-hostname <str> --nodes-file <nodes_file> --set-hostname-to <str OPTIONAL> [--dry-run]"
+    log "ERROR" "$0 --nodes-file <nodes_file> --set-hostname-to <str OPTIONAL> [--dry-run]"
     exit 1
 fi
 
@@ -112,15 +112,28 @@ if [ ! -z "$SET_HOSTNAME_TO" ]; then
     CURRENT_HOSTNAME=$(eval hostname)
 fi
 
-echo VERBOSE: $VERBOSE
+if [ -z "$NODE_OFFSET" ] ; then
+    log "ERROR" "NODE_OFFSET was not found/set in env file"
+    exit 1
+fi
+
+if [ -z "$NODES_LAST" ]; then
+    log "ERROR" "NODES_LAST was not found/set in env file"
+    exit 1
+fi
+
+
 
 if [ "$VERBOSE" = true ]; then
     VERBOSE_1=""
     VERBOSE_2=""
 else
+    VERBOSE=false
     VERBOSE_1=" 1> /dev/null "
     VERBOSE_2=">/dev/null 2>&1"
 fi
+
+log "INFO" "VERBOSE set to: $VERBOSE"
 
 ################################################################################################################################################################
 prerequisites_requirements() {
@@ -605,19 +618,23 @@ exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
 }
 
 
+# yq '.nodes["control_plane_nodes"]' "$NODES_FILE" | jq -r '.[] | "\(.ip) \(.hostname)"' | while read -r line; do
+
+CLUSTER_NODES=$(yq .hosts "$NODES_FILE")
+
+
+
+
 deploy_hostsfile () {
-    ################################################################
-    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
-        NODE_VAR="NODE_$i"
-        CURRENT_NODE=${!NODE_VAR}
-        log "INFO" "installing tools for node: ${CURRENT_NODE}"
-        ssh -q ${CURRENT_NODE} """
-            sudo dnf update -y  ${VERBOSE_1}
-            sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools ${VERBOSE_1}
-            sudo pip install yq  ${VERBOSE_2}
-        """
-        log "INFO" "Finished installing tools node: ${CURRENT_NODE}"
-    done
+    #########################################################
+    # Path to the YAML file
+    # Extract the 'nodes' array from the YAML and process it with jq
+    # yq '.nodes["control_plane_nodes"]' "$NODES_FILE" | jq -r '.[] | "\(.ip) \(.hostname)"' | while read -r line; do
+    log "INFO" "installing required packages to deploy the cluster"
+    sudo dnf update -y  ${VERBOSE_1}
+    sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools ${VERBOSE_1}
+    sudo pip install yq  ${VERBOSE_2}
+    log "INFO" "Finished installing required packages to deploy the cluster"
     #########################################################
     # Convert YAML to JSON using yq
     if ! command_exists yq; then
@@ -630,11 +647,13 @@ deploy_hostsfile () {
         exit 1
     fi
     #########################################################
-    # Path to the YAML file
-    # Extract the 'nodes' array from the YAML and process it with jq
-    yq '.nodes' "$NODES_FILE" | jq -r '.[] | "\(.ip) \(.hostname)"' | while read -r line; do
+    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
         # Append the entry to the file (e.g., /etc/hosts)
         # Normalize spaces in the input line (collapse multiple spaces/tabs into one)
+        hostname=$(echo "$node" | jq -r '.hostname')
+        ip=$(echo "$node" | jq -r '.ip')
+
+        line="$ip         $hostname"
         normalized_line=$(echo "$line" | sed 's/[[:space:]]\+/ /g')
 
         # Check if the normalized line already exists in the target file by parsing each line
@@ -658,6 +677,24 @@ deploy_hostsfile () {
             log "INFO" "Host already exists: $line"
         fi
     done
+    ################################################################
+    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+        hostname=$(echo "$node" | jq -r '.hostname')
+        ip=$(echo "$node" | jq -r '.ip')
+        role=$(echo "$node" | jq -r '.role')
+        log "INFO" "installing tools for '$role node': ${hostname}"
+
+        ssh -q ${hostname} <<< """
+            sudo dnf update -y  ${VERBOSE_1}
+            sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools ${VERBOSE_1}
+            sudo pip install yq  ${VERBOSE_2}
+        """
+        log "INFO" "Finished installing tools node: ${hostname}"
+    done
+
+
+    echo end of test
+    exit
     #########################################################
     log "INFO" "Sending hosts file to nodes"
     for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
@@ -1541,24 +1578,23 @@ install_certmanager () {
 
 ################################################################################################################################################################
 
-# deploy_hostsfile
+deploy_hostsfile
 
 RESETED=0
-# if [ "$PREREQUISITES" = true ]; then
-#     log "INFO" "Executing cluster prerequisites installation and checks"
-#     reset_cluster
-#     RESETED=1
-#     prerequisites_requirements
-# else
-#     log "INFO" "Cluster prerequisites have been skipped"
-# fi
+if [ "$PREREQUISITES" = true ]; then
+    log "INFO" "Executing cluster prerequisites installation and checks"
+    reset_cluster
+    RESETED=1
+    prerequisites_requirements
+else
+    log "INFO" "Cluster prerequisites have been skipped"
+fi
 
 if [ $RESETED -eq 0 ]; then
     reset_cluster
 fi
 
-# install_kubetools
-
+install_kubetools
 
 install_cluster
 
