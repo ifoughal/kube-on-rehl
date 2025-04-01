@@ -463,8 +463,8 @@ EOF
         fi
         log -f "${FUNCNAME[0]}" "Finished disabling SELinux temporarily and modify config for persistence"
         ################################################################*
-        TODO
-        update_firewall $hostname
+        # TODO
+        # update_firewall $hostname
         ############################################################################
         log -f "${FUNCNAME[0]}" "Configuring bridge network for node: $hostname"
         ssh -q ${hostname} <<< """
