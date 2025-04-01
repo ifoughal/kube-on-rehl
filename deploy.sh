@@ -415,11 +415,10 @@ EOF
         """
         log -f "${FUNCNAME[0]}" "Finished checking if bpf is mounted for node: ${hostname}"
         ####################################################################################
-
         # /etc/environment proxy:
         # Call the function
-        TODO
-        update_path
+        # TODO
+        # update_path
         ################################################################
         log -f "${FUNCNAME[0]}" "Started disabling swap for node: ${hostname}"
         ssh -q ${hostname} <<< """
