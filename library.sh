@@ -1,82 +1,45 @@
-log() {
-    # Define color codes
-    color_reset="\033[0m"    # reset to default
-    color_red="\033[0;31m" # Red
-    color_green="\033[0;32m" # Green
-    color_yellow="\033[0;33m"
-    color_blue="\033[0;34m"
-    color_magenta="\033[0;35m"
-    color_cyan="\033[0;36m"
-
-    local log_type="$1"
-    shift
-    local message="$@"
-    local datetime=$(date +"%Y-%m-%d %H:%M:%S,%3N")
-    local log_message="$datetime - deploy.sh - $log_type - $message"
-
-    # # Define color codes
-    # local color_reset="\033[0m"
-    # local color_debug="\033[0;36m"  # Cyan
-    # local color_info="\033[0;32m"
-    # local color_warning="\033[0;33m" # Yellow
-    # local color_error="\033[0;31m"
-
-    # Choose color based on log type
-    case "$log_type" in
-        DEBUG) color="$color_cyan" ;;
-        INFO) color="$color_green" ;;
-        WARNING) color="$color_yellow" ;;
-        ERROR) color="$color_red" ;;
-        # *) color="$color_reset" ;;
-    esac
-
-
-    # Print log message with color and append to log file
-    echo -e "${color}${log_message}${color_reset}" | tee -a config_check.log
-}
-
 
 optimize_dnf() {
     local CURRENT_NODE=$1
     local VERBOSE=$2
 
     if [ "$VERBOSE"="1> /dev/null" ]; then
-        VERBOSE_ECHO=""
+        ECHO_VERBOSE=""
     else
-        VERBOSE_ECHO=$VERBOSE
+        ECHO_VERBOSE=$VERBOSE
     fi
 
     local log_prefix=$(date +"%Y-%m-%d %H:%M:%S,%3N - ${FUNCNAME[0]}")
 
     ssh -q $CURRENT_NODE <<< """
-        echo '$log_prefix - $CURRENT_NODE - Enabling Delta RPMs' ${VERBOSE_ECHO}
+        echo '$log_prefix - $CURRENT_NODE - Enabling Delta RPMs' ${ECHO_VERBOSE}
         sudo sed -i '/^deltarpm=/d' /etc/dnf/dnf.conf
         echo 'deltarpm=true' | sudo tee -a /etc/dnf/dnf.conf > /dev/null
 
-        echo '$log_prefix - $CURRENT_NODE - Increase Download Threads' ${VERBOSE_ECHO}
+        echo '$log_prefix - $CURRENT_NODE - Increase Download Threads' ${ECHO_VERBOSE}
         sudo sed -i '/^max_parallel_downloads=/d' /etc/dnf/dnf.conf
         echo 'max_parallel_downloads=10' | sudo tee -a /etc/dnf/dnf.conf > /dev/null
 
-        echo '$log_prefix - $CURRENT_NODE - Adjust Metadata Expiration' ${VERBOSE_ECHO}
+        echo '$log_prefix - $CURRENT_NODE - Adjust Metadata Expiration' ${ECHO_VERBOSE}
         sudo sed -i '/^metadata_expire=/d' /etc/dnf/dnf.conf
         echo 'metadata_expire=1h' | sudo tee -a /etc/dnf/dnf.conf > /dev/null
 
-        echo '$log_prefix - $CURRENT_NODE - Enable Fastest Mirror Plugin' ${VERBOSE_ECHO}
+        echo '$log_prefix - $CURRENT_NODE - Enable Fastest Mirror Plugin' ${ECHO_VERBOSE}
         sudo sed -i '/^fastestmirror=/d' /etc/dnf/dnf.conf
         echo 'fastestmirror=true' | sudo tee -a /etc/dnf/dnf.conf > /dev/null
 
-        echo '$log_prefix - $CURRENT_NODE - Clean DNF All' ${VERBOSE_ECHO}
+        echo '$log_prefix - $CURRENT_NODE - Clean DNF All' ${ECHO_VERBOSE}
         sudo dnf clean all ${VERBOSE}
 
-        echo '$log_prefix - $CURRENT_NODE - Clean DNF packages' ${VERBOSE_ECHO}
+        echo '$log_prefix - $CURRENT_NODE - Clean DNF packages' ${ECHO_VERBOSE}
         sudo dnf clean packages ${VERBOSE}
 
-        echo '$log_prefix - $CURRENT_NODE - Clean DNF metadata' ${VERBOSE_ECHO}
+        echo '$log_prefix - $CURRENT_NODE - Clean DNF metadata' ${ECHO_VERBOSE}
         sudo dnf clean metadata ${VERBOSE}
 
-        echo '$log_prefix - $CURRENT_NODE - Update System' ${VERBOSE_ECHO}
+        echo '$log_prefix - $CURRENT_NODE - Update System' ${ECHO_VERBOSE}
         sudo dnf update -y  ${VERBOSE}
-        echo '$log_prefix - $CURRENT_NODE - DNF cache cleaned and system updated successfully.' ${VERBOSE_ECHO}
+        echo '$log_prefix - $CURRENT_NODE - DNF cache cleaned and system updated successfully.' ${ECHO_VERBOSE}
     """
 }
 
@@ -204,68 +167,48 @@ install_go () {
 
 
 configure_repos () {
+    local CURRENT_HOST=$1
+    local VERBOSE=$2
+    local ECHO_VERBOSE=$3
 
-    CURRENT_HOST=$1
-    ssh -q $CURRENT_HOST """
-    set -e  # Exit on error
+    local log_prefix=$(date +"\033[0;32m %Y-%m-%d %H:%M:%S,%3N - ${FUNCNAME[0]} - INFO -")
 
-    echo 'Configuring AlmaLinux 9 Repositories...' ${VERBOSE_1}
 
-    # Define repo files
-    sudo tee /etc/yum.repos.d/almalinux.repo > /dev/null <<EOF
-[baseos]
-name=AlmaLinux 9 - BaseOS
-mirrorlist=https://mirrors.almalinux.org/mirrorlist/9/baseos
-enabled=1
-gpgcheck=1
-gpgkey=https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux
+    scp -q ./almalinux.repo $CURRENT_HOST:/tmp/
 
-[appstream]
-name=AlmaLinux 9 - AppStream
-mirrorlist=https://mirrors.almalinux.org/mirrorlist/9/appstream
-enabled=1
-gpgcheck=1
-gpgkey=https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux
+    log "INFO" "Configuring AlmaLinux 9 Repositories for node: ${CURRENT_HOST}" ${ECHO_VERBOSE}
 
-[crb]
-name=AlmaLinux 9 - CRB
-mirrorlist=https://mirrors.almalinux.org/mirrorlist/9/crb
-enabled=1
-gpgcheck=1
-gpgkey=https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux
+    ssh -q $CURRENT_HOST <<< """
+        set -e  # Exit on error
 
-[extras]
-name=AlmaLinux 9 - Extras
-mirrorlist=https://mirrors.almalinux.org/mirrorlist/9/extras
-enabled=1
-gpgcheck=1
-gpgkey=https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux
-EOF
+        echo -e \"${log_prefix} Updating almalinux repos list\" ${ECHO_VERBOSE}
+        sudo mv /tmp/almalinux.repo /etc/yum.repos.d/almalinux.repo
+        sudo chown root:root /etc/yum.repos.d/almalinux.repo
 
-    echo 'Fetching and importing AlmaLinux GPG keys...' ${VERBOSE_1}
-    sudo curl -s -o /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux-9
-    sudo rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux ${VERBOSE_1}
+        echo -e \"${log_prefix} Fetching and importing AlmaLinux GPG keys...\" ${ECHO_VERBOSE}
+        sudo curl -s -o /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux-9
+        sudo rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux ${VERBOSE}
 
-    echo 'Cleaning up DNF cache and updating system...' ${VERBOSE_1}
-    sudo dnf clean all  ${VERBOSE_1}
-    sudo dnf makecache  ${VERBOSE_1}
-    sudo dnf -y update  ${VERBOSE_1}
+        echo -e \"${log_prefix} Cleaning up DNF cache and updating system...\" ${ECHO_VERBOSE}
+        sudo dnf clean all  ${VERBOSE}
+        sudo dnf makecache  ${VERBOSE}
+        sudo dnf -y update  ${VERBOSE}
 
-    echo 'Enabling EPEL & CRB repositories...' ${VERBOSE_1}
-    sudo dnf install -y epel-release  ${VERBOSE_1}
-    sudo dnf config-manager --set-enabled crb  ${VERBOSE_1}
+        echo -e \"${log_prefix} Enabling EPEL & CRB repositories...\" ${ECHO_VERBOSE}
+        sudo dnf install -y epel-release  ${VERBOSE}
+        sudo dnf config-manager --set-enabled crb  ${VERBOSE}
 
-    echo 'Adding RPM Fusion Free & Non-Free Repositories...' ${VERBOSE_1}
-    # OSS repos:
-    sudo dnf install -y https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm  ${VERBOSE_1}
-    # Proprietary repos
-    sudo dnf install -y https://mirrors.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-9.noarch.rpm  ${VERBOSE_1}
+        echo -e \"${log_prefix} Adding RPM Fusion Free & Non-Free Repositories...\" ${ECHO_VERBOSE}
+        # OSS repos:
+        sudo dnf install -y https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm  ${VERBOSE}
+        # Proprietary repos
+        sudo dnf install -y https://mirrors.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-9.noarch.rpm  ${VERBOSE}
 
-    echo 'Cleaning up DNF cache and updating system...' ${VERBOSE_1}
-    sudo dnf clean all  ${VERBOSE_1}
-    sudo dnf makecache  ${VERBOSE_1}
-    sudo dnf -y update  ${VERBOSE_1}
-"""
+        echo -e \"${log_prefix} Cleaning up DNF cache and updating system...\" ${ECHO_VERBOSE}
+        sudo dnf clean all  ${VERBOSE}
+        sudo dnf makecache  ${VERBOSE}
+        sudo dnf -y update  ${VERBOSE}
+    """
 }
 
 
