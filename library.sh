@@ -1,3 +1,5 @@
+#!/bin/bash
+
 
 optimize_dnf() {
     local CURRENT_NODE=$1
@@ -114,19 +116,20 @@ install_go () {
     CURRENT_NODE=$1
     GO_VERSION=$2
     TINYGO_VERSION=$3
+    ECHO_VERBOSE=$4
+
 
     ssh -q $CURRENT_NODE """
         cd /tmp
 
         # install Go
-        echo installing go version: ${GO_VERSION} ${VERBOSE_1}
+        log -f ${FUNCNAME[0]} \"installing go version: ${GO_VERSION}\" ${ECHO_VERBOSE}
         wget -q https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz
         sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
 
         # install tinyGo
         wget -q https://github.com/tinygo-org/tinygo/releases/download/v${TINYGO_VERSION}/tinygo${TINYGO_VERSION}.linux-amd64.tar.gz
         sudo tar -C /usr/local -xzf tinygo${TINYGO_VERSION}.linux-amd64.tar.gz
-
 
         # Update path:
         files=(
@@ -139,24 +142,24 @@ install_go () {
             \"/usr/local/tinygo/bin\"
         )
 
-        echo \"Updating paths for GO\" ${VERBOSE_1}
+        log -f ${FUNCNAME[0]} \"Updating paths for GO\" ${ECHO_VERBOSE}
         for file in \"\${files[@]}\"; do
-            echo \"Updating environment for path: \${file}\" ${VERBOSE_1}
+            log -f ${FUNCNAME[0]} \"Updating environment for path: \${file}\" ${ECHO_VERBOSE}
 
             for path in \"\${extra_paths[@]}\"; do
-                echo \"  Checking path: \$path\" ${VERBOSE_1}
+                log -f ${FUNCNAME[0]} \"Checking path: \$path\" ${ECHO_VERBOSE}
 
                 # Check if the export PATH line exists
                 if grep -q 'export PATH=' \"\$file\"; then
                     # Ensure the path is not already appended
                     if ! grep -q \"\$path\" \"\$file\"; then
-                        echo \"Appending \$path to \$file\" ${VERBOSE_1}
+                        log -f ${FUNCNAME[0]} \"Appending \$path to \$file\" ${ECHO_VERBOSE}
                         sudo sed -i \"s|^export PATH=.*|&:\${path}|\" \"\$file\"
                     else
-                        echo \"\$path already exists in \$file\" ${VERBOSE_1}
+                        log -f ${FUNCNAME[0]} \"\$path already exists in \$file\" ${ECHO_VERBOSE}
                     fi
                 else
-                    echo \"export PATH not found, adding export line\" ${VERBOSE_1}
+                    log -f ${FUNCNAME[0]} \"export PATH not found, adding export line\" ${ECHO_VERBOSE}
                     echo \"export PATH=\\\$PATH:\${path}\" | sudo tee -a \"\$file\" > /dev/null
                 fi
             done
@@ -216,6 +219,7 @@ add_bashcompletion () {
     # Parse the application name as a function argument
     CURRENT_NODE="$1"
     app="$2"
+    ECHO_VERBOSE=$3
 
     if [ -z "$app" ]; then
         log "ERROR" "Application name must be provided."
@@ -224,23 +228,22 @@ add_bashcompletion () {
 
     COMPLETION_FILE="/etc/bash_completion.d/$app"
 
-    log "INFO" "Adding $app bash completion for node: ${CURRENT_NODE}"
-
+    log "INFO" "Adding $app bash completion for node: ${CURRENT_NODE}" $ECHO_VERBOSE
     # Assuming the application has a completion script available
     ssh -q ${CURRENT_NODE} """
         $app completion bash | sudo tee "$COMPLETION_FILE" >/dev/null
     """
-    log "INFO" "$app bash completion added successfully."
+    log "INFO" "$app bash completion added successfully." $ECHO_VERBOSE
 }
 
 
 install_helm () {
     CURRENT_NODE=$1
-
+    ECHO_VERBOSE=$2
     ssh -q $CURRENT_NODE """
         cd /tmp
-        curl -s https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash ${VERBOSE_1}
-        sudo ln -sf /usr/local/bin/helm /usr/bin/  ${VERBOSE_1}
+        curl -s https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash ${ECHO_VERBOSE}
+        sudo ln -sf /usr/local/bin/helm /usr/bin/  > /dev/null
     """
 }
 
@@ -254,11 +257,12 @@ configure_containerD () {
     NO_PROXY=$4
     PAUSE_VERSION=$5
     SUDO_GROUP=$6
+    ECHO_VERBOSE=$7
 
     ssh -q $CURRENT_NODE """
         sudo mkdir -p /etc/systemd/system/containerd.service.d
 
-        cat <<EOF | sudo tee /etc/systemd/system/containerd.service.d/http-proxy.conf  ${VERBOSE_1}
+        cat <<EOF | sudo tee /etc/systemd/system/containerd.service.d/http-proxy.conf  > /dev/null
 [Service]
     Environment=\"HTTP_PROXY=$HTTP_PROXY\"
     Environment=\"HTTPS_PROXY=$HTTPS_PROXY\"
@@ -267,43 +271,22 @@ EOF
     #############################################################################
     # ensure changes have been applied
     if sudo containerd config dump | grep -q 'SystemdCgroup = true'; then
-        echo "Cgroups configured accordingly for containerD"  ${VERBOSE_1}
+        log -f ${FUNCNAME[0]} 'Cgroups configured accordingly for containerD'  ${ECHO_VERBOSE}
     else
-        echo "ERROR: Failed to configure Cgroups configured for containerD"
+        log -f ${FUNCNAME[0]} 'ERROR' 'Failed to configure Cgroups configured for containerD'
         exit 1
     fi
 
     if sudo containerd config dump | grep -q 'sandbox_image = \"registry.k8s.io/pause:${PAUSE_VERSION}\"'; then
-        echo "set sandbox_image accordingly to pause version ${PAUSE_VERSION}"  ${VERBOSE_1}
+        log -f ${FUNCNAME[0]} \"sandbox_image is set accordingly to pause version ${PAUSE_VERSION}\"  ${ECHO_VERBOSE}
     else
-        echo "ERROR: Failed to set sandbox_image to pause version ${PAUSE_VERSION}"
+        log -f ${FUNCNAME[0]} 'ERROR' \"Failed to set sandbox_image to pause version ${PAUSE_VERSION}\"
         exit 1
     fi
     #############################################################################
     sudo setfacl -m g:${SUDO_GROUP}:rw /var/run/containerd/containerd.sock
     sudo setfacl -m g:wheel:rw /var/run/containerd/containerd.sock
-
-
     """
-
-
-
-
-    # sudo systemctl enable containerd
-    # sudo systemctl daemon-reload
-    # sudo systemctl restart containerd
-
-    # sleep 10
-    # # Check if the containerd service is active
-    # if systemctl is-active --quiet containerd.service; then
-    #     echo "ContainerD configuration updated successfully."
-    # else
-    #     echo "ContainerD configuration failed, containerd service is not running..."
-    #     exit 1
-    # fi
-
-    # # check containerd version:
-    # containerd --version
 }
 
 
