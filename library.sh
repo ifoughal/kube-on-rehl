@@ -37,35 +37,49 @@ log() {
 
 
 optimize_dnf() {
-    CURRENT_NODE=$1
+    local CURRENT_NODE=$1
+    local VERBOSE=$2
 
-    ssh -q $CURRENT_NODE """
-        # Enable Delta RPMs
+    if [ "$VERBOSE"="1> /dev/null" ]; then
+        VERBOSE_ECHO=""
+    else
+        VERBOSE_ECHO=$VERBOSE
+    fi
+
+    local log_prefix=$(date +"%Y-%m-%d %H:%M:%S,%3N - ${FUNCNAME[0]}")
+
+    ssh -q $CURRENT_NODE <<< """
+        echo '$log_prefix - $CURRENT_NODE - Enabling Delta RPMs' ${VERBOSE_ECHO}
         sudo sed -i '/^deltarpm=/d' /etc/dnf/dnf.conf
-        echo "deltarpm=true" | sudo tee -a /etc/dnf/dnf.conf > /dev/null
+        echo 'deltarpm=true' | sudo tee -a /etc/dnf/dnf.conf > /dev/null
 
-        # Increase Download Threads
+        echo '$log_prefix - $CURRENT_NODE - Increase Download Threads' ${VERBOSE_ECHO}
         sudo sed -i '/^max_parallel_downloads=/d' /etc/dnf/dnf.conf
-        echo "max_parallel_downloads=10" | sudo tee -a /etc/dnf/dnf.conf > /dev/null
+        echo 'max_parallel_downloads=10' | sudo tee -a /etc/dnf/dnf.conf > /dev/null
 
-        # Adjust Metadata Expiration
+        echo '$log_prefix - $CURRENT_NODE - Adjust Metadata Expiration' ${VERBOSE_ECHO}
         sudo sed -i '/^metadata_expire=/d' /etc/dnf/dnf.conf
-        echo "metadata_expire=1h" | sudo tee -a /etc/dnf/dnf.conf > /dev/null
+        echo 'metadata_expire=1h' | sudo tee -a /etc/dnf/dnf.conf > /dev/null
 
-        # Enable Fastest Mirror Plugin
+        echo '$log_prefix - $CURRENT_NODE - Enable Fastest Mirror Plugin' ${VERBOSE_ECHO}
         sudo sed -i '/^fastestmirror=/d' /etc/dnf/dnf.conf
-        echo "fastestmirror=true" | sudo tee -a /etc/dnf/dnf.conf > /dev/null
+        echo 'fastestmirror=true' | sudo tee -a /etc/dnf/dnf.conf > /dev/null
 
-        # Clean DNF Cache
-        sudo dnf clean all > /dev/null
-        sudo dnf clean packages > /dev/null
-        sudo dnf clean metadata > /dev/null
+        echo '$log_prefix - $CURRENT_NODE - Clean DNF All' ${VERBOSE_ECHO}
+        sudo dnf clean all ${VERBOSE}
 
-        # Update System
-        sudo dnf update -y  > /dev/null
-        # echo "DNF cache cleaned and system updated successfully."
+        echo '$log_prefix - $CURRENT_NODE - Clean DNF packages' ${VERBOSE_ECHO}
+        sudo dnf clean packages ${VERBOSE}
+
+        echo '$log_prefix - $CURRENT_NODE - Clean DNF metadata' ${VERBOSE_ECHO}
+        sudo dnf clean metadata ${VERBOSE}
+
+        echo '$log_prefix - $CURRENT_NODE - Update System' ${VERBOSE_ECHO}
+        sudo dnf update -y  ${VERBOSE}
+        echo '$log_prefix - $CURRENT_NODE - DNF cache cleaned and system updated successfully.' ${VERBOSE_ECHO}
     """
 }
+
 
 
 # Function to update or add the PATH variable in /etc/environment

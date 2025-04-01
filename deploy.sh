@@ -42,7 +42,8 @@ recommended_rehl_version="4.18"
 CONTROLPLANE_ADDRESS=$(eval ip -o -4 addr show $CONTROLPLANE_INGRESS_INTER | awk '{print $4}' | cut -d/ -f1)  # 192.168.66.129
 CONTROLPLANE_SUBNET=$(echo $CONTROLPLANE_ADDRESS | awk -F. '{print $1"."$2"."$3".0/24"}')
 ################################################################################################################################################################
-VERBOSE=false
+VERBOSE_LEVEL=0
+
 set -e  # Exit on error
 set -o pipefail  # Fail if any piped command fails
 
@@ -67,8 +68,16 @@ while [[ $# -gt 0 ]]; do
             PREREQUISITES=true
             shift
             ;;
-        -v|--verbose)
-            VERBOSE=true
+        -v)
+            VERBOSE_LEVEL=1
+            shift
+            ;;
+        -vv)
+            VERBOSE_LEVEL=2
+            shift
+            ;;
+        -vvv)
+            VERBOSE_LEVEL=3
             shift
             ;;
         --dry-run)
@@ -88,39 +97,39 @@ done
 # Validate that required arguments are provided
 if [ -z "$INVENTORY" ]; then
     log "ERROR" "Missing required arguments."
-    log "ERROR" "$0 --nodes-file <INVENTORY>  [--dry-run]"
+    log "ERROR" "$0 --inventory <INVENTORY>  [--dry-run]"
     exit 1
 fi
-
 
 # Ensure the YAML file exists
 if [ ! -f "$INVENTORY" ]; then
-    log "ERROR" "Error: Node YAML file '$INVENTORY' not found."
+    log "ERROR" "Error: inventory YAML file '$INVENTORY' not found."
     exit 1
 fi
 
-# if [ -z "$NODE_OFFSET" ] ; then
-#     log "ERROR" "NODE_OFFSET was not found/set in env file"
-#     exit 1
-# fi
 
-# if [ -z "$NODES_LAST" ]; then
-#     log "ERROR" "NODES_LAST was not found/set in env file"
-#     exit 1
-# fi
+# by default, all shell stdout commands info is suppressed
+VERBOSE="> /dev/null 2>&1"
 
+# on level 1; we allow error outputs.
+if [ $VERBOSE_LEVEL -eq 1 ]; then
+    # SSH_ECHO_VERBOSE=""
+    VERBOSE="1> /dev/null"
 
-
-if [ "$VERBOSE" = true ]; then
-    VERBOSE_1=""
-    VERBOSE_2=""
-else
-    VERBOSE=false
-    VERBOSE_1=" 1> /dev/null "
-    VERBOSE_2=">/dev/null 2>&1"
+# on level 2; we allow info and error outputs.
+elif [ $VERBOSE_LEVEL -eq 2 ]; then
+    VERBOSE=""
+# on level 3-5; we verbose the executed commands.
+elif [ $VERBOSE_LEVEL -eq 3 ]; then
+    VERBOSE="-v"
+elif [ $VERBOSE_LEVEL -eq 4 ]; then
+    VERBOSE="-vv"
+elif [ $VERBOSE_LEVEL -eq 5 ]; then
+    VERBOSE="-vvv"
 fi
 
-log "INFO" "VERBOSE set to: $VERBOSE"
+
+log "INFO" "VERBOSE_LEVEL set to: $VERBOSE_LEVEL"
 
 
 CLUSTER_NODES=$(yq .hosts "$INVENTORY")
@@ -132,10 +141,10 @@ deploy_hostsfile () {
     # Extract the 'nodes' array from the YAML and process it with jq
     # yq '.nodes["control_plane_nodes"]' "$INVENTORY" | jq -r '.[] | "\(.ip) \(.hostname)"' | while read -r line; do
     log "INFO" "installing required packages to deploy the cluster"
-    eval "sudo dnf update -y  ${VERBOSE_1}"
-    eval "sudo dnf upgrade -y  ${VERBOSE_1}"
-    eval "sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools ${VERBOSE_1}"
-    eval "sudo pip install yq  ${VERBOSE_2}"
+    eval "sudo dnf update -y  ${VERBOSE}"
+    eval "sudo dnf upgrade -y  ${VERBOSE}"
+    eval "sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools ${VERBOSE}"
+    eval "sudo pip install yq  ${VERBOSE}"
     log "INFO" "Finished installing required packages to deploy the cluster"
     #########################################################
     # Convert YAML to JSON using yq
@@ -185,7 +194,7 @@ deploy_hostsfile () {
         ssh -q ${hostname} <<< """
             sudo hostnamectl set-hostname "$hostname"
             CURRENT_HOSTNAME=$(eval hostname)
-            log "INFO" "Hostname set to \$CURRENT_HOSTNAME" ${VERBOSE_1}
+            echo "Hostname set to \$CURRENT_HOSTNAME" ${VERBOSE_1}
         """
         log "INFO" "Finished setting hostname for '$role node': ${hostname}"
         ################################################################
@@ -263,7 +272,7 @@ prerequisites_requirements() {
         local role=$(echo "$node" | jq -r '.role')
         #####################################################################################
         log "INFO" "Starting optimising dnf for node: $hostname"
-        optimize_dnf $hostname
+        optimize_dnf $hostname "${VERBOSE}"
         log "INFO" "Finished optimising dnf for node: $hostname"
         #####################################################################################
         log "INFO" "starting gid and uid configuration for node: $hostname"
