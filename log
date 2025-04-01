@@ -17,8 +17,9 @@ valid_log_types=("DEBUG" "INFO" "WARNING" "ERROR")
 # Parse arguments
 override_function="$0"
 while [[ "$1" =~ ^- && ! "$1" == "--" ]]; do case $1 in
-  --override-function )
-    shift; override_function=$1
+  -f|--override-function )
+    echo testt
+    override_function=$1
     ;;
   * )
     log_type="$1"
