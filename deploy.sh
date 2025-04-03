@@ -834,43 +834,45 @@ install_cilium () {
 
 join_cluster () {
     # TODO: for control-plane nodes:
-    log -f "${FUNCNAME[0]}" "Generating join command"
-    JOIN_COMMAND_WORKERS=$(kubeadm token create --print-join-command)
-    JOIN_COMMAND_CP="${JOIN_COMMAND_WORKERS} --control-plane"
+    log -f "${FUNCNAME[0]}" "Generating join command from control-plane node: ${CONTROL_PLANE_HOST}"
 
+    JOIN_COMMAND_WORKER=$(ssh -q $CONTROL_PLANE_HOST <<< "kubeadm token create --print-join-command""")
+    JOIN_COMMAND_CONTROLPLANE="${JOIN_COMMAND_WORKER} --control-plane"
 
-
-    echo end of test
-    exit 1
     # for i in $(seq 2 "$((2 + NODES_LAST - 2))"); do
     echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
         local role=$(echo "$node" | jq -r '.role')
 
-        # log -f "${FUNCNAME[0]}" "sending cluster config to target ${role} node: ${hostname}"
-        # sudo cat /etc/kubernetes/admin.conf | ssh -q ${hostname} <<< """
-        #     sudo tee -p /etc/kubernetes/admin.conf > /dev/null
-        #     sudo chmod 600 /etc/kubernetes/admin.conf
-        #     mkdir -p \$HOME/.kube
-        #     sudo cp -f -i /etc/kubernetes/admin.conf \$HOME/.kube/config >/dev/null 2>&1
-        #     sudo chown $(id -u):$(id -g) \$HOME/.kube/config
-        # """
+        if [ $hostname == ${CONTROL_PLANE_HOST} ]; then
+            log -f "${FUNCNAME[0]}" "hostname: ${hostname} "
+            continue
+        fi
+
+        log -f "${FUNCNAME[0]}" "sending cluster config to target ${role} node: ${hostname}"
+        sudo cat /etc/kubernetes/admin.conf | ssh -q ${hostname} """
+            sudo tee -p /etc/kubernetes/admin.conf > /dev/null
+
+            sudo chmod 600 /etc/kubernetes/admin.conf
+            mkdir -p \$HOME/.kube
+            sudo cp -f -i /etc/kubernetes/admin.conf \$HOME/.kube/config >/dev/null 2>&1
+            sudo chown \$(id -u):\$(id -g) \$HOME/.kube/config
+        """
+
         log -f "${FUNCNAME[0]}" "initiating cluster join for ${role} node: ${hostname}"
         if [ $role == "worker" ]; then
-
-            # log -f "${FUNCNAME[0]}" "sending PKI cert to target node: ${hostname}"
-            # sudo cat /etc/kubernetes/pki/ca.crt | ssh -q ${hostname} <<< "sudo tee /etc/kubernetes/pki/ca.crt > /dev/null && sudo chmod 644 /etc/kubernetes/pki/ca.crt"
-            # log -f "${FUNCNAME[0]}" "updating certs"
-            # ssh -q ${hostname} <<< "sudo update-ca-trust"
-
             ssh -q ${hostname} <<< """
-                # echo "executing command: $JOIN_COMMAND_WORKERS"
-                eval sudo ${JOIN_COMMAND_WORKERS} >/dev/null 2>&1 || true
+                eval sudo ${JOIN_COMMAND_WORKER} >/dev/null 2>&1 || true
+            """
+        elif [ $role == "control-plane" ]; then
+            ssh -q ${hostname} <<< """
+                eval sudo ${JOIN_COMMAND_CONTROLPLANE} >/dev/null 2>&1 || true
             """
         fi
         log -f "${FUNCNAME[0]}" "Finished joining cluster for ${role} node: ${hostname}"
     done
+
 
     ##################################################################
     # ensure that cilium replicas have scaled without errors...
@@ -1515,36 +1517,36 @@ local role=$(echo "$node" | jq -r '.role')
 
 ################################################################################################################################################################
 
-# deploy_hostsfile
+deploy_hostsfile
 
-# RESETED=0
-# if [ "$PREREQUISITES" = true ]; then
-#     reset_cluster
-#     RESETED=1
-#     prerequisites_requirements
-# else
-#     log "deploy.sh" "INFO" "Cluster prerequisites have been skipped"
-# fi
+RESETED=0
+if [ "$PREREQUISITES" = true ]; then
+    reset_cluster
+    RESETED=1
+    prerequisites_requirements
+else
+    log "deploy.sh" "INFO" "Cluster prerequisites have been skipped"
+fi
 
 
-# if [ $RESETED -eq 0 ]; then
-#     reset_cluster
-# fi
+if [ $RESETED -eq 0 ]; then
+    reset_cluster
+fi
 
-# install_kubetools
+install_kubetools
 
-# install_cluster
+install_cluster
 
-# install_gateway_CRDS
+install_gateway_CRDS
 
-# install_cilium_prerequisites
+install_cilium_prerequisites
 
-# install_cilium
+install_cilium
 
 
 join_cluster
-echo end of test
-exit 1
+# echo end of test
+# exit 1
 # install_gateway
 
 # install_certmanager
