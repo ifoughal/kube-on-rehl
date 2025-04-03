@@ -209,9 +209,9 @@ deploy_hostsfile () {
         log -f "${FUNCNAME[0]}" "installing tools for '$role node': ${hostname}"
 
         ssh -q ${hostname} <<< """
-            sudo dnf update -y  ${ECHO_VERBOSE}
-            sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools ${ECHO_VERBOSE}
-            sudo pip install yq  ${VERBOSE_2}
+            sudo dnf update -y  ${VERBOSE}
+            sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools ${VERBOSE}
+            sudo pip install yq  ${VERBOSE}
         """
         log -f "${FUNCNAME[0]}" "Finished installing tools node: ${hostname}"
         #########################################################
@@ -231,10 +231,10 @@ deploy_hostsfile () {
 reset_cluster () {
     log -f "${FUNCNAME[0]}" "Started restting cluster"
     # #########################################################
-    # log -f "${FUNCNAME[0]}" "uninstalling Cilium from cluster..."
-    # eval "sudo cilium uninstall ${VERBOSE_2}" || true
-    # sleep 15
-    # log -f "${FUNCNAME[0]}" "Finished uninstalling Cilium from cluster..."
+    log -f "${FUNCNAME[0]}" "uninstalling Cilium from cluster..."
+    eval "sudo cilium uninstall > /dev/null 2>&1" || true
+    sleep 15
+    log -f "${FUNCNAME[0]}" "Finished uninstalling Cilium from cluster..."
     #########################################################
     echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
         #########################################################
@@ -244,7 +244,7 @@ reset_cluster () {
         #########################################################
         log -f "${FUNCNAME[0]}" "Cleaning up k8s prior installs for node: ${hostname}"
         ssh -q ${hostname} <<< """
-            sudo kubeadm reset -f ${VERBOSE_2} || true
+            sudo kubeadm reset -f ${VERBOSE} || true
             sudo rm -rf \
                 \$HOME/.kube/* \
                 /root/.kube/* \
@@ -571,8 +571,8 @@ EOF
 ########################################################################
 install_kubetools () {
     #########################################################
-    # cilium must be reinstalled if kubelet is reinstalled
-    eval "sudo cilium uninstall ${VERBOSE_2}" || true
+    log -f "${FUNCNAME[0]}" "WARNING" "cilium must be reinstalled as kubelet will be reinstalled"
+    eval "sudo cilium uninstall > /dev/null 2>&1" || true
     #########################################################
     # Fetch Latest version from kube release....
     if [ "$(echo "$FETCH_LATEST_KUBE" | tr '[:upper:]' '[:lower:]')" = "true" ]; then
@@ -600,31 +600,37 @@ gpgcheck=1
 gpgkey=https://pkgs.k8s.io/core:/stable:/v$K8S_MAJOR_VERSION/rpm/repodata/repomd.xml.key
 exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
 """
-    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
-        NODE_VAR="NODE_$i"
-        hostname=${!NODE_VAR}
+    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+        #########################################################
+        local hostname=$(echo "$node" | jq -r '.hostname')
+        local ip=$(echo "$node" | jq -r '.ip')
+        local role=$(echo "$node" | jq -r '.role')
         #########################################################
         log -f "${FUNCNAME[0]}" "sending k8s repo version: ${K8S_MAJOR_VERSION} to target node: ${hostname}"
-        ssh -q ${hostname} <<< "echo '$K8S_REPO_CONTENT' | sudo tee $K8S_REPO_FILE" > /dev/null
+        ssh -q ${hostname} <<< """
+            echo '$K8S_REPO_CONTENT' | sudo tee $K8S_REPO_FILE > /dev/null
+        """
         #########################################################
         log -f "${FUNCNAME[0]}" "updating repos on target node: ${hostname}"
-        ssh -q ${hostname} <<< "sudo dnf update -y >/dev/null 2>&1"
+        ssh -q ${hostname} <<< "
+            sudo dnf update -y ${VERBOSE}
+        "
         #########################################################
         log -f "${FUNCNAME[0]}" "Removing prior installed versions on node: ${hostname}"
         ssh -q ${hostname} <<< """
-            sudo dnf remove -y kubelet kubeadm kubectl --disableexcludes=kubernetes   ${ECHO_VERBOSE}
+            sudo dnf remove -y kubelet kubeadm kubectl --disableexcludes=kubernetes ${VERBOSE}
             sudo rm -rf /etc/kubernetes
         """
         #########################################################
         log -f "${FUNCNAME[0]}" "installing k8s tools on node: ${hostname}"
         ssh -q ${hostname} <<< """
-            sudo dnf install -y kubelet-${K8S_MINOR_VERSION} kubeadm-${K8S_MINOR_VERSION} kubectl-${K8S_MINOR_VERSION} --disableexcludes=kubernetes   ${ECHO_VERBOSE}
-            sudo systemctl enable --now kubelet ${VERBOSE_2}
+            sudo dnf install -y kubelet-${K8S_MINOR_VERSION} kubeadm-${K8S_MINOR_VERSION} kubectl-${K8S_MINOR_VERSION} --disableexcludes=kubernetes ${VERBOSE}
+            sudo systemctl enable --now kubelet ${VERBOSE}
         """
         #########################################################
         log -f "${FUNCNAME[0]}" "Adding Kubeadm bash completion"
-        add_bashcompletion ${hostname} kubeadm
-        add_bashcompletion ${hostname} kubectl
+        add_bashcompletion ${hostname} kubeadm $ECHO_VERBOSE
+        add_bashcompletion ${hostname} kubectl $ECHO_VERBOSE
         #########################################################
     done
     #########################################################
@@ -637,11 +643,14 @@ exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
 install_cluster () {
     log -f "${FUNCNAME[0]}" "generating kubeadm init config file"
     envsubst < init-config-template.yaml > init-config.yaml
-    # Kubeadm init logic
-    KUBE_ADM_COMMAND="sudo kubeadm "
-    ####################################################################
-    KUBE_ADM_COMMAND="$KUBE_ADM_COMMAND init --config init-config.yaml --skip-phases=addon/kube-proxy "
 
+    ####################################################################
+    log -f "${FUNCNAME[0]}" "sending kubeadm init config file to main control-plane: ${CONTROL_PLANE_HOST}"
+    scp -q ./init-config.yaml ${CONTROL_PLANE_HOST}:/tmp/
+    ####################################################################
+    # Kubeadm init logic
+    KUBE_ADM_COMMAND="sudo kubeadm init --config /tmp/init-config.yaml --skip-phases=addon/kube-proxy "
+    ####################################################################
     # Simulate Kubeadm init or worker-node node join
     if [ "$DRY_RUN" = true ]; then
         log -f "${FUNCNAME[0]}" "Initializing dry-run for control plane node init..."
@@ -649,62 +658,92 @@ install_cluster () {
     else
         log -f "${FUNCNAME[0]}" "Initializing control plane node init..."
     fi
-
+    ####################################################################
     log -f "${FUNCNAME[0]}" "    with command: $KUBE_ADM_COMMAND"
-    # KUBEADM_INIT_OUTPUT=$(eval "$KUBE_ADM_COMMAND 2>&1")
-    KUBEADM_INIT_OUTPUT=$(eval "$KUBE_ADM_COMMAND"  2>&1 || true)
+    ####################################################################
+    ssh -q $CONTROL_PLANE_HOST <<< """
+        ####################################################################
+        set -e  # Exit on error
+        ####################################################################
+        KUBEADM_INIT_OUTPUT=\$(eval $KUBE_ADM_COMMAND  2>&1 || true)
 
-    if echo $(echo "$KUBEADM_INIT_OUTPUT" | tr '[:upper:]' '[:lower:]') | grep "error"; then
-        log -f "${FUNCNAME[0]}" "ERROR" "$KUBEADM_INIT_OUTPUT"
-        exit 1
-    fi
+        if echo \$(echo \"\$KUBEADM_INIT_OUTPUT\" | tr '[:upper:]' '[:lower:]') | grep 'error'; then
+            log -f \"${FUNCNAME[0]}\" 'ERROR' \"\$KUBEADM_INIT_OUTPUT\"
+            exit 1
+        fi
+        ####################################################################
+        if [ \"$DRY_RUN\" = true ]; then
+            log -f \"${FUNCNAME[0]}\" 'Control plane dry-run initialized without errors.'
+        else
+            log -f \"${FUNCNAME[0]}\" 'Control plane initialized successfully.'
+            # Copy kubeconfig for kubectl access
+            mkdir -p \$HOME/.kube
+            sudo cp -f -i /etc/kubernetes/admin.conf \$HOME/.kube/config
+            sudo chown \$(id -u):\$(id -g) \$HOME/.kube/config
 
-
-    if [ "$DRY_RUN" = true ]; then
-        log -f "${FUNCNAME[0]}" "Control plane dry-run initialized without errors."
-        return 0
-    else
-        log -f "${FUNCNAME[0]}" "Control plane initialized successfully."
-        # Copy kubeconfig for kubectl access
-        mkdir -p $HOME/.kube
-        sudo cp -f -i /etc/kubernetes/admin.conf $HOME/.kube/config
-        sudo chown $(id -u):$(id -g) $HOME/.kube/config
-
-        log -f "${FUNCNAME[0]}" "unintaing the control-plane node"
-        kubectl taint nodes $CONTROL_PLANE_HOST node-role.kubernetes.io/control-plane:NoSchedule- >/dev/null 2>&1
-        kubectl taint nodes $CONTROL_PLANE_HOST node.kubernetes.io/not-ready:NoSchedule- >/dev/null 2>&1
-        log -f "${FUNCNAME[0]}" "sleeping for 30s to wait for Kubernetes control-plane node setup completion..."
-        sleep 30
-    fi
+            log -f \"${FUNCNAME[0]}\" 'unintaing the control-plane node'
+            kubectl taint nodes $CONTROL_PLANE_HOST node-role.kubernetes.io/control-plane:NoSchedule- >/dev/null 2>&1
+            kubectl taint nodes $CONTROL_PLANE_HOST node.kubernetes.io/not-ready:NoSchedule- >/dev/null 2>&1
+            log -f \"${FUNCNAME[0]}\" \"sleeping for 30s to wait for Kubernetes control-plane node: ${CONTROL_PLANE_HOST} setup completion...\"
+            sleep 5
+        fi
+        ####################################################################
+    """
+    ####################################################################
     log -f "${FUNCNAME[0]}" "Finished deploying control-plane node."
 }
 
 
+install_gateway_CRDS () {
+    # this hits a bug described here: https://github.com/cilium/cilium/issues/38420
+    # log -f "${FUNCNAME[0]}" "Installing Gateway API version: ${GATEWAY_VERSION} from the standard channel"
+    # kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_VERSION}/standard-install.yaml
 
+    log -f "${FUNCNAME[0]}" "sending http-routes.yaml file to control plane node: ${CONTROL_PLANE_HOST}"
+    scp -q ./cilium/http-routes.yaml ${CONTROL_PLANE_HOST}:/tmp/
+
+    # using experimental CRDS channel
+    log -f "${FUNCNAME[0]}" "Installing Gateway API version: ${GATEWAY_VERSION} from the experimental channel"
+
+    ssh -q $CONTROL_PLANE_HOST <<< """
+        set -e  # Exit on error
+        eval \"kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_VERSION}/experimental-install.yaml ${VERBOSE}\"
+
+        log -f \"${FUNCNAME[0]}\" 'Installing Gateway API Experimental TLSRoute from the Experimental channel'
+
+        eval \"kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/${GATEWAY_VERSION}/config/crd/experimental/gateway.networking.k8s.io_tlsroutes.yaml ${VERBOSE}\"
+
+        log -f \"${FUNCNAME[0]}\" 'Applying hubble-ui HTTPRoute for ingress.'
+        eval \"kubectl apply -f /tmp/http-routes.yaml ${VERBOSE}\"
+    """
+}
 
 
 install_cilium_prerequisites () {
+    log -f "${FUNCNAME[0]}" "INFO" "Started installing cilium prerequisites"
     #########################################################
-    log -f "${FUNCNAME[0]}" "WARNING" "cilium must be reinstalled as kubelet will be reinstalled"
-    eval "sudo cilium uninstall ${VERBOSE_2}" || true
-    ###############################################################################################################
-    log -f "${FUNCNAME[0]}" "Ensuring that kube-proxy is not installed"
-    eval "kubectl -n kube-system delete ds kube-proxy ${VERBOSE_2}" || true
-    # Delete the configmap as well to avoid kube-proxy being reinstalled during a Kubeadm upgrade (works only for K8s 1.19 and newer)
-    eval "kubectl -n kube-system delete cm kube-proxy ${VERBOSE_2}" || true
-    # Run on each node with root permissions:
-    # eval "$(sudo iptables-save | grep -v KUBE | sudo iptables-restore)  ${ECHO_VERBOSE}
-
+    log -f "${FUNCNAME[0]}" "INFO" "cilium must be reinstalled as kubelet will be reinstalled"
+    ssh -q $CONTROL_PLANE_HOST <<< """
+        eval \"sudo cilium uninstall > /dev/null 2>&1\" || true
+        log -f \"${FUNCNAME[0]}\" 'Ensuring that kube-proxy is not installed'
+        eval \"kubectl -n kube-system delete ds kube-proxy ${VERBOSE}\" || true
+        # Delete the configmap as well to avoid kube-proxy being reinstalled during a Kubeadm upgrade (works only for K8s 1.19 and newer)
+        eval \"kubectl -n kube-system delete cm kube-proxy ${VERBOSE}\" || true
+        log -f \"${FUNCNAME[0]}\" 'waiting 30seconds for cilium to be uninstalled'
+        sleep 30
+    """
     ################################################################################################################
-    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
-        NODE_VAR="NODE_$i"
-        hostname=${!NODE_VAR}
+    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+        local hostname=$(echo "$node" | jq -r '.hostname')
+        local ip=$(echo "$node" | jq -r '.ip')
+        local role=$(echo "$node" | jq -r '.role')
         ################################################################################################################
         # free_space $hostname
         ################################################################################################################
         log -f "${FUNCNAME[0]}" "setting public interface: ${PUBLIC_INGRESS_INTER} rp_filter to 1"
         log -f "${FUNCNAME[0]}" "setting cluster interface: ${CONTROLPLANE_INGRESS_INTER} rp_filter to 2"
         ssh -q ${hostname} <<< """
+            set -e
             sudo sysctl -w net.ipv4.conf.${PUBLIC_INGRESS_INTER}.rp_filter=1 ${ECHO_VERBOSE}
             sudo sysctl -w net.ipv4.conf.$CONTROLPLANE_INGRESS_INTER.rp_filter=2 ${ECHO_VERBOSE}
             sudo sysctl --system ${ECHO_VERBOSE}
@@ -714,12 +753,11 @@ install_cilium_prerequisites () {
 
         log -f "${FUNCNAME[0]}" "installing cilium cli version: $CILIUM_CLI_VERSION"
         ssh -q ${hostname} <<< """
+            set -e
             cd /tmp
 
             CLI_ARCH=amd64
-            if [ "\$\(uname -m\)" = "aarch64" ]; then CLI_ARCH=arm64; fi
-
-            # echo "CLI_ARCH for node: ${hostname} is: \${CLI_ARCH}"
+            if [ \"\$\(uname -m\)\" = 'aarch64' ]; then CLI_ARCH=arm64; fi
 
             curl -s -L --fail --remote-name-all https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-\${CLI_ARCH}.tar.gz{,.sha256sum}
 
@@ -727,7 +765,7 @@ install_cilium_prerequisites () {
             sudo tar xzvfC cilium-linux-\${CLI_ARCH}.tar.gz /usr/local/bin ${ECHO_VERBOSE}
             rm cilium-linux-*
         """
-        add_bashcompletion ${hostname}  cilium
+        add_bashcompletion ${hostname}  cilium $ECHO_VERBOSE
         log -f "${FUNCNAME[0]}" "Finished installing cilium cli"
     done
     ################################################################################################################
@@ -739,53 +777,58 @@ install_cilium_prerequisites () {
     # # cilium_cleanup
     # # echo "Cilium cleanup completed!"
     # ################################################################################################################
+    log -f "${FUNCNAME[0]}" "INFO" "Finished installing cilium prerequisites"
 }
 
 
 install_cilium () {
-    ################################################################################################################
+    #############################################################
+    log -f "${FUNCNAME[0]}" "Started installing cilium"
+    #############################################################
     log -f "${FUNCNAME[0]}" "Cilium native routing subnet is: ${CONTROLPLANE_SUBNET}"
     HASH_SEED=$(head -c12 /dev/urandom | base64 -w0)
     log -f "${FUNCNAME[0]}" "Cilium maglev hashseed is: ${HASH_SEED}"
-
+    #############################################################
+    log -f "${FUNCNAME[0]}" "sending cilium values to control plane node: ${CONTROL_PLANE_HOST}"
+    scp -q ./cilium/values.yaml ${CONTROL_PLANE_HOST}:/tmp/
+    #############################################################
+    log -f "${FUNCNAME[0]}" "sending lb ip pool to control plane node: ${CONTROL_PLANE_HOST}"
+    scp -q ./cilium/loadbalancer-ip-pool.yaml ${CONTROL_PLANE_HOST}:/tmp/
+    #############################################################
     log -f "${FUNCNAME[0]}" "Installing cilium version: '${CILIUM_VERSION}' using cilium cli"
-    OUTPUT=$(cilium install --version $CILIUM_VERSION \
-        --set ipv4NativeRoutingCIDR=${CONTROLPLANE_SUBNET} \
-        --set k8sServiceHost=auto \
-        --values ./cilium/values.yaml \
-        --set operator.replicas=${REPLICAS} \
-        --set hubble.relay.replicas=${REPLICAS} \
-        --set hubble.ui.replicas=${REPLICAS} \
-        --set maglev.hashSeed="${HASH_SEED}"  \
-        --set encryption.enabled=true \
-        --set encryption.nodeEncryption=true \
-        --set encryption.type=wireguard \
-        2>&1 || true)
+    ssh -q $CONTROL_PLANE_HOST <<< """
+        set -e
+        #############################################################
+        OUTPUT=\$(cilium install --version $CILIUM_VERSION \
+            --set ipv4NativeRoutingCIDR=${CONTROLPLANE_SUBNET} \
+            --set k8sServiceHost=auto \
+            --values /tmp/values.yaml \
+            --set operator.replicas=${REPLICAS} \
+            --set hubble.relay.replicas=${REPLICAS} \
+            --set hubble.ui.replicas=${REPLICAS} \
+            --set maglev.hashSeed="${HASH_SEED}"  \
+            --set encryption.enabled=true \
+            --set encryption.nodeEncryption=true \
+            --set encryption.type=wireguard \
+            2>&1 || true)
 
-    if echo $OUTPUT | grep "Error"; then
-        log -f "${FUNCNAME[0]}" "ERROR" "$OUTPUT"
-        exit 1
-    fi
-    sleep 30
-    ################################################################################################################
-    # echo "Applying custom cilium ingress."
-    # kubectl apply -f cilium/ingress.yaml
-    log -f "${FUNCNAME[0]}" "Removing default cilium ingress."
-    kubectl delete svc -n kube-system cilium-ingress >/dev/null 2>&1 || true
-    ################################################################################################################
-    sleep 30
-    # log -f "${FUNCNAME[0]}" "waiting for cilium to go up (5minutes timeout)"
-    # cilium status --wait >/dev/null 2>&1 || true
-    ################################################################################################################
-    log -f "${FUNCNAME[0]}" "Apply LB IPAM"
-    eval "kubectl apply -f cilium/loadbalancer-ip-pool.yaml ${ECHO_VERBOSE}"
-    ################################################################################################################
-    sleep 180
-    log -f "${FUNCNAME[0]}" "restarting cilium."
-    eval "kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator ${ECHO_VERBOSE}" || true
-    ################################################################################################################
+        if echo \$OUTPUT | grep 'Error'; then
+            log -f \"${FUNCNAME[0]}\" 'ERROR' $OUTPUT
+            exit 1
+        fi
+        #############################################################
+        sleep 30
+        log -f \"${FUNCNAME[0]}\" 'Removing default cilium ingress.'
+        kubectl delete svc -n kube-system cilium-ingress >/dev/null 2>&1 || true
+        #############################################################
+        log -f \"${FUNCNAME[0]}\" 'Apply LB IPAM on cluster'
+        eval \"kubectl apply -f /tmp/loadbalancer-ip-pool.yaml ${VERBOSE}\"
+        #############################################################
+        sleep 30
+        #############################################################
+    """
     log -f "${FUNCNAME[0]}" "Finished installing cilium"
-    ################################################################################################################
+    #############################################################
 }
 
 
@@ -793,34 +836,54 @@ join_cluster () {
     # TODO: for control-plane nodes:
     log -f "${FUNCNAME[0]}" "Generating join command"
     JOIN_COMMAND_WORKERS=$(kubeadm token create --print-join-command)
-    JOIN_COMMAND_CP="${JOIN_COMMAND} --control-plane"
+    JOIN_COMMAND_CP="${JOIN_COMMAND_WORKERS} --control-plane"
 
+
+
+    echo end of test
+    exit 1
     # for i in $(seq 2 "$((2 + NODES_LAST - 2))"); do
-    for i in $(seq 2 "$NODES_LAST"); do
-        NODE_VAR="NODE_$i"
-        hostname=${!NODE_VAR}
+    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+        local hostname=$(echo "$node" | jq -r '.hostname')
+        local ip=$(echo "$node" | jq -r '.ip')
+        local role=$(echo "$node" | jq -r '.role')
 
-        log -f "${FUNCNAME[0]}" "sending cluster config to target node: ${hostname}"
-        sudo cat /etc/kubernetes/admin.conf | ssh -q ${hostname} <<< """
-            sudo tee -p /etc/kubernetes/admin.conf > /dev/null
-            sudo chmod 600 /etc/kubernetes/admin.conf
-            mkdir -p $HOME/.kube
-            sudo cp -f -i /etc/kubernetes/admin.conf $HOME/.kube/config >/dev/null 2>&1
-            sudo chown $(id -u):$(id -g) $HOME/.kube/config
-        """
+        # log -f "${FUNCNAME[0]}" "sending cluster config to target ${role} node: ${hostname}"
+        # sudo cat /etc/kubernetes/admin.conf | ssh -q ${hostname} <<< """
+        #     sudo tee -p /etc/kubernetes/admin.conf > /dev/null
+        #     sudo chmod 600 /etc/kubernetes/admin.conf
+        #     mkdir -p \$HOME/.kube
+        #     sudo cp -f -i /etc/kubernetes/admin.conf \$HOME/.kube/config >/dev/null 2>&1
+        #     sudo chown $(id -u):$(id -g) \$HOME/.kube/config
+        # """
+        log -f "${FUNCNAME[0]}" "initiating cluster join for ${role} node: ${hostname}"
+        if [ $role == "worker" ]; then
 
-        # log -f "${FUNCNAME[0]}" "sending PKI cert to target node: ${hostname}"
-        # sudo cat /etc/kubernetes/pki/ca.crt | ssh -q ${hostname} <<< "sudo tee /etc/kubernetes/pki/ca.crt > /dev/null && sudo chmod 644 /etc/kubernetes/pki/ca.crt"
-        # log -f "${FUNCNAME[0]}" "updating certs"
-        # ssh -q ${hostname} <<< "sudo update-ca-trust"
+            # log -f "${FUNCNAME[0]}" "sending PKI cert to target node: ${hostname}"
+            # sudo cat /etc/kubernetes/pki/ca.crt | ssh -q ${hostname} <<< "sudo tee /etc/kubernetes/pki/ca.crt > /dev/null && sudo chmod 644 /etc/kubernetes/pki/ca.crt"
+            # log -f "${FUNCNAME[0]}" "updating certs"
+            # ssh -q ${hostname} <<< "sudo update-ca-trust"
 
-        log -f "${FUNCNAME[0]}" "initiating cluster join for node: ${hostname}"
-        ssh -q ${hostname} <<< """
-            # echo "executing command: $JOIN_COMMAND_WORKERS"
-            eval sudo ${JOIN_COMMAND_WORKERS} >/dev/null 2>&1 || true
-        """
-        log -f "${FUNCNAME[0]}" "Finished joining cluster for node: ${hostname}"
+            ssh -q ${hostname} <<< """
+                # echo "executing command: $JOIN_COMMAND_WORKERS"
+                eval sudo ${JOIN_COMMAND_WORKERS} >/dev/null 2>&1 || true
+            """
+        fi
+        log -f "${FUNCNAME[0]}" "Finished joining cluster for ${role} node: ${hostname}"
     done
+
+    ##################################################################
+    # ensure that cilium replicas have scaled without errors...
+    # while true; do
+    #     CILIUM_STATUS=\$(kubectl get pods -n kube-system -l k8s-app=cilium -o jsonpath='{.items[*].status.conditions[?(@.type==\"Ready\")].status}')
+    #     if echo \"\$CILIUM_STATUS\" | grep -q 'False'; then
+    #         log -f \"${FUNCNAME[0]}\" 'restarting cilium.'
+    #         eval \"kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator ${VERBOSE}\" || true
+    #         sleep 30
+    #     else
+    #         break
+    #     fi
+    # done
 }
 
 
@@ -829,9 +892,10 @@ install_longhorn_prerequisites() {
     ##################################################################
     log -f "${FUNCNAME[0]}" "Ensuring that 'noexec' is unset for '/var' on cluster nodes."
 
-    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
-        NODE_VAR="NODE_$i"
-        hostname=${!NODE_VAR}
+    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+        local hostname=$(echo "$node" | jq -r '.hostname')
+        local ip=$(echo "$node" | jq -r '.ip')
+local role=$(echo "$node" | jq -r '.role')
 
         log -f "${FUNCNAME[0]}" "Ensuring that 'noexec' is unset for '/var' on node: '${hostname}'"
         ssh -q ${hostname} '
@@ -849,15 +913,16 @@ install_longhorn_prerequisites() {
     log -f "${FUNCNAME[0]}" "Finished ensuring that 'noexec' is unset for '/var'  on cluster nodes."
     ##################################################################
     log -f "${FUNCNAME[0]}" "installing required utilities for longhorn"
-    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
-        NODE_VAR="NODE_$i"
-        hostname=${!NODE_VAR}
+    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+        local hostname=$(echo "$node" | jq -r '.hostname')
+        local ip=$(echo "$node" | jq -r '.ip')
+local role=$(echo "$node" | jq -r '.role')
 
         log -f "${FUNCNAME[0]}" "installing longhorn prerequisites on node: ${hostname}"
         ssh -q ${hostname} <<< """
-            sudo dnf update -y ${VERBOSE_2}
+            sudo dnf update -y ${VERBOSE}
             sudo dnf install curl jq nfs-utils cryptsetup \
-                device-mapper iscsi-initiator-utils -y ${VERBOSE_2}
+                device-mapper iscsi-initiator-utils -y ${VERBOSE}
         """
     done
     log -f "${FUNCNAME[0]}" "Finished installing required utilities for longhorn"
@@ -948,9 +1013,10 @@ install_longhorn_prerequisites() {
     fi
     log -f "${FUNCNAME[0]}" "Finished installing NFS/iSCSI on the cluster."
     ##################################################################
-    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
-        NODE_VAR="NODE_$i"
-        hostname=${!NODE_VAR}
+    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+        local hostname=$(echo "$node" | jq -r '.hostname')
+        local ip=$(echo "$node" | jq -r '.ip')
+local role=$(echo "$node" | jq -r '.role')
         ##################################################################
         log -f "${FUNCNAME[0]}" "Checking if the containerd service is active on node: ${hostname}"
         ssh -q ${hostname} '
@@ -1068,12 +1134,14 @@ install_longhorn_prerequisites() {
     log -f "${FUNCNAME[0]}" "Check the prerequisites and configurations for Longhorn:"
     log -f "${FUNCNAME[0]}" "currently preflight doesnt support almalinux"
     #  so if on almalinx; run os-camo o, alll nodes prior to check preflight
-    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
-        NODE_VAR="NODE_$i"
-        hostname=${!NODE_VAR}
+    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+        local hostname=$(echo "$node" | jq -r '.hostname')
+        local ip=$(echo "$node" | jq -r '.ip')
+local role=$(echo "$node" | jq -r '.role')
 
-        NODE_VAR="NODE_$i"
-        hostname=${!NODE_VAR}
+        local hostname=$(echo "$node" | jq -r '.hostname')
+        local ip=$(echo "$node" | jq -r '.ip')
+local role=$(echo "$node" | jq -r '.role')
         log -f "${FUNCNAME[0]}" "sending camo script to target node: ${hostname}"
         scp -q ./longhorn/os-camo.sh ${hostname}:/tmp/
         log -f "${FUNCNAME[0]}" "Executing camofoulage on node: ${hostname}"
@@ -1126,9 +1194,10 @@ install_longhorn_prerequisites() {
     log -f "${FUNCNAME[0]}" "Finished checking the longhorn preflight post installation"
     ##################################################################
     # revert camo:
-    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
-        NODE_VAR="NODE_$i"
-        hostname=${!NODE_VAR}
+    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+        local hostname=$(echo "$node" | jq -r '.hostname')
+        local ip=$(echo "$node" | jq -r '.ip')
+local role=$(echo "$node" | jq -r '.role')
 
         log -f "${FUNCNAME[0]}" "Resetting camofoulage on node: ${hostname}"
         ssh -q ${hostname} /tmp/os-camo.sh revert
@@ -1221,26 +1290,6 @@ install_longhorn () {
     log -f "${FUNCNAME[0]}" "Finished deploying Longhorn on the cluster."
 }
 
-install_gateway_CRDS () {
-    # this hits a bug described here: https://github.com/cilium/cilium/issues/38420
-    # log -f "${FUNCNAME[0]}" "Installing Gateway API version: ${GATEWAY_VERSION} from the standard channel"
-    # kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_VERSION}/standard-install.yaml
-
-    # using experimental CRDS channel
-    log -f "${FUNCNAME[0]}" "Installing Gateway API version: ${GATEWAY_VERSION} from the experimental channel"
-    eval "kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_VERSION}/experimental-install.yaml ${ECHO_VERBOSE}"
-    # kubectl rollout restart -n kube-system deployment cilium-operator
-
-    # log -f "${FUNCNAME[0]}" "restarting cilium."
-    # kubectl rollout restart -n kube-system ds/cilium-envoy deployment/cilium-operator  >/dev/null 2>&1 || true
-    # sleep 30
-    log -f "${FUNCNAME[0]}" "Installing Gateway API Experimental TLSRoute from the Experimental channel"
-    eval "kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/${GATEWAY_VERSION}/config/crd/experimental/gateway.networking.k8s.io_tlsroutes.yaml ${ECHO_VERBOSE}"
-    ################################################################################################################################################################
-    log -f "${FUNCNAME[0]}" "Applying hubble-ui HTTPRoute for ingress."
-    eval "kubectl apply -f cilium/http-routes.yaml ${ECHO_VERBOSE}"
-    ################################################################################################################################################################
-}
 
 ################################################################################################################################################################
 install_gateway () {
@@ -1285,11 +1334,11 @@ helm_chart_prerequisites () {
     ##################################################################
     log -f "${FUNCNAME[0]}" "adding '$CHART_NAME' repo to Helm"
     eval "helm repo add ${CHART_NAME} $CHART_REPO --force-update ${ECHO_VERBOSE}" || true
-    eval helm repo update ${VERBOSE_2} || true
+    eval helm repo update ${VERBOSE} || true
     ##################################################################
     log -f "${FUNCNAME[0]}" "uninstalling and ensuring the cluster is cleaned from $CHART_NAME"
     # kubectl delete -n $CHART_NS ds/vault-manager ds/vault-nfs-installation deployments/vault-ui deployments/vault-driver-deployer jobs/vault-uninstall >/dev/null 2>&1 || true
-    eval "helm uninstall -n $CHART_NS $CHART_NAME ${VERBOSE_2}" || true
+    eval "helm uninstall -n $CHART_NS $CHART_NAME ${VERBOSE}" || true
     ##################################################################
     if [ "$DELETE_NS" == "true" ] || [ "$DELETE_NS" == "1" ]; then
         log -f "${FUNCNAME[0]}" "deleting '$CHART_NS' namespace"
@@ -1301,7 +1350,7 @@ helm_chart_prerequisites () {
             log -f "${FUNCNAME[0]}" "Force deleting '$CHART_NS' namespace"
             kubectl get namespace "$CHART_NS" -o json 2>/dev/null \
             | tr -d "\n" | sed "s/\"finalizers\": \[[^]]\+\]/\"finalizers\": []/" \
-            | kubectl replace --raw /api/v1/namespaces/$CHART_NS/finalize -f - ${VERBOSE_2} || true
+            | kubectl replace --raw /api/v1/namespaces/$CHART_NS/finalize -f - ${VERBOSE} || true
             log -f "${FUNCNAME[0]}" "sleeping for 60 seconds while deleting '$CHART_NS' namespace"
             sleep 60
         fi
@@ -1412,10 +1461,11 @@ install_rancher () {
 install_certmanager () {
     ##################################################################
     # install cert-manager cli:
-    for i in $(seq "$NODE_OFFSET" "$NODES_LAST"); do
+    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
         #####################################################################################
-        NODE_VAR="NODE_$i"
-        hostname=${!NODE_VAR}
+        local hostname=$(echo "$node" | jq -r '.hostname')
+        local ip=$(echo "$node" | jq -r '.ip')
+local role=$(echo "$node" | jq -r '.role')
         #####################################################################################
         log -f "${FUNCNAME[0]}" "starting certmanager cli install for node: $hostname"
         ssh -q ${hostname} <<< """
@@ -1428,7 +1478,7 @@ install_certmanager () {
             sudo mv cmctl /usr/bin
             sudo ln -sf /usr/bin /usr/local/bin
         """
-        add_bashcompletion $hostname cmctl
+        add_bashcompletion $hostname cmctl $ECHO_VERBOSE
         log -f "${FUNCNAME[0]}" "Finished certmanager cli install for node: $hostname"
     done
     ##################################################################
@@ -1467,24 +1517,19 @@ install_certmanager () {
 
 # deploy_hostsfile
 
-RESETED=0
-if [ "$PREREQUISITES" = true ]; then
-    # reset_cluster
-    RESETED=1
-    prerequisites_requirements
-    echo end of test
-    exit
-else
-    log "deploy.sh" "INFO" "Cluster prerequisites have been skipped"
-fi
+# RESETED=0
+# if [ "$PREREQUISITES" = true ]; then
+#     reset_cluster
+#     RESETED=1
+#     prerequisites_requirements
+# else
+#     log "deploy.sh" "INFO" "Cluster prerequisites have been skipped"
+# fi
 
 
-echo end of test
-exit
-
-if [ $RESETED -eq 0 ]; then
-    reset_cluster
-fi
+# if [ $RESETED -eq 0 ]; then
+#     reset_cluster
+# fi
 
 # install_kubetools
 
@@ -1496,8 +1541,10 @@ fi
 
 # install_cilium
 
-# join_cluster
 
+join_cluster
+echo end of test
+exit 1
 # install_gateway
 
 # install_certmanager

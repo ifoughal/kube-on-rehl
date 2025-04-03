@@ -174,7 +174,7 @@ configure_repos () {
     local VERBOSE=$2
     local ECHO_VERBOSE=$3
 
-    local log_prefix=$(date +"\033[0;32m %Y-%m-%d %H:%M:%S,%3N - ${FUNCNAME[0]} - INFO -")
+    local log_prefix=$(date +"\033[0;32m%Y-%m-%d %H:%M:%S,%3N - ${FUNCNAME[0]} - INFO -")
 
 
     scp -q ./almalinux.repo $CURRENT_HOST:/tmp/
@@ -184,30 +184,30 @@ configure_repos () {
     ssh -q $CURRENT_HOST <<< """
         set -e  # Exit on error
 
-        echo -e \"${log_prefix} Updating almalinux repos list\" ${ECHO_VERBOSE}
+        log -f ${FUNCNAME[0]} \"${log_prefix} Updating almalinux repos list\" ${ECHO_VERBOSE}
         sudo mv /tmp/almalinux.repo /etc/yum.repos.d/almalinux.repo
         sudo chown root:root /etc/yum.repos.d/almalinux.repo
 
-        echo -e \"${log_prefix} Fetching and importing AlmaLinux GPG keys...\" ${ECHO_VERBOSE}
+        log -f ${FUNCNAME[0]} \"${log_prefix} Fetching and importing AlmaLinux GPG keys...\" ${ECHO_VERBOSE}
         sudo curl -s -o /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux-9
         sudo rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux ${VERBOSE}
 
-        echo -e \"${log_prefix} Cleaning up DNF cache and updating system...\" ${ECHO_VERBOSE}
+        log -f ${FUNCNAME[0]} \"${log_prefix} Cleaning up DNF cache and updating system...\" ${ECHO_VERBOSE}
         sudo dnf clean all  ${VERBOSE}
         sudo dnf makecache  ${VERBOSE}
         sudo dnf -y update  ${VERBOSE}
 
-        echo -e \"${log_prefix} Enabling EPEL & CRB repositories...\" ${ECHO_VERBOSE}
+        log -f ${FUNCNAME[0]} \"${log_prefix} Enabling EPEL & CRB repositories...\" ${ECHO_VERBOSE}
         sudo dnf install -y epel-release  ${VERBOSE}
         sudo dnf config-manager --set-enabled crb  ${VERBOSE}
 
-        echo -e \"${log_prefix} Adding RPM Fusion Free & Non-Free Repositories...\" ${ECHO_VERBOSE}
+        log -f ${FUNCNAME[0]} \"${log_prefix} Adding RPM Fusion Free & Non-Free Repositories...\" ${ECHO_VERBOSE}
         # OSS repos:
         sudo dnf install -y https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm  ${VERBOSE}
         # Proprietary repos
         sudo dnf install -y https://mirrors.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-9.noarch.rpm  ${VERBOSE}
 
-        echo -e \"${log_prefix} Cleaning up DNF cache and updating system...\" ${ECHO_VERBOSE}
+        log -f ${FUNCNAME[0]} \"${log_prefix} Cleaning up DNF cache and updating system...\" ${ECHO_VERBOSE}
         sudo dnf clean all  ${VERBOSE}
         sudo dnf makecache  ${VERBOSE}
         sudo dnf -y update  ${VERBOSE}
