@@ -11,7 +11,7 @@ optimize_dnf() {
         ECHO_VERBOSE=$VERBOSE
     fi
 
-    local log_prefix=$(date +"%Y-%m-%d %H:%M:%S,%3N - ${FUNCNAME[0]}")
+    local log_prefix=$(date +"%Y-%m-%d %H:%M:%S,%3N - ${CURRENT_FUNC}")
 
     ssh -q $CURRENT_NODE <<< """
         echo '$log_prefix - $CURRENT_NODE - Enabling Delta RPMs' ${ECHO_VERBOSE}
@@ -124,7 +124,7 @@ install_go () {
         cd /tmp
 
         # install Go
-        log -f ${FUNCNAME[0]} \"installing go version: ${GO_VERSION}\" ${ECHO_VERBOSE}
+        log -f ${CURRENT_FUNC} \"installing go version: ${GO_VERSION}\" ${ECHO_VERBOSE}
         wget -q https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz
         sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
 
@@ -143,24 +143,24 @@ install_go () {
             \"/usr/local/tinygo/bin\"
         )
 
-        log -f ${FUNCNAME[0]} \"Updating paths for GO\" ${ECHO_VERBOSE}
+        log -f ${CURRENT_FUNC} \"Updating paths for GO\" ${ECHO_VERBOSE}
         for file in \"\${files[@]}\"; do
-            log -f ${FUNCNAME[0]} \"Updating environment for path: \${file}\" ${ECHO_VERBOSE}
+            log -f ${CURRENT_FUNC} \"Updating environment for path: \${file}\" ${ECHO_VERBOSE}
 
             for path in \"\${extra_paths[@]}\"; do
-                log -f ${FUNCNAME[0]} \"Checking path: \$path\" ${ECHO_VERBOSE}
+                log -f ${CURRENT_FUNC} \"Checking path: \$path\" ${ECHO_VERBOSE}
 
                 # Check if the export PATH line exists
                 if grep -q 'export PATH=' \"\$file\"; then
                     # Ensure the path is not already appended
                     if ! grep -q \"\$path\" \"\$file\"; then
-                        log -f ${FUNCNAME[0]} \"Appending \$path to \$file\" ${ECHO_VERBOSE}
+                        log -f ${CURRENT_FUNC} \"Appending \$path to \$file\" ${ECHO_VERBOSE}
                         sudo sed -i \"s|^export PATH=.*|&:\${path}|\" \"\$file\"
                     else
-                        log -f ${FUNCNAME[0]} \"\$path already exists in \$file\" ${ECHO_VERBOSE}
+                        log -f ${CURRENT_FUNC} \"\$path already exists in \$file\" ${ECHO_VERBOSE}
                     fi
                 else
-                    log -f ${FUNCNAME[0]} \"export PATH not found, adding export line\" ${ECHO_VERBOSE}
+                    log -f ${CURRENT_FUNC} \"export PATH not found, adding export line\" ${ECHO_VERBOSE}
                     echo \"export PATH=\\\$PATH:\${path}\" | sudo tee -a \"\$file\" > /dev/null
                 fi
             done
@@ -175,7 +175,7 @@ configure_repos () {
     local VERBOSE=$2
     local ECHO_VERBOSE=$3
 
-    local log_prefix=$(date +"\033[0;32m%Y-%m-%d %H:%M:%S,%3N - ${FUNCNAME[0]} - INFO -")
+    local log_prefix=$(date +"\033[0;32m%Y-%m-%d %H:%M:%S,%3N - ${CURRENT_FUNC} - INFO -")
 
 
     scp -q ./almalinux.repo $CURRENT_HOST:/tmp/
@@ -185,30 +185,30 @@ configure_repos () {
     ssh -q $CURRENT_HOST <<< """
         set -e  # Exit on error
 
-        log -f ${FUNCNAME[0]} \"${log_prefix} Updating almalinux repos list\" ${ECHO_VERBOSE}
+        log -f ${CURRENT_FUNC} \"${log_prefix} Updating almalinux repos list\" ${ECHO_VERBOSE}
         sudo mv /tmp/almalinux.repo /etc/yum.repos.d/almalinux.repo
         sudo chown root:root /etc/yum.repos.d/almalinux.repo
 
-        log -f ${FUNCNAME[0]} \"${log_prefix} Fetching and importing AlmaLinux GPG keys...\" ${ECHO_VERBOSE}
+        log -f ${CURRENT_FUNC} \"${log_prefix} Fetching and importing AlmaLinux GPG keys...\" ${ECHO_VERBOSE}
         sudo curl -s -o /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux-9
         sudo rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux ${VERBOSE}
 
-        log -f ${FUNCNAME[0]} \"${log_prefix} Cleaning up DNF cache and updating system...\" ${ECHO_VERBOSE}
+        log -f ${CURRENT_FUNC} \"${log_prefix} Cleaning up DNF cache and updating system...\" ${ECHO_VERBOSE}
         sudo dnf clean all  ${VERBOSE}
         sudo dnf makecache  ${VERBOSE}
         sudo dnf -y update  ${VERBOSE}
 
-        log -f ${FUNCNAME[0]} \"${log_prefix} Enabling EPEL & CRB repositories...\" ${ECHO_VERBOSE}
+        log -f ${CURRENT_FUNC} \"${log_prefix} Enabling EPEL & CRB repositories...\" ${ECHO_VERBOSE}
         sudo dnf install -y epel-release  ${VERBOSE}
         sudo dnf config-manager --set-enabled crb  ${VERBOSE}
 
-        log -f ${FUNCNAME[0]} \"${log_prefix} Adding RPM Fusion Free & Non-Free Repositories...\" ${ECHO_VERBOSE}
+        log -f ${CURRENT_FUNC} \"${log_prefix} Adding RPM Fusion Free & Non-Free Repositories...\" ${ECHO_VERBOSE}
         # OSS repos:
         sudo dnf install -y https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm  ${VERBOSE}
         # Proprietary repos
         sudo dnf install -y https://mirrors.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-9.noarch.rpm  ${VERBOSE}
 
-        log -f ${FUNCNAME[0]} \"${log_prefix} Cleaning up DNF cache and updating system...\" ${ECHO_VERBOSE}
+        log -f ${CURRENT_FUNC} \"${log_prefix} Cleaning up DNF cache and updating system...\" ${ECHO_VERBOSE}
         sudo dnf clean all  ${VERBOSE}
         sudo dnf makecache  ${VERBOSE}
         sudo dnf -y update  ${VERBOSE}
@@ -218,32 +218,86 @@ configure_repos () {
 
 add_bashcompletion () {
     # Parse the application name as a function argument
-    CURRENT_NODE="$1"
-    app="$2"
-    ECHO_VERBOSE=$3
+    local CURRENT_NODE="$1"
+    local app="$2"
+
+    if [ -z "$CURRENT_NODE" ]; then
+        log "ERROR" "node hostname must be provided."
+        return 1
+    fi
 
     if [ -z "$app" ]; then
         log "ERROR" "Application name must be provided."
-        exit 1
+        return 2
     fi
 
     COMPLETION_FILE="/etc/bash_completion.d/$app"
 
-    log "INFO" "Adding $app bash completion for node: ${CURRENT_NODE}" $ECHO_VERBOSE
+    log -f "${CURRENT_FUNC}" "Adding $app bash completion for node: ${CURRENT_NODE}"
     # Assuming the application has a completion script available
-    ssh -q ${CURRENT_NODE} """
+    ssh -q ${CURRENT_NODE} <<< """
         $app completion bash | sudo tee "$COMPLETION_FILE" >/dev/null
     """
-    log "INFO" "$app bash completion added successfully." $ECHO_VERBOSE
+    log -f "${CURRENT_FUNC}" "$app bash completion added successfully."
+}
+
+
+helm_chart_prerequisites () {
+    ##################################################################
+    local CONTROL_PLAN_NODE=$1
+    local CHART_NAME=$2
+    local CHART_REPO=$3
+    local CHART_NS=$4
+    local DELETE_NS=$5
+    local CREATE_NS=$6
+    ##################################################################
+
+    ssh -q ${CONTROL_PLAN_NODE} <<< """
+        log -f \"${CURRENT_FUNC}\" \"Adding '$CHART_NAME' repo to Helm\"
+        eval \"helm repo add ${CHART_NAME} $CHART_REPO --force-update ${VERBOSE}\" || true
+        eval \"helm repo update ${VERBOSE}\" || true
+        ##################################################################
+        log -f \"${CURRENT_FUNC}\" \"uninstalling and ensuring the cluster is cleaned from $CHART_NAME\"
+        eval \"helm uninstall -n $CHART_NS $CHART_NAME > /dev/null 2>&1\" || true
+        ##################################################################
+        if [ \"$DELETE_NS\" == "true" ] || [ \"$DELETE_NS\" == "1" ]; then
+            log -f \"${CURRENT_FUNC}\" \"deleting '$CHART_NS' namespace\"
+            eval \"kubectl delete ns $CHART_NS --now=true --ignore-not-found ${VERBOSE}\"
+
+            output=\$(kubectl get ns $CHART_NS --ignore-not-found)
+
+            if [ ! -z \"\$output\"]; then
+                log -f \"${CURRENT_FUNC}\" \"Force deleting '$CHART_NS' namespace\"
+                kubectl get namespace \"$CHART_NS\" -o json 2>/dev/null \
+                | tr -d '\n' | sed \"s/'finalizers': \[[^]]\+\]/'finalizers': []\" \
+                | kubectl replace --raw /api/v1/namespaces/$CHART_NS/finalize -f - ${VERBOSE} || true
+                log -f \"${CURRENT_FUNC}\" \"sleeping for 60 seconds while deleting '$CHART_NS' namespace\"
+                sleep 60
+            fi
+
+        else
+            log -f \"${CURRENT_FUNC}\" 'Skipping NS deletion'
+        fi
+        ##################################################################
+        if [ \"$CREATE_NS\" == 'true' ] || [ \"$CREATE_NS\" == '1' ]; then
+            ##################################################################
+            log -f \"${CURRENT_FUNC}\" \"Creating '$CHART_NS' chart namespace: '$CHART_NS'\"
+            eval \"kubectl create ns $CHART_NS ${VERBOSE}\" || true
+            ##################################################################
+        else
+            log -f \"${CURRENT_FUNC}\" 'Skipping NS creation'
+        fi
+        ##################################################################
+    """
 }
 
 
 install_helm () {
-    CURRENT_NODE=$1
-    ECHO_VERBOSE=$2
-    ssh -q $CURRENT_NODE """
+    local CURRENT_NODE=$1
+
+    ssh -q $CURRENT_NODE <<< """
         cd /tmp
-        curl -s https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash ${ECHO_VERBOSE}
+        curl -s https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash ${VERBOSE}
         sudo ln -sf /usr/local/bin/helm /usr/bin/  > /dev/null
     """
 }
@@ -272,16 +326,16 @@ EOF
     #############################################################################
     # ensure changes have been applied
     if sudo containerd config dump | grep -q 'SystemdCgroup = true'; then
-        log -f ${FUNCNAME[0]} 'Cgroups configured accordingly for containerD'  ${ECHO_VERBOSE}
+        log -f ${CURRENT_FUNC} 'Cgroups configured accordingly for containerD'  ${ECHO_VERBOSE}
     else
-        log -f ${FUNCNAME[0]} 'ERROR' 'Failed to configure Cgroups configured for containerD'
+        log -f ${CURRENT_FUNC} 'ERROR' 'Failed to configure Cgroups configured for containerD'
         exit 1
     fi
 
     if sudo containerd config dump | grep -q 'sandbox_image = \"registry.k8s.io/pause:${PAUSE_VERSION}\"'; then
-        log -f ${FUNCNAME[0]} \"sandbox_image is set accordingly to pause version ${PAUSE_VERSION}\"  ${ECHO_VERBOSE}
+        log -f ${CURRENT_FUNC} \"sandbox_image is set accordingly to pause version ${PAUSE_VERSION}\"  ${ECHO_VERBOSE}
     else
-        log -f ${FUNCNAME[0]} 'ERROR' \"Failed to set sandbox_image to pause version ${PAUSE_VERSION}\"
+        log -f ${CURRENT_FUNC} 'ERROR' \"Failed to set sandbox_image to pause version ${PAUSE_VERSION}\"
         exit 1
     fi
     #############################################################################
