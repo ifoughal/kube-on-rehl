@@ -87,29 +87,30 @@ EOF
 
 
 config_check () {
-    local command="$1"
-    local key="$2"
-    local expected_value="$3"
+    RETURN_CODE=0
+    local NODE="$1"
+    local command="$2"
+    local key="$3"
+    local expected_value="$4"
 
     # Execute the command and get the value for the specified key
-    value=$($command | grep -w "$key" | awk '{print $2}' || true)
+    local value=$(ssh -q $NODE <<< "$command | grep -w \"$key\" | awk '{print \$2}' || true")
 
     # Check if the key was found
     if [ -z "$value" ]; then
-        log "ERROR" "Key '$key' not found."
-        return 1
-    fi
-
-    # Check if the value matches the expected value
-    if [ "$value" == "$expected_value" ]; then
-        log "INFO" "The value of $key is $expected_value."
+        log -f "${CURRENT_FUNC}" "ERROR" "The value of '$command' not found."
+        RETURN_CODE=1
     else
-        log "ERROR" "The value of '$key' expected to be: '$expected_value'. But Found: '$value'"
-        return 1
+        # Check if the value matches the expected value
+        if [ "$value" == "$expected_value" ]; then
+            log -f "${CURRENT_FUNC}" "The value of '$command' is compliant: '${expected_value}'."
+        else
+            log -f "${CURRENT_FUNC}" "ERROR" "The value of '$command' expected to be: '$expected_value'. But Found: '$value'"
+            RETURN_CODE=2
+        fi
     fi
+    return $RETURN_CODE
 }
-
-
 
 
 install_go () {
