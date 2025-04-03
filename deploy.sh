@@ -44,8 +44,8 @@ CONTROLPLANE_SUBNET=$(echo $CONTROLPLANE_ADDRESS | awk -F. '{print $1"."$2"."$3"
 ################################################################################################################################################################
 VERBOSE_LEVEL=0
 
-set -e  # Exit on error
-set -o pipefail  # Fail if any piped command fails
+# set -e  # Enable immediate exit on error
+# set -o pipefail  # Fail if any piped command fails
 
 # Function to check if a command exists
 command_exists() {
@@ -140,7 +140,11 @@ log -f "deploy.sh" "VERBOSE_LEVEL set to: $VERBOSE_LEVEL"
 log -f "deploy.sh" "Started loading inventory file: $INVENTORY"
 CLUSTER_NODES=$(yq .hosts "$INVENTORY")
 log -f "deploy.sh" "Finished loading inventory file: $INVENTORY"
-
+################################################################################################################################################################
+# ERROR CODES:
+#   1xxx: cilium errors
+#       1001: cilium status errors
+#
 
 #########################################################
 deploy_hostsfile () {
@@ -356,7 +360,7 @@ EOF
         ####################################################################################
         log -f "${FUNCNAME[0]}""Started checking if the kernel is recent enough for node: ${hostname}"
         ssh -q ${hostname} <<< """
-            set -e  # Exit on error
+            # set -e  # Exit on error
 
             log -f kernel-version \"checking if the kernel is recent enough...\" ${ECHO_VERBOSE}
             kernel_version=\$(uname -r)
@@ -663,7 +667,7 @@ install_cluster () {
     ####################################################################
     ssh -q $CONTROL_PLANE_HOST <<< """
         ####################################################################
-        set -e  # Exit on error
+        # set -e  # Exit on error
         ####################################################################
         KUBEADM_INIT_OUTPUT=\$(eval $KUBE_ADM_COMMAND  2>&1 || true)
 
@@ -706,7 +710,7 @@ install_gateway_CRDS () {
     log -f "${FUNCNAME[0]}" "Installing Gateway API version: ${GATEWAY_VERSION} from the experimental channel"
 
     ssh -q $CONTROL_PLANE_HOST <<< """
-        set -e  # Exit on error
+        # set -e  # Exit on error
         eval \"kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_VERSION}/experimental-install.yaml ${VERBOSE}\"
 
         log -f \"${FUNCNAME[0]}\" 'Installing Gateway API Experimental TLSRoute from the Experimental channel'
@@ -743,7 +747,7 @@ install_cilium_prerequisites () {
         log -f "${FUNCNAME[0]}" "setting public interface: ${PUBLIC_INGRESS_INTER} rp_filter to 1"
         log -f "${FUNCNAME[0]}" "setting cluster interface: ${CONTROLPLANE_INGRESS_INTER} rp_filter to 2"
         ssh -q ${hostname} <<< """
-            set -e
+            # set -e
             sudo sysctl -w net.ipv4.conf.${PUBLIC_INGRESS_INTER}.rp_filter=1 ${ECHO_VERBOSE}
             sudo sysctl -w net.ipv4.conf.$CONTROLPLANE_INGRESS_INTER.rp_filter=2 ${ECHO_VERBOSE}
             sudo sysctl --system ${ECHO_VERBOSE}
@@ -753,7 +757,7 @@ install_cilium_prerequisites () {
 
         log -f "${FUNCNAME[0]}" "installing cilium cli version: $CILIUM_CLI_VERSION"
         ssh -q ${hostname} <<< """
-            set -e
+            # set -e
             cd /tmp
 
             CLI_ARCH=amd64
@@ -797,7 +801,7 @@ install_cilium () {
     #############################################################
     log -f "${FUNCNAME[0]}" "Installing cilium version: '${CILIUM_VERSION}' using cilium cli"
     ssh -q $CONTROL_PLANE_HOST <<< """
-        set -e
+        # set -e
         #############################################################
         OUTPUT=\$(cilium install --version $CILIUM_VERSION \
             --set ipv4NativeRoutingCIDR=${CONTROLPLANE_SUBNET} \
@@ -874,20 +878,96 @@ join_cluster () {
     done
 
 
-    ##################################################################
-    # ensure that cilium replicas have scaled without errors...
-    # while true; do
-    #     CILIUM_STATUS=\$(kubectl get pods -n kube-system -l k8s-app=cilium -o jsonpath='{.items[*].status.conditions[?(@.type==\"Ready\")].status}')
-    #     if echo \"\$CILIUM_STATUS\" | grep -q 'False'; then
-    #         log -f \"${FUNCNAME[0]}\" 'restarting cilium.'
-    #         eval \"kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator ${VERBOSE}\" || true
-    #         sleep 30
-    #     else
-    #         break
-    #     fi
-    # done
+
 }
 
+
+install_gateway () {
+    ##################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ##################################################################
+    # prerequisites checks:
+    # REF: https://docs.cilium.io/en/v1.17/network/servicemesh/gateway-api/gateway-api/#installation
+    log -f "${FUNCNAME[0]}" "Started checking prerequisites for Gateway API"
+    ##################################################################
+    # Check the value of kube-proxy replacement
+    config_check ${CONTROL_PLANE_HOST} "cilium config view" "kube-proxy-replacement" "true"
+    if [ ! $RETURN_CODE -eq 0 ]; then
+        return $RETURN_CODE
+    fi
+    ##################################################################
+    # Check the value of enable-l7-proxy
+    config_check ${CONTROL_PLANE_HOST} "cilium config view" "enable-l7-proxy" "true"
+    if [ ! $RETURN_CODE -eq 0 ]; then
+        return $RETURN_CODE
+    fi
+    log -f "${CURRENT_FUNC}" "Finished checking prerequisites for Gateway API"
+    ##################################################################
+    log -f "${CURRENT_FUNC}" "Sending Gateway API config to control-plane node: ${CONTROL_PLANE_HOST}"
+    scp -q ./cilium/http-gateway.yaml ${CONTROL_PLANE_HOST}:/tmp/
+    ##################################################################
+    log -f "${CURRENT_FUNC}" "Started deploying TLS cert for TLS-HTTPS Gateway API on control-plane node: ${CONTROL_PLANE_HOST}"
+
+    CERTS_PATH=/etc/cilium/certs
+    GATEWAY_API_SECRET_NAME=shared-tls
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        ##################################################################
+        sudo mkdir -p $CERTS_PATH
+        sudo chown -R \$USER:\$USER $CERTS_PATH
+        CERT_FILE=\"$CERTS_PATH/${GATEWAY_API_SECRET_NAME}.crt\"
+        KEY_FILE=\"$CERTS_PATH/${GATEWAY_API_SECRET_NAME}.key\"
+        ##################################################################
+        log -f \"${CURRENT_FUNC}\" 'Generating self-signed certificate and key'
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout \$KEY_FILE -out \$CERT_FILE -subj \"/CN=${CLUSTER_DNS_DOMAIN}\" > /dev/null 2>&1
+        ##################################################################
+        log -f \"${CURRENT_FUNC}\" 'deleting previous Gateway API TLS secret'
+        eval \"kubectl delete secret  ${GATEWAY_API_SECRET_NAME} --namespace=kube-system ${VERBOSE}\"
+        log -f \"${CURRENT_FUNC}\" 'Started creating Gateway API TLS secret'
+        eval \"kubectl create secret tls ${GATEWAY_API_SECRET_NAME} --cert=\$CERT_FILE --key=\$KEY_FILE --namespace=kube-system  ${VERBOSE}\"
+        log -f \"${CURRENT_FUNC}\" 'Finished deploying TLS cert for TLS-HTTPS Gateway API'
+        ##################################################################
+        log -f \"${CURRENT_FUNC}\" 'Started deploying Gateway API'
+        eval \"kubectl apply -f /tmp/http-gateway.yaml ${VERBOSE}\"
+        log -f \"${CURRENT_FUNC}\" 'Finished deploying Gateway API'
+        ##################################################################
+        log -f \"${CURRENT_FUNC}\" 'restarting cilium.'
+        eval \"kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator ${VERBOSE}\" || true
+    """
+    #################################################################
+    return 0
+}
+
+
+restart_cilium() {
+    #################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    #################################################################
+    log -f "$CURRENT_FUNC" "Ensuring that cilium replicas scale without errors..."
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        current_retry=0
+        max_retries=3
+        while true; do
+            current_retry=\$((current_retry + 1))
+            if [ \$current_retry -gt \$max_retries ]; then
+                log -f \"${CURRENT_FUNC}\" 'ERROR' 'Reached maximum retry count for cilium status to go up. Exiting...'
+                exit 1001
+            fi
+
+            CILIUM_STATUS=\$(cilium status)
+
+            if echo "\$CILIUM_STATUS" | grep -i 'error'c; then
+                log -f \"${CURRENT_FUNC}\" \"cilium status contains errors... restarting cilium. Try: \$current_retry\"
+                eval \"kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator ${VERBOSE}\" || true
+                sleep 30
+            else
+                log -f \"${CURRENT_FUNC}\" 'Cilium is up and running'
+                break
+            fi
+        done
+    """
+    return $?
+    #################################################################
+}
 
 
 install_longhorn_prerequisites() {
@@ -1069,8 +1149,8 @@ local role=$(echo "$node" | jq -r '.role')
         ##################################################################
         log -f "${FUNCNAME[0]}" "Started installing Longhorn-cli on node: ${hostname}"
         ssh -q ${hostname} <<< """
-            set -e  # Exit on error
-            set -o pipefail  # Fail if any piped command fails
+            # set -e  # Exit on error
+            # set -o pipefail  # Fail if any piped command fails
             if command -v longhornctl &> /dev/null; then
                 echo "longhornctl not found. Installing..."
                 CLI_ARCH=amd64
@@ -1293,37 +1373,6 @@ install_longhorn () {
 }
 
 
-################################################################################################################################################################
-install_gateway () {
-    # prerequisites checks:
-    # REF: https://docs.cilium.io/en/v1.17/network/servicemesh/gateway-api/gateway-api/#installation
-    log -f "${FUNCNAME[0]}" "ensuring prerequisites are met for Gateway API"
-    # Check the value of enable-l7-proxy
-    config_check "cilium config view" "kube-proxy-replacement" "true"
-    config_check "cilium config view" "enable-l7-proxy" "true"
-    log -f "${FUNCNAME[0]}" "Finished checking prerequisites for Gateway API"
-
-    log -f "${FUNCNAME[0]}" "Started deploying TLS cert for TLS-HTTPS Gateway API"
-    mkdir -p cilium/certs/
-    SECRET_NAME=shared-tls
-    CERT_FILE="cilium/certs/${SECRET_NAME}.crt"
-    KEY_FILE="cilium/certs/${SECRET_NAME}.key"
-
-    log -f "${FUNCNAME[0]}" "Generate self-signed certificate and key"
-    openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout $KEY_FILE -out $CERT_FILE -subj "/CN=${CLUSTER_DNS_DOMAINS}" ${ECHO_VERBOSE}
-
-    log -f "${FUNCNAME[0]}" "Creating rancher Kubernetes TLS secret"
-    eval "kubectl create secret tls ${SECRET_NAME} --cert=$CERT_FILE --key=$KEY_FILE --namespace=kube-system  ${ECHO_VERBOSE}"
-    log -f "${FUNCNAME[0]}" "Finished deploying TLS cert for TLS-HTTPS Gateway API"
-
-    log -f "${FUNCNAME[0]}" "Started deploying Gateway API"
-    eval "kubectl apply -f cilium/http-gateway.yaml ${ECHO_VERBOSE}"
-    log -f "${FUNCNAME[0]}" "Finished deploying Gateway API"
-
-    log -f "${FUNCNAME[0]}" "restarting cilium."
-    eval " kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator ${ECHO_VERBOSE}" || true
-    sleep 45
-}
 
 
 helm_chart_prerequisites () {
@@ -1471,8 +1520,8 @@ local role=$(echo "$node" | jq -r '.role')
         #####################################################################################
         log -f "${FUNCNAME[0]}" "starting certmanager cli install for node: $hostname"
         ssh -q ${hostname} <<< """
-            set -e  # Exit on error
-            set -o pipefail  # Fail if any piped command fails
+            # set -e  # Exit on error
+            # set -o pipefail  # Fail if any piped command fails
             OS=\$(go env GOOS)
             ARCH=\$(go env GOARCH)
             curl -fsSL -o cmctl https://github.com/cert-manager/cmctl/releases/download/v${CERTMANAGER_CLI_VERSION}/cmctl_\${OS}_\${ARCH}
@@ -1517,38 +1566,48 @@ local role=$(echo "$node" | jq -r '.role')
 
 ################################################################################################################################################################
 
-deploy_hostsfile
+# deploy_hostsfile
 
-RESETED=0
-if [ "$PREREQUISITES" = true ]; then
-    reset_cluster
-    RESETED=1
-    prerequisites_requirements
-else
-    log "deploy.sh" "INFO" "Cluster prerequisites have been skipped"
+# RESETED=0
+# if [ "$PREREQUISITES" = true ]; then
+#     reset_cluster
+#     RESETED=1
+#     prerequisites_requirements
+# else
+#     log "deploy.sh" "INFO" "Cluster prerequisites have been skipped"
+# fi
+
+
+# if [ $RESETED -eq 0 ]; then
+#     reset_cluster
+# fi
+
+# install_kubetools
+
+# install_cluster
+
+# install_gateway_CRDS
+
+# install_cilium_prerequisites
+
+# install_cilium
+
+# join_cluster
+##################################################################
+install_gateway
+install_gateway_return_code=$?
+if [ ! $install_gateway_return_code -eq 0 ]; then
+    log -f "main" "WARNING" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
 fi
-
-
-if [ $RESETED -eq 0 ]; then
-    reset_cluster
+##################################################################
+restart_cilium
+cilium_restart_return_code=$?
+if [ ! $cilium_restart_return_code -eq 0 ]; then
+    log -f "main" "ERROR" "Failed to start cilium service."
 fi
-
-install_kubetools
-
-install_cluster
-
-install_gateway_CRDS
-
-install_cilium_prerequisites
-
-install_cilium
-
-
-join_cluster
-# echo end of test
-# exit 1
-# install_gateway
-
+##################################################################
+echo end of test
+exit 1
 # install_certmanager
 
 
