@@ -970,6 +970,80 @@ restart_cilium() {
 }
 
 
+install_certmanager_prerequisites() {
+    ##################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ##################################################################
+    # install cert-manager cli:
+    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+        ##################################################################
+        local hostname=$(echo "$node" | jq -r '.hostname')
+        local ip=$(echo "$node" | jq -r '.ip')
+        local role=$(echo "$node" | jq -r '.role')
+        ##################################################################
+        log -f "${CURRENT_FUNC}" "starting certmanager cli install for ${role} node: $hostname"
+        ssh -q ${hostname} <<< """
+            OS=\$(go env GOOS)
+            ARCH=\$(go env GOARCH)
+            curl -fsSL -o cmctl https://github.com/cert-manager/cmctl/releases/download/v${CERTMANAGER_CLI_VERSION}/cmctl_\${OS}_\${ARCH}
+            chmod +x cmctl
+            sudo mv cmctl /usr/bin
+            sudo ln -sf /usr/bin /usr/local/bin
+        """
+        add_bashcompletion $hostname "cmctl"
+        log -f "${CURRENT_FUNC}" "Finished certmanager cli install for ${role} node: $hostname"
+        ##################################################################
+    done
+    ##################################################################
+    helm_chart_prerequisites "$CONTROL_PLANE_HOST" "jetstack" "https://charts.jetstack.io" "$CERTMANAGER_NS" "true" "true"
+    ##################################################################
+}
+
+
+install_certmanager () {
+    ##################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    echo end of test
+    exit 1
+    ##################################################################
+    log -f "${FUNCNAME[0]}" "Started installing cert-manger on namespace: '${CERTMANAGER_NS}'"
+    helm install cert-manager jetstack/cert-manager  \
+        --version ${CERTMANAGER_VERSION} \
+        --namespace ${CERTMANAGER_NS} \
+        --create-namespace \
+        --set replicaCount=${REPLICAS} \
+        --set webhook.replicaCount=${REPLICAS} \
+        --set cainjector.replicaCount=${REPLICAS} \
+        -f certmanager/values.yaml
+    log -f "${FUNCNAME[0]}" "Finished installing cert-manger on namespace: '${CERTMANAGER_NS}'"
+
+    echo end of test
+    exit 1
+    ##################################################################
+    # test certmanager:
+    # Needs to be automated....
+    # kubectl apply -f certmanager/test-resources.yaml
+
+    # # Check the status, grep through the event types
+    # kubectl describe certificate -n cert-manager-test
+    # kubectl get secrets -n cert-manager-test
+
+    # # Clean up the test resources.
+    # kubectl delete -f certmanager/test-resources.yaml
+
+
+    # --cluster-resource-namespace=
+}
+
+
+
+
+
+
+
+
+
+
 install_longhorn_prerequisites() {
     ##################################################################
     log -f "${FUNCNAME[0]}" "Ensuring that 'noexec' is unset for '/var' on cluster nodes."
@@ -1375,54 +1449,6 @@ install_longhorn () {
 
 
 
-helm_chart_prerequisites () {
-    local CHART_NAME=$1
-    local CHART_REPO=$2
-    local CHART_NS=$3
-    local DELETE_NS=$4
-    local CREATE_NS=$5
-
-    ##################################################################
-    log -f "${FUNCNAME[0]}" "adding '$CHART_NAME' repo to Helm"
-    eval "helm repo add ${CHART_NAME} $CHART_REPO --force-update ${ECHO_VERBOSE}" || true
-    eval helm repo update ${VERBOSE} || true
-    ##################################################################
-    log -f "${FUNCNAME[0]}" "uninstalling and ensuring the cluster is cleaned from $CHART_NAME"
-    # kubectl delete -n $CHART_NS ds/vault-manager ds/vault-nfs-installation deployments/vault-ui deployments/vault-driver-deployer jobs/vault-uninstall >/dev/null 2>&1 || true
-    eval "helm uninstall -n $CHART_NS $CHART_NAME ${VERBOSE}" || true
-    ##################################################################
-    if [ "$DELETE_NS" == "true" ] || [ "$DELETE_NS" == "1" ]; then
-        log -f "${FUNCNAME[0]}" "deleting '$CHART_NS' namespace"
-        eval "kubectl delete ns $CHART_NS --now=true --ignore-not-found ${ECHO_VERBOSE}"
-
-        output=$(kubectl get ns $CHART_NS --ignore-not-found)
-
-        if [ ! -z "$output"]; then
-            log -f "${FUNCNAME[0]}" "Force deleting '$CHART_NS' namespace"
-            kubectl get namespace "$CHART_NS" -o json 2>/dev/null \
-            | tr -d "\n" | sed "s/\"finalizers\": \[[^]]\+\]/\"finalizers\": []/" \
-            | kubectl replace --raw /api/v1/namespaces/$CHART_NS/finalize -f - ${VERBOSE} || true
-            log -f "${FUNCNAME[0]}" "sleeping for 60 seconds while deleting '$CHART_NS' namespace"
-            sleep 60
-        fi
-
-    else
-        log -f "${FUNCNAME[0]}" "Skipping NS deletion"
-    fi
-
-    if [ "$CREATE_NS" == "true" ] || [ "$CREATE_NS" == "1" ]; then
-        ##################################################################
-        log -f "${FUNCNAME[0]}" "Creating '$CHART_NS' chart namespace: '$CHART_NS'"
-        eval "kubectl create ns $CHART_NS ${ECHO_VERBOSE}" || true
-        # create_namespace
-
-        echo end of test
-        exit
-        ##################################################################
-    else
-        log -f "${FUNCNAME[0]}" "Skipping NS creation"
-    fi
-}
 
         # --set server.dataStorage.mountPath="${EXTRAVOLUMES_ROOT}"/vault/data \
         # --set server.auditStorage.mountPath="${EXTRAVOLUMES_ROOT}"/vault/audit \
@@ -1509,59 +1535,6 @@ install_rancher () {
 
 
 
-install_certmanager () {
-    ##################################################################
-    # install cert-manager cli:
-    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
-        #####################################################################################
-        local hostname=$(echo "$node" | jq -r '.hostname')
-        local ip=$(echo "$node" | jq -r '.ip')
-local role=$(echo "$node" | jq -r '.role')
-        #####################################################################################
-        log -f "${FUNCNAME[0]}" "starting certmanager cli install for node: $hostname"
-        ssh -q ${hostname} <<< """
-            # set -e  # Exit on error
-            # set -o pipefail  # Fail if any piped command fails
-            OS=\$(go env GOOS)
-            ARCH=\$(go env GOARCH)
-            curl -fsSL -o cmctl https://github.com/cert-manager/cmctl/releases/download/v${CERTMANAGER_CLI_VERSION}/cmctl_\${OS}_\${ARCH}
-            chmod +x cmctl
-            sudo mv cmctl /usr/bin
-            sudo ln -sf /usr/bin /usr/local/bin
-        """
-        add_bashcompletion $hostname cmctl $ECHO_VERBOSE
-        log -f "${FUNCNAME[0]}" "Finished certmanager cli install for node: $hostname"
-    done
-    ##################################################################
-    # deploy cert-manager:
-    helm_chart_prerequisites "jetstack" "https://charts.jetstack.io" "$CERTMANAGER_NS" "true" "true"
-    ##################################################################
-    log -f "${FUNCNAME[0]}" "Started installing cert-manger on namespace: '${CERTMANAGER_NS}'"
-    helm install cert-manager jetstack/cert-manager  \
-        --version ${CERTMANAGER_VERSION} \
-        --namespace ${CERTMANAGER_NS} \
-        --create-namespace \
-        --set replicaCount=${REPLICAS} \
-        --set webhook.replicaCount=${REPLICAS} \
-        --set cainjector.replicaCount=${REPLICAS} \
-        -f certmanager/values.yaml
-    log -f "${FUNCNAME[0]}" "Finished installing cert-manger on namespace: '${CERTMANAGER_NS}'"
-
-    ##################################################################
-    # test certmanager:
-    # Needs to be automated....
-    # kubectl apply -f certmanager/test-resources.yaml
-
-    # # Check the status, grep through the event types
-    # kubectl describe certificate -n cert-manager-test
-    # kubectl get secrets -n cert-manager-test
-
-    # # Clean up the test resources.
-    # kubectl delete -f certmanager/test-resources.yaml
-
-
-    # --cluster-resource-namespace=
-}
 
 
 ################################################################################################################################################################
@@ -1594,23 +1567,28 @@ local role=$(echo "$node" | jq -r '.role')
 
 # join_cluster
 ##################################################################
-install_gateway
-install_gateway_return_code=$?
-if [ ! $install_gateway_return_code -eq 0 ]; then
-    log -f "main" "WARNING" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
-fi
+# install_gateway
+# install_gateway_return_code=$?
+# if [ ! $install_gateway_return_code -eq 0 ]; then
+#     log -f "main" "WARNING" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
+# fi
+# ##################################################################
+# restart_cilium
+# cilium_restart_return_code=$?
+# if [ ! $cilium_restart_return_code -eq 0 ]; then
+#     log -f "main" "ERROR" "Failed to start cilium service."
+# fi
 ##################################################################
-restart_cilium
-cilium_restart_return_code=$?
-if [ ! $cilium_restart_return_code -eq 0 ]; then
-    log -f "main" "ERROR" "Failed to start cilium service."
+install_certmanager_prerequisites
+
+install_certmanager
+install_certmanager_return_code=$?
+if [ ! $install_certmanager_return_code -eq 0 ]; then
+    log -f "main" "WARNING" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
 fi
 ##################################################################
 echo end of test
 exit 1
-# install_certmanager
-
-
 # install_rancher
 
 # install_longhorn_prerequisites
