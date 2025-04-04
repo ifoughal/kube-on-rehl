@@ -11,44 +11,60 @@ COLOR_CYAN="\033[0;36m"
 
 CURRENT_DATE="date"
 
-# Validate log_type
-valid_log_types=("DEBUG" "INFO" "WARNING" "ERROR")
+# Validate log_level
+valid_log_levels=("DEBUG" "INFO" "WARNING" "ERROR")
 
 # Parse arguments
-override_function="$0"
+# override_function="$0"
+silent=0
+
+# log_level="INFO"
+
 while [[ "$1" =~ ^- && ! "$1" == "--" ]]; do case $1 in
   -f|--override-function )
     shift
-    override_function=$1
+    function=$1
+    ;;
+  -s|--silent )
+    shift
+    silent=1
+    ;;
+  -l|--level )
+    shift
+    log_level=$1
     ;;
   * )
-    log_type="$1"
+    message="$@"
     shift
     ;;
 esac; shift; done
 if [[ "$1" == '--' ]]; then shift; fi
 
+if [ -z "$function" ]; then
+	function="$0"
+fi
 
-function="$override_function"
-log_type="$1"  # Set INFO as default log_type if not provided
-
-# Validate log_type
-valid_log_types=("DEBUG" "INFO" "WARNING" "ERROR")
-if [[ ! " ${valid_log_types[@]} " =~ " ${log_type} " ]]; then
-    # function="$log_type"
-    log_type="INFO"
-else
-    # function="$1"
-    shift 1
+if [ -z "$log_level" ]; then
+	# Ensure that log leve is valid.
+	if [[ " ${valid_log_levels[@]} " =~ " ${log_level} " ]]; then
+		log_level=$1
+		shift
+	else
+		log_level="INFO"
+	fi
 fi
 
 message="$@"
 datetime=$(date +"%Y-%m-%d %H:%M:%S,%3N")
 
-log_message="$datetime - ${log_type} - ${function} - ${message}"
+echo log_level: $log_level
+echo function: $function
+echo message: $message
+
+log_message="$datetime - ${log_level} - ${function} - ${message}"
 
 # Choose color based on log type
-case "$log_type" in
+case "$log_level" in
     DEBUG) color="$COLOR_CYAN" ;;
     INFO) color="$COLOR_GREEN" ;;
     WARNING) color="$COLOR_YELLOW" ;;
@@ -57,4 +73,8 @@ case "$log_type" in
 esac
 
 # Print log message with color and append to log file
-echo -e "${color}${log_message}${COLOR_RESET}" | tee -a config_check.log
+if [ "$silent" -eq 1 ]; then
+    echo -e "${color}${log_message}${COLOR_RESET}" | sudo tee -a /var/log/cluster_deployment.log 1>/dev/null
+else
+  echo -e "${color}${log_message}${COLOR_RESET}" | sudo tee -a /var/log/cluster_deployment.log
+fi
