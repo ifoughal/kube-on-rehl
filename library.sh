@@ -1,47 +1,47 @@
 #!/bin/bash
 
 
+# Function to check if a command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+
 optimize_dnf() {
     local CURRENT_NODE=$1
-    local VERBOSE=$2
 
-    if [ "$VERBOSE"="1> /dev/null" ]; then
-        ECHO_VERBOSE=""
-    else
-        ECHO_VERBOSE=$VERBOSE
-    fi
 
     local log_prefix=$(date +"%Y-%m-%d %H:%M:%S,%3N - ${CURRENT_FUNC}")
 
     ssh -q $CURRENT_NODE <<< """
-        echo '$log_prefix - $CURRENT_NODE - Enabling Delta RPMs' ${ECHO_VERBOSE}
+        echo '$log_prefix - $CURRENT_NODE - Enabling Delta RPMs' ${VERBOSE}
         sudo sed -i '/^deltarpm=/d' /etc/dnf/dnf.conf
         echo 'deltarpm=true' | sudo tee -a /etc/dnf/dnf.conf > /dev/null
 
-        echo '$log_prefix - $CURRENT_NODE - Increase Download Threads' ${ECHO_VERBOSE}
+        echo '$log_prefix - $CURRENT_NODE - Increase Download Threads' ${VERBOSE}
         sudo sed -i '/^max_parallel_downloads=/d' /etc/dnf/dnf.conf
         echo 'max_parallel_downloads=10' | sudo tee -a /etc/dnf/dnf.conf > /dev/null
 
-        echo '$log_prefix - $CURRENT_NODE - Adjust Metadata Expiration' ${ECHO_VERBOSE}
+        echo '$log_prefix - $CURRENT_NODE - Adjust Metadata Expiration' ${VERBOSE}
         sudo sed -i '/^metadata_expire=/d' /etc/dnf/dnf.conf
         echo 'metadata_expire=1h' | sudo tee -a /etc/dnf/dnf.conf > /dev/null
 
-        echo '$log_prefix - $CURRENT_NODE - Enable Fastest Mirror Plugin' ${ECHO_VERBOSE}
+        echo '$log_prefix - $CURRENT_NODE - Enable Fastest Mirror Plugin' ${VERBOSE}
         sudo sed -i '/^fastestmirror=/d' /etc/dnf/dnf.conf
         echo 'fastestmirror=true' | sudo tee -a /etc/dnf/dnf.conf > /dev/null
 
-        echo '$log_prefix - $CURRENT_NODE - Clean DNF All' ${ECHO_VERBOSE}
+        echo '$log_prefix - $CURRENT_NODE - Clean DNF All' ${VERBOSE}
         sudo dnf clean all ${VERBOSE}
 
-        echo '$log_prefix - $CURRENT_NODE - Clean DNF packages' ${ECHO_VERBOSE}
+        echo '$log_prefix - $CURRENT_NODE - Clean DNF packages' ${VERBOSE}
         sudo dnf clean packages ${VERBOSE}
 
-        echo '$log_prefix - $CURRENT_NODE - Clean DNF metadata' ${ECHO_VERBOSE}
+        echo '$log_prefix - $CURRENT_NODE - Clean DNF metadata' ${VERBOSE}
         sudo dnf clean metadata ${VERBOSE}
 
-        echo '$log_prefix - $CURRENT_NODE - Update System' ${ECHO_VERBOSE}
+        echo '$log_prefix - $CURRENT_NODE - Update System' ${VERBOSE}
         sudo dnf update -y  ${VERBOSE}
-        echo '$log_prefix - $CURRENT_NODE - DNF cache cleaned and system updated successfully.' ${ECHO_VERBOSE}
+        echo '$log_prefix - $CURRENT_NODE - DNF cache cleaned and system updated successfully.' ${VERBOSE}
     """
 }
 
@@ -49,40 +49,91 @@ optimize_dnf() {
 
 # Function to update or add the PATH variable in /etc/environment
 update_path() {
+    local CURRENT_NODE=$1
+
     local NEW_PATH="export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     local ENV_FILE="/etc/environment"
 
-    # Check if the PATH variable is already defined in /etc/environment
-    if grep -q '^export PATH=' "$ENV_FILE"; then
-        # If PATH exists, update it with the new value
-        sudo sed -i 's|^export PATH=.*|'"$NEW_PATH"'|' "$ENV_FILE"
-        echo "Updated PATH in $ENV_FILE."
-    else
-        # If PATH does not exist, append it to the file
-        echo "$NEW_PATH" | sudo tee -a "$ENV_FILE"
-        echo "Added PATH to $ENV_FILE."
-    fi
-    # Reload the environment variables to apply changes immediately
-    source "$ENV_FILE"
-    export http_proxy="http://10.66.8.162:3128"
-    export https_proxy="http://10.66.8.162:3128"
-    export HTTP_PROXY="$http_proxy"
-    export HTTPS_PROXY="$https_proxy"
-
-    export no_proxy=".pack,.svc,.svc.cluster.local,.cluster.local,lorionstrm01vel,lorionstrm02vel,lorionstrm03vel,localhost,::1,127.0.0.1,10.66.65.7,10.66.65.8,10.66.65.9,10.96.0.0/12,10.244.0.0/16"
-    export NO_PROXY="$no_proxy"
-
-    cat <<EOF | sudo tee /etc/environment
-export http_proxy="http://10.66.8.162:3128"
-export https_proxy="http://10.66.8.162:3128"
-export HTTP_PROXY="$http_proxy"
-export HTTPS_PROXY="$https_proxy"
-
-export no_proxy=".pack,.svc,.svc.cluster.local,.cluster.local,lorionstrm01vel,lorionstrm02vel,lorionstrm03vel,localhost,::1,127.0.0.1,10.66.65.7,10.66.65.8,10.66.65.9,10.96.0.0/12,10.244.0.0/16"
-export NO_PROXY="$no_proxy"
-EOF
-    # Print the updated PATH for verification
-    echo "Updated PATH: $PATH"
+    ssh -q $CURRENT_NODE <<< """
+        #########################################################
+        # Check if the PATH variable is already defined in /etc/environment
+        if grep -q '^export PATH=' \"$ENV_FILE\"; then
+            # If PATH exists, update it with the new value
+            sudo sed -i 's|^export PATH=.*|'\"$NEW_PATH\"'|' \"$ENV_FILE\"
+            echo \"Updated PATH in $ENV_FILE.\"
+        else
+            # If PATH does not exist, append it to the file
+            echo \"$NEW_PATH\" | sudo tee -a \"$ENV_FILE\" > /dev/null
+            echo \"Added PATH to $ENV_FILE.\"
+        fi
+        #########################################################
+        # append aliast loading option to use debug_log function
+        if ! grep -q '^shopt -s expand_aliases' \"$ENV_FILE\"; then
+            echo \"shopt -s expand_aliases\" | sudo tee -a \"$ENV_FILE\" > /dev/null
+        fi
+        #########################################################
+        if grep -q '^alias debug_log=' \"$ENV_FILE\"; then
+            sudo sed -i 's|^alias debug_log=.*|'\"$debug_log\"'|' \"$ENV_FILE\"
+        else
+            echo \"$debug_log\" | sudo tee -a \"$ENV_FILE\" > /dev/null
+        fi
+        #########################################################
+        # source the environment variables to load debug_load
+        . /etc/environment
+        #########################################################
+        if ! grep -q '^alias ll' \"$ENV_FILE\"; then
+            echo 'alias ll=\"ls -alF\"' | sudo tee -a $ENV_FILE > /dev/null
+        fi
+        #########################################################
+        if grep -q '^export http_proxy=' \"$ENV_FILE\"; then
+            sudo sed -i 's|^export http_proxy=.*|'\"export http_proxy=${HTTP_PROXY}\"'|' \"$ENV_FILE\"
+            debug_log -f $CURRENT_FUNC \"Updated http_proxy in $ENV_FILE.\"
+        else
+            echo 'export http_proxy=\"${HTTP_PROXY}\"' | sudo tee -a $ENV_FILE > /dev/null
+            debug_log -f $CURRENT_FUNC \"Added http_proxy to $ENV_FILE.\"
+        fi
+        #########################################################
+        if grep -q '^export HTTP_PROXY=' \"$ENV_FILE\"; then
+            sudo sed -i 's|^export HTTP_PROXY=.*|'\"export HTTP_PROXY=${HTTP_PROXY}\"'|' \"$ENV_FILE\"
+            debug_log -f $CURRENT_FUNC \"Updated HTTP_PROXY in $ENV_FILE.\"
+        else
+            echo 'export HTTP_PROXY=\"${HTTP_PROXY}\"' | sudo tee -a $ENV_FILE > /dev/null
+            debug_log -f $CURRENT_FUNC \"Added HTTP_PROXY to $ENV_FILE.\"
+        fi
+        #########################################################
+        if grep -q '^export https_proxy=' \"$ENV_FILE\"; then
+            sudo sed -i 's|^export https_proxy=.*|'\"export https_proxy=${HTTPS_PROXY}\"'|' \"$ENV_FILE\"
+            debug_log -f $CURRENT_FUNC \"Updated https_proxy in $ENV_FILE.\"
+        else
+            echo 'export https_proxy=\"${HTTPS_PROXY}\"' | sudo tee -a $ENV_FILE > /dev/null
+            debug_log -f $CURRENT_FUNC \"Added https_proxy to $ENV_FILE.\"
+        fi
+        #########################################################
+        if grep -q '^export HTTPS_PROXY=' \"$ENV_FILE\"; then
+            sudo sed -i 's|^export HTTP_PROXY=.*|'\"export HTTPS_PROXY=${HTTPS_PROXY}\"'|' \"$ENV_FILE\"
+            debug_log -f $CURRENT_FUNC \"Updated HTTPS_PROXY in $ENV_FILE.\"
+        else
+            echo 'export HTTPS_PROXY=\"${HTTPS_PROXY}\"' | sudo tee -a $ENV_FILE > /dev/null
+            debug_log -f $CURRENT_FUNC \"Added HTTPS_PROXY to $ENV_FILE.\"
+        fi
+        #########################################################
+        if grep -q '^export no_proxy=' \"$ENV_FILE\"; then
+            sudo sed -i 's|^export no_proxy=.*|'\"export no_proxy=${NO_PROXY}\"'|' \"$ENV_FILE\"
+            debug_log -f $CURRENT_FUNC \"Updated no_proxy in $ENV_FILE.\"
+        else
+            echo 'export no_proxy=\"${NO_PROXY}\"' | sudo tee -a $ENV_FILE > /dev/null
+            debug_log -f $CURRENT_FUNC \"Added no_proxy to $ENV_FILE.\"
+        fi
+        #########################################################
+        if grep -q '^export NO_PROXY=' \"$ENV_FILE\"; then
+            sudo sed -i 's|^export NO_PROXY=.*|'\"export NO_PROXY=${NO_PROXY}\"'|' \"$ENV_FILE\"
+            debug_log -f $CURRENT_FUNC \"Updated NO_PROXY in $ENV_FILE.\"
+        else
+            echo 'export NO_PROXY=\"${NO_PROXY}\"' | sudo tee -a $ENV_FILE > /dev/null
+            debug_log -f $CURRENT_FUNC \"Added NO_PROXY to $ENV_FILE.\"
+        fi
+        #########################################################
+    """
 }
 
 
@@ -117,14 +168,13 @@ install_go () {
     CURRENT_NODE=$1
     GO_VERSION=$2
     TINYGO_VERSION=$3
-    ECHO_VERBOSE=$4
 
 
     ssh -q $CURRENT_NODE """
         cd /tmp
 
         # install Go
-        log -f ${CURRENT_FUNC} \"installing go version: ${GO_VERSION}\" ${ECHO_VERBOSE}
+        log -f ${CURRENT_FUNC} \"installing go version: ${GO_VERSION}\"
         wget -q https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz
         sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
 
@@ -143,24 +193,24 @@ install_go () {
             \"/usr/local/tinygo/bin\"
         )
 
-        log -f ${CURRENT_FUNC} \"Updating paths for GO\" ${ECHO_VERBOSE}
+        log -f ${CURRENT_FUNC} \"Updating paths for GO\"
         for file in \"\${files[@]}\"; do
-            log -f ${CURRENT_FUNC} \"Updating environment for path: \${file}\" ${ECHO_VERBOSE}
+            debug_log -f ${CURRENT_FUNC} \"Updating environment for path: \${file}\"
 
             for path in \"\${extra_paths[@]}\"; do
-                log -f ${CURRENT_FUNC} \"Checking path: \$path\" ${ECHO_VERBOSE}
+                debug_log -f ${CURRENT_FUNC} \"Checking path: \$path\"
 
                 # Check if the export PATH line exists
                 if grep -q 'export PATH=' \"\$file\"; then
                     # Ensure the path is not already appended
                     if ! grep -q \"\$path\" \"\$file\"; then
-                        log -f ${CURRENT_FUNC} \"Appending \$path to \$file\" ${ECHO_VERBOSE}
+                        debug_log -f ${CURRENT_FUNC} \"Appending \$path to \$file\"
                         sudo sed -i \"s|^export PATH=.*|&:\${path}|\" \"\$file\"
                     else
-                        log -f ${CURRENT_FUNC} \"\$path already exists in \$file\" ${ECHO_VERBOSE}
+                        debug_log -f ${CURRENT_FUNC} \"\$path already exists in \$file\"
                     fi
                 else
-                    log -f ${CURRENT_FUNC} \"export PATH not found, adding export line\" ${ECHO_VERBOSE}
+                    debug_log -f ${CURRENT_FUNC} \"export PATH not found, adding export line\"
                     echo \"export PATH=\\\$PATH:\${path}\" | sudo tee -a \"\$file\" > /dev/null
                 fi
             done
@@ -172,43 +222,38 @@ install_go () {
 
 configure_repos () {
     local CURRENT_HOST=$1
-    local VERBOSE=$2
-    local ECHO_VERBOSE=$3
-
-    local log_prefix=$(date +"\033[0;32m%Y-%m-%d %H:%M:%S,%3N - ${CURRENT_FUNC} - INFO -")
-
 
     scp -q ./almalinux.repo $CURRENT_HOST:/tmp/
 
-    log "INFO" "Configuring AlmaLinux 9 Repositories for node: ${CURRENT_HOST}" ${ECHO_VERBOSE}
+    log "INFO" "Configuring AlmaLinux 9 Repositories for node: ${CURRENT_HOST}"
 
     ssh -q $CURRENT_HOST <<< """
         set -e  # Exit on error
 
-        log -f ${CURRENT_FUNC} \"${log_prefix} Updating almalinux repos list\" ${ECHO_VERBOSE}
+        log -f ${CURRENT_FUNC} \"Updating almalinux repos list\"
         sudo mv /tmp/almalinux.repo /etc/yum.repos.d/almalinux.repo
         sudo chown root:root /etc/yum.repos.d/almalinux.repo
 
-        log -f ${CURRENT_FUNC} \"${log_prefix} Fetching and importing AlmaLinux GPG keys...\" ${ECHO_VERBOSE}
+        log -f ${CURRENT_FUNC} \"Fetching and importing AlmaLinux GPG keys...\"
         sudo curl -s -o /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux-9
         sudo rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux ${VERBOSE}
 
-        log -f ${CURRENT_FUNC} \"${log_prefix} Cleaning up DNF cache and updating system...\" ${ECHO_VERBOSE}
+        log -f ${CURRENT_FUNC} \"Cleaning up DNF cache and updating system...\"
         sudo dnf clean all  ${VERBOSE}
         sudo dnf makecache  ${VERBOSE}
         sudo dnf -y update  ${VERBOSE}
 
-        log -f ${CURRENT_FUNC} \"${log_prefix} Enabling EPEL & CRB repositories...\" ${ECHO_VERBOSE}
+        log -f ${CURRENT_FUNC} \"Enabling EPEL & CRB repositories...\"
         sudo dnf install -y epel-release  ${VERBOSE}
         sudo dnf config-manager --set-enabled crb  ${VERBOSE}
 
-        log -f ${CURRENT_FUNC} \"${log_prefix} Adding RPM Fusion Free & Non-Free Repositories...\" ${ECHO_VERBOSE}
+        log -f ${CURRENT_FUNC} \"${log_prefix} Adding RPM Fusion Free & Non-Free Repositories...\"
         # OSS repos:
         sudo dnf install -y https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm  ${VERBOSE}
         # Proprietary repos
         sudo dnf install -y https://mirrors.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-9.noarch.rpm  ${VERBOSE}
 
-        log -f ${CURRENT_FUNC} \"${log_prefix} Cleaning up DNF cache and updating system...\" ${ECHO_VERBOSE}
+        log -f ${CURRENT_FUNC} \"Cleaning up DNF cache and updating system...\"
         sudo dnf clean all  ${VERBOSE}
         sudo dnf makecache  ${VERBOSE}
         sudo dnf -y update  ${VERBOSE}
@@ -312,7 +357,6 @@ configure_containerD () {
     NO_PROXY=$4
     PAUSE_VERSION=$5
     SUDO_GROUP=$6
-    ECHO_VERBOSE=$7
 
     ssh -q $CURRENT_NODE """
         sudo mkdir -p /etc/systemd/system/containerd.service.d
@@ -326,14 +370,14 @@ EOF
     #############################################################################
     # ensure changes have been applied
     if sudo containerd config dump | grep -q 'SystemdCgroup = true'; then
-        log -f ${CURRENT_FUNC} 'Cgroups configured accordingly for containerD'  ${ECHO_VERBOSE}
+        log -f ${CURRENT_FUNC} 'Cgroups configured accordingly for containerD'
     else
         log -f ${CURRENT_FUNC} 'ERROR' 'Failed to configure Cgroups configured for containerD'
         exit 1
     fi
 
     if sudo containerd config dump | grep -q 'sandbox_image = \"registry.k8s.io/pause:${PAUSE_VERSION}\"'; then
-        log -f ${CURRENT_FUNC} \"sandbox_image is set accordingly to pause version ${PAUSE_VERSION}\"  ${ECHO_VERBOSE}
+        log -f ${CURRENT_FUNC} \"sandbox_image is set accordingly to pause version ${PAUSE_VERSION}\"
     else
         log -f ${CURRENT_FUNC} 'ERROR' \"Failed to set sandbox_image to pause version ${PAUSE_VERSION}\"
         exit 1
