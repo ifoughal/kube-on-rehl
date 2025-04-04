@@ -44,15 +44,17 @@ if [ -z "$function" ]; then
 	function="$0"
 fi
 
+
 if [ -z "$log_level" ]; then
+  log_level=$1
 	# Ensure that log leve is valid.
 	if [[ " ${valid_log_levels[@]} " =~ " ${log_level} " ]]; then
-		log_level=$1
 		shift
 	else
 		log_level="INFO"
 	fi
 fi
+
 
 message="$@"
 datetime=$(date +"%Y-%m-%d %H:%M:%S,%3N")
