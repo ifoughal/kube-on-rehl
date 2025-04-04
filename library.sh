@@ -174,17 +174,16 @@ install_go () {
     GO_VERSION=$2
     TINYGO_VERSION=$3
 
-
-    ssh -q $CURRENT_NODE """
+    ssh -q $CURRENT_NODE <<< """
         cd /tmp
 
         # install Go
         log -f ${CURRENT_FUNC} \"installing go version: ${GO_VERSION}\"
-        wget -q https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz
+        wget -q -nc https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz
         sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
 
         # install tinyGo
-        wget -q https://github.com/tinygo-org/tinygo/releases/download/v${TINYGO_VERSION}/tinygo${TINYGO_VERSION}.linux-amd64.tar.gz
+        wget -q -nc https://github.com/tinygo-org/tinygo/releases/download/v${TINYGO_VERSION}/tinygo${TINYGO_VERSION}.linux-amd64.tar.gz
         sudo tar -C /usr/local -xzf tinygo${TINYGO_VERSION}.linux-amd64.tar.gz
 
         # Update path:
@@ -356,14 +355,14 @@ install_helm () {
 configure_containerD () {
     #############################################################################
     # configure proxy:
-    CURRENT_NODE=$1
-    HTTP_PROXY=$2
-    HTTPS_PROXY=$3
-    NO_PROXY=$4
-    PAUSE_VERSION=$5
-    SUDO_GROUP=$6
+    local CURRENT_NODE=$1
+    local HTTP_PROXY=$2
+    local HTTPS_PROXY=$3
+    local NO_PROXY=$4
+    local PAUSE_VERSION=$5
+    local SUDO_GROUP=$6
 
-    ssh -q $CURRENT_NODE """
+    ssh -q $CURRENT_NODE <<< """
         sudo mkdir -p /etc/systemd/system/containerd.service.d
 
         cat <<EOF | sudo tee /etc/systemd/system/containerd.service.d/http-proxy.conf  > /dev/null
@@ -372,34 +371,33 @@ configure_containerD () {
     Environment=\"HTTPS_PROXY=$HTTPS_PROXY\"
     Environment=\"NO_PROXY=$NO_PROXY\"
 EOF
-    #############################################################################
-    # ensure changes have been applied
-    if sudo containerd config dump | grep -q 'SystemdCgroup = true'; then
-        log -f ${CURRENT_FUNC} 'Cgroups configured accordingly for containerD'
-    else
-        log -f ${CURRENT_FUNC} 'ERROR' 'Failed to configure Cgroups configured for containerD'
-        exit 1
-    fi
+        #############################################################################
+        # ensure changes have been applied
+        if sudo containerd config dump | grep -q 'SystemdCgroup = true'; then
+            log -f ${CURRENT_FUNC} 'Cgroups configured accordingly for containerD'
+        else
+            log -f ${CURRENT_FUNC} 'ERROR' 'Failed to configure Cgroups configured for containerD'
+            exit 1
+        fi
 
-    if sudo containerd config dump | grep -q 'sandbox_image = \"registry.k8s.io/pause:${PAUSE_VERSION}\"'; then
-        log -f ${CURRENT_FUNC} \"sandbox_image is set accordingly to pause version ${PAUSE_VERSION}\"
-    else
-        log -f ${CURRENT_FUNC} 'ERROR' \"Failed to set sandbox_image to pause version ${PAUSE_VERSION}\"
-        exit 1
-    fi
-    #############################################################################
-    sudo setfacl -m g:${SUDO_GROUP}:rw /var/run/containerd/containerd.sock
-    sudo setfacl -m g:wheel:rw /var/run/containerd/containerd.sock
+        if sudo containerd config dump | grep -q 'sandbox_image = \"registry.k8s.io/pause:${PAUSE_VERSION}\"'; then
+            log -f ${CURRENT_FUNC} \"sandbox_image is set accordingly to pause version ${PAUSE_VERSION}\"
+        else
+            log -f ${CURRENT_FUNC} 'ERROR' \"Failed to set sandbox_image to pause version ${PAUSE_VERSION}\"
+            exit 1
+        fi
+        #############################################################################
+        sudo setfacl -m g:${SUDO_GROUP}:rw /var/run/containerd/containerd.sock
+        sudo setfacl -m g:wheel:rw /var/run/containerd/containerd.sock
     """
 }
-
 
 
 update_firewall() {
 
     CURRENT_NODE="$1"
 
-    ssh $CURRENT_NODE """
+    ssh $CURRENT_NODE <<< """
         # check zone:
         if \$\(sudo firewall-cmd --get-zones | grep -q "k8s"\); then
             echo firewallD 'k8s' zone already exists
