@@ -60,11 +60,9 @@ update_path() {
         if grep -q '^export PATH=' \"$ENV_FILE\"; then
             # If PATH exists, update it with the new value
             sudo sed -i 's|^export PATH=.*|'\"$NEW_PATH\"'|' \"$ENV_FILE\"
-            echo \"Updated PATH in $ENV_FILE.\"
         else
             # If PATH does not exist, append it to the file
             echo \"$NEW_PATH\" | sudo tee -a \"$ENV_FILE\" > /dev/null
-            echo \"Added PATH to $ENV_FILE.\"
         fi
         #########################################################
         # append aliast loading option to use debug_log function
