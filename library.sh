@@ -53,10 +53,11 @@ update_path() {
 
     local NEW_PATH="export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     local ENV_FILE="/etc/environment"
+    local BASHRC_FILE="\$HOME/.bashrc"
 
     ssh -q $CURRENT_NODE <<< """
         #########################################################
-        # Check if the PATH variable is already defined in /etc/environment
+        # Check if the PATH variable is already defined in ENV_FILE
         if grep -q '^export PATH=' \"$ENV_FILE\"; then
             # If PATH exists, update it with the new value
             sudo sed -i 's|^export PATH=.*|'\"$NEW_PATH\"'|' \"$ENV_FILE\"
@@ -66,18 +67,24 @@ update_path() {
         fi
         #########################################################
         # append aliast loading option to use debug_log function
-        if ! grep -q '^shopt -s expand_aliases' \"$ENV_FILE\"; then
-            echo \"shopt -s expand_aliases\" | sudo tee -a \"$ENV_FILE\" > /dev/null
+        # if ! grep -q '^shopt -s expand_aliases' \"$ENV_FILE\"; then
+        #     echo \"shopt -s expand_aliases\" | sudo tee -a \"$ENV_FILE\" > /dev/null
+        # fi
+
+        if ! grep -q '^shopt -s expand_aliases' \"$BASHRC_FILE\"; then
+            echo \"shopt -s expand_aliases\" | sudo tee -a \"$BASHRC_FILE\" > /dev/null
         fi
+
         #########################################################
-        if grep -q '^alias debug_log=' \"$ENV_FILE\"; then
-            sudo sed -i 's|^alias debug_log=.*|'\"$debug_log\"'|' \"$ENV_FILE\"
+        if grep -q '^alias debug_log=' \"$BASHRC_FILE\"; then
+            sudo sed -i 's|^alias debug_log=.*|'\"$debug_log\"'|' \"$BASHRC_FILE\"
         else
-            echo \"$debug_log\" | sudo tee -a \"$ENV_FILE\" > /dev/null
+            echo \"$debug_log\" | sudo tee -a \"$BASHRC_FILE\" > /dev/null
         fi
         #########################################################
         # source the environment variables to load debug_load
-        . /etc/environment
+        . $ENV_FILE
+        . $BASHRC_FILE
         #########################################################
         if ! grep -q '^alias ll' \"$ENV_FILE\"; then
             echo 'alias ll=\"ls -alF\"' | sudo tee -a $ENV_FILE > /dev/null
