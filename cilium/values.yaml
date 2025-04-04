@@ -418,6 +418,29 @@ maglev:
   # -- hashSeed is the cluster-wide base64 encoded seed for the hashing
   #     generated with: head -c12 /dev/urandom | base64 -w0
   # hashSeed: TOrnUIrqFc4xkTMu
+
+
+# TODO TS why it doesn't go up...
+encryption:
+# -- Enable transparent network encryption.
+  enabled: false
+  # -- Encryption method. Can be either ipsec or wireguard.
+  type: wireguard
+  # -- Enable encryption for pure node to node traffic.
+  # This option is only effective when encryption.type is set to "wireguard".
+  nodeEncryption: true
+  # -- Configure the WireGuard Pod2Pod strict mode.
+  strictMode:
+    # -- Enable WireGuard Pod2Pod strict mode.
+    enabled: false
+    # -- CIDR for the WireGuard Pod2Pod strict mode.
+    cidr: ""
+    # -- Allow dynamic lookup of remote node identities.
+    # This is required when tunneling is used or direct routing is used and the node CIDR and pod CIDR overlap.
+    allowRemoteNodeIdentities: false
+  wireguard:
+    # -- Controls WireGuard PersistentKeepalive option. Set 0s to disable.
+    persistentKeepalive: 0s
 #######################################################################
 # # Enable Prometheus metrics
 prometheus:
