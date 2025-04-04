@@ -57,10 +57,6 @@ fi
 message="$@"
 datetime=$(date +"%Y-%m-%d %H:%M:%S,%3N")
 
-echo log_level: $log_level
-echo function: $function
-echo message: $message
-
 log_message="$datetime - ${log_level} - ${function} - ${message}"
 
 # Choose color based on log type
