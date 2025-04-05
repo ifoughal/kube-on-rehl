@@ -226,8 +226,10 @@ install_go () {
 
 configure_repos () {
     local CURRENT_HOST=$1
+    local repo_file=$2
 
-    scp -q ./almalinux.repo $CURRENT_HOST:/tmp/
+
+    scp -q ./repos/$repo_file $CURRENT_HOST:/tmp/
 
     log "INFO" "Configuring AlmaLinux 9 Repositories for node: ${CURRENT_HOST}"
 
@@ -235,8 +237,8 @@ configure_repos () {
         set -e  # Exit on error
 
         log -f ${CURRENT_FUNC} \"Updating almalinux repos list\"
-        sudo mv /tmp/almalinux.repo /etc/yum.repos.d/almalinux.repo
-        sudo chown root:root /etc/yum.repos.d/almalinux.repo
+        sudo mv /tmp/$repo_file /etc/yum.repos.d/$repo_file
+        sudo chown root:root /etc/yum.repos.d/$repo_file
 
         log -f ${CURRENT_FUNC} \"Fetching and importing AlmaLinux GPG keys...\"
         sudo curl -s -o /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux-9
@@ -364,13 +366,18 @@ configure_containerD () {
 
     ssh -q $CURRENT_NODE <<< """
         sudo mkdir -p /etc/systemd/system/containerd.service.d
-
-        cat <<EOF | sudo tee /etc/systemd/system/containerd.service.d/http-proxy.conf  > /dev/null
+        if [ -z \"$HTTP_PROXY\" ]; then
+            log -f ${CURRENT_FUNC} 'HTTP_PROXY is not set, skipping proxy configuration for containerD'
+        else
+            log -f ${CURRENT_FUNC} 'Configuring HTTP_PROXY for containerD'
+            cat <<EOF | sudo tee /etc/systemd/system/containerd.service.d/http-proxy.conf  > /dev/null
 [Service]
     Environment=\"HTTP_PROXY=$HTTP_PROXY\"
     Environment=\"HTTPS_PROXY=$HTTPS_PROXY\"
     Environment=\"NO_PROXY=$NO_PROXY\"
 EOF
+        fi
+
         #############################################################################
         # ensure changes have been applied
         if sudo containerd config dump | grep -q 'SystemdCgroup = true'; then
@@ -390,6 +397,10 @@ EOF
         sudo setfacl -m g:${SUDO_GROUP}:rw /var/run/containerd/containerd.sock
         sudo setfacl -m g:wheel:rw /var/run/containerd/containerd.sock
     """
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} 'ERROR' 'Failed to configure containerD'
+        return 1
+    fi
 }
 
 
