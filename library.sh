@@ -142,6 +142,32 @@ update_path() {
 }
 
 
+check_ntp_sync () {
+    local CURRENT_NODE=$1
+    local NTP_SERVER=$2
+
+    local_time=$(date +%s)  # Get the timestamp of the local system in seconds since epoch
+
+    # Check the target system's time (via SSH)
+    remote_time=$(ssh -q $CURRENT_NODE "date +%s")  # Get the timestamp of the remote system in seconds since epoch
+
+    # Calculate the difference in time between local and remote system
+    time_diff=$((local_time - remote_time))
+
+    # You can define an acceptable threshold for time difference, for example, 5 seconds
+    threshold=5
+
+    # Compare time difference
+    if ((time_diff > threshold || time_diff < -threshold)); then
+        log -f ${CURRENT_FUNC} "Time on $CURRENT_NODE is not in sync with the local system. Difference: $time_diff seconds."
+        return 1
+    else
+        log -f ${CURRENT_FUNC} "Time on $CURRENT_NODE is in sync with the local system."
+        return 0
+    fi
+}
+
+
 config_check () {
     RETURN_CODE=0
     local NODE="$1"
@@ -253,10 +279,10 @@ configure_repos () {
         sudo dnf install -y epel-release  ${VERBOSE}
         sudo dnf config-manager --set-enabled crb  ${VERBOSE}
 
-        log -f ${CURRENT_FUNC} \"${log_prefix} Adding RPM Fusion Free & Non-Free Repositories...\"
-        # OSS repos:
+        log -f ${CURRENT_FUNC} \"${log_prefix} Adding RPM Fusion Free (OSS) repositories...\"
         sudo dnf install -y https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm  ${VERBOSE}
-        # Proprietary repos
+
+        log -f ${CURRENT_FUNC} \"${log_prefix} Adding RPM Fusion Non-Free (proprietary) repositories...\"
         sudo dnf install -y https://mirrors.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-9.noarch.rpm  ${VERBOSE}
 
         log -f ${CURRENT_FUNC} \"Cleaning up DNF cache and updating system...\"
@@ -264,6 +290,10 @@ configure_repos () {
         sudo dnf makecache  ${VERBOSE}
         sudo dnf -y update  ${VERBOSE}
     """
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to configure AlmaLinux 9 Repositories for node: ${CURRENT_HOST}"
+        return 1
+    fi
 }
 
 
@@ -358,39 +388,64 @@ configure_containerD () {
     #############################################################################
     # configure proxy:
     local CURRENT_NODE=$1
-    local HTTP_PROXY=$2
-    local HTTPS_PROXY=$3
-    local NO_PROXY=$4
-    local PAUSE_VERSION=$5
-    local SUDO_GROUP=$6
+    local PAUSE_VERSION=$2
+    local SUDO_GROUP=$3
+    local HTTP_PROXY=$4
+    local HTTPS_PROXY=$5
+    local NO_PROXY=$6
 
-    ssh -q $CURRENT_NODE <<< """
-        sudo mkdir -p /etc/systemd/system/containerd.service.d
-        if [ -z \"$HTTP_PROXY\" ]; then
-            log -f ${CURRENT_FUNC} 'HTTP_PROXY is not set, skipping proxy configuration for containerD'
-        else
-            log -f ${CURRENT_FUNC} 'Configuring HTTP_PROXY for containerD'
-            cat <<EOF | sudo tee /etc/systemd/system/containerd.service.d/http-proxy.conf  > /dev/null
+    #############################################################################
+    if [ -z $HTTP_PROXY ]; then
+        log -f ${CURRENT_FUNC} 'HTTP_PROXY is not set, skipping proxy configuration for containerD'
+        ssh -q $CURRENT_NODE <<< """
+            sudo mkdir -p /etc/systemd/system/containerd.service.d
+            sudo rm -rf /etc/systemd/system/containerd.service.d/http-proxy.conf
+        """
+    else
+        log -f ${CURRENT_FUNC} 'Configuring HTTP_PROXY for containerD'
+        ssh -q $CURRENT_NODE <<< """
+            sudo mkdir -p /etc/systemd/system/containerd.service.d
+            if [ -z \"$HTTP_PROXY\" ]; then
+                log -f ${CURRENT_FUNC} 'HTTP_PROXY is not set, skipping proxy configuration for containerD'
+            else
+                log -f ${CURRENT_FUNC} 'Configuring HTTP_PROXY for containerD'
+                cat <<EOF | sudo tee /etc/systemd/system/containerd.service.d/http-proxy.conf  > /dev/null
 [Service]
     Environment=\"HTTP_PROXY=$HTTP_PROXY\"
     Environment=\"HTTPS_PROXY=$HTTPS_PROXY\"
     Environment=\"NO_PROXY=$NO_PROXY\"
 EOF
+            fi
+        """
+    fi
+    #############################################################################
+    ssh -q $CURRENT_NODE <<< """
+        log -f ${CURRENT_FUNC} 'Starting and enabling containerD for node: $CURRENT_NODE' ${VERBOSE}
+        sudo systemctl enable containerd
+        sudo systemctl daemon-reload
+        sudo systemctl restart containerd
+
+        sleep 10
+        # Check if the containerd service is active
+        if systemctl is-active --quiet containerd.service; then
+            log -f ${CURRENT_FUNC} 'ContainerD configuration updated successfully for node: $CURRENT_NODE' ${VERBOSE}
+        else
+            log -f ${CURRENT_FUNC} 'ERROR' 'ContainerD configuration failed, containerd service is not running for node: $CURRENT_NODE...'
+            exit 1
         fi
 
-        #############################################################################
         # ensure changes have been applied
         if sudo containerd config dump | grep -q 'SystemdCgroup = true'; then
-            log -f ${CURRENT_FUNC} 'Cgroups configured accordingly for containerD'
+            log -f ${CURRENT_FUNC} 'Cgroups configured accordingly for containerD for node: $CURRENT_NODE'
         else
-            log -f ${CURRENT_FUNC} 'ERROR' 'Failed to configure Cgroups configured for containerD'
+            log -f ${CURRENT_FUNC} 'ERROR' 'Failed to configure Cgroups configured for containerD for node: $CURRENT_NODE'
             exit 1
         fi
 
         if sudo containerd config dump | grep -q 'sandbox_image = \"registry.k8s.io/pause:${PAUSE_VERSION}\"'; then
-            log -f ${CURRENT_FUNC} \"sandbox_image is set accordingly to pause version ${PAUSE_VERSION}\"
+            log -f ${CURRENT_FUNC} \"sandbox_image is set accordingly to pause version ${PAUSE_VERSION} for node: $CURRENT_NODE\"
         else
-            log -f ${CURRENT_FUNC} 'ERROR' \"Failed to set sandbox_image to pause version ${PAUSE_VERSION}\"
+            log -f ${CURRENT_FUNC} 'ERROR' \"Failed to set sandbox_image to pause version ${PAUSE_VERSION} for node: $CURRENT_NODE\"
             exit 1
         fi
         #############################################################################
