@@ -150,19 +150,22 @@ log -f "deploy.sh" "Finished loading inventory file: $INVENTORY"
 #   1xxx: cilium errors
 #       1001: cilium status errors
 #
-
+##################################################################
 debug_log=$(alias | grep -E "^alias debug_log=" | head -n 1)
-
+##################################################################
 
 deploy_hostsfile () {
     ##################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
     ##################################################################
+    hosts_updated=false
+    local error_raised=0
+    ##################################################################
     # Path to the YAML file
     # Extract the 'nodes' array from the YAML and process it with jq
     # yq '.nodes["control_plane_nodes"]' "$INVENTORY" | jq -r '.[] | "\(.ip) \(.hostname)"' | while read -r line; do
     log -f ${CURRENT_FUNC} "installing required packages to deploy the cluster"
-    eval "sudo dnf update -y  ${VERBOSE}"
+    eval "sudo dnf update -y ${VERBOSE}"
     eval "sudo dnf upgrade -y  ${VERBOSE}"
     eval "sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools ${VERBOSE}"
     eval "sudo pip install yq  >/dev/null 2>&1"
@@ -178,13 +181,106 @@ deploy_hostsfile () {
         log -f ${CURRENT_FUNC} "ERROR" "'jq' command not found. Please install jq to parse JSON files or run prerequisites..."
         exit 1
     fi
-   ##################################################################
+
+    hosts_updated=false
+    ##################################################################
+    # echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+    while read -r node; do
+        ##################################################################
+        local hostname=$(echo "$node" | jq -r '.hostname')
+        local ip=$(echo "$node" | jq -r '.ip')
+        local role=$(echo "$node" | jq -r '.role')
+        ##################################################################
+        # TODO generate ssh config file for each node
+        CONFIG_FILE="$HOME/.ssh/config"
+        TMP_CONFIG_FILE="${CONFIG_FILE}.tmp"
+
+        # Ensure config file exists
+        touch "$CONFIG_FILE"
+        # Define the block to insert/update
+        SSH_BLOCK=$(cat <<EOF
+
+Host $hostname
+    HostName $ip
+    User $SUDO_USERNAME
+    IdentityFile ~/.ssh/id_rsa
+    PasswordAuthentication no
+    Port 22
+EOF
+        )
+        ##################################################################
+        # Extract current block (if exists)
+        current_block=$(awk -v host="Host $hostname" '
+            BEGIN { capture=0 }
+            $0 ~ "^Host " {
+                if ($0 == host) {
+                    capture=1
+                    block=$0 ORS
+                    next
+                } else {
+                    capture=0
+                }
+            }
+            capture { block=block $0 ORS }
+            END { print block }
+        ' "$CONFIG_FILE")
+        ##################################################################
+        # Normalize SSH_BLOCK
+        local normalized_ssh_block=$(echo "$SSH_BLOCK" | sed '/^\s*$/d' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+        # Normalize current_block
+        local normalized_current_block=$(echo "$current_block" | sed '/^\s*$/d' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        ##################################################################
+        if [[ -z "$current_block" ]]; then
+            # New host — mark as update needed
+            hosts_updated=true
+            log -f $CURRENT_FUNC "New host detected: $hostname"
+        elif [[ "$normalized_ssh_block" != "$normalized_current_block" ]]; then
+            # Host exists but differs — mark as update needed
+            hosts_updated=true
+            echo SSH_BLOCK: $SSH_BLOCK
+            echo current_block: $current_block
+
+            log -f $CURRENT_FUNC "Host: $hostname already exists but differs, updating..."
+        fi
+        ##################################################################
+        # If the host exists, replace it
+        if grep -q "Host $hostname" "$CONFIG_FILE"; then
+            # Use awk to remove the old block
+            awk -v host="Host $hostname" '
+                BEGIN { skip=0 }
+                $0 ~ "^Host " {
+                    if ($0 == host) {
+                        skip=1
+                    } else {
+                        skip=0
+                    }
+                }
+                skip == 0 { print }
+            ' "$CONFIG_FILE" > "$TMP_CONFIG_FILE"
+
+            # Append the updated block
+            printf "%s" "$SSH_BLOCK" >> "$TMP_CONFIG_FILE"
+            mv "$TMP_CONFIG_FILE" "$CONFIG_FILE"
+        else
+            # Append new block
+            printf "%s" "$SSH_BLOCK" >> "$CONFIG_FILE"
+        fi
+        ##################################################################
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
+    if [ "$hosts_updated" == true ]; then
+        log -f ${CURRENT_FUNC} "SSH config file updated successfully. Relaunch terminal to apply changes."
+        exit 0
+    else
+        log -f ${CURRENT_FUNC} "No changes made to SSH config file."
+    fi
+    ##################################################################
     echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
        ##################################################################
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
         local role=$(echo "$node" | jq -r '.role')
-       ##################################################################
+        ##################################################################
         # Append the entry to the file (e.g., /etc/hosts)
         # Normalize spaces in the input line (collapse multiple spaces/tabs into one)
         local line="$ip         $hostname"
@@ -226,9 +322,13 @@ deploy_hostsfile () {
         """
         log -f ${CURRENT_FUNC} "Finished installing tools node: ${hostname}"
        ##################################################################
-        log -f ${CURRENT_FUNC} "sending hosts file to target node: ${hostname}"
+        log -f ${CURRENT_FUNC} "sending hosts file to target $role node: ${hostname}"
         scp -q $HOSTSFILE_PATH ${hostname}:/tmp
-
+        if [ $? -ne 0 ]; then
+            error_raised=1
+            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while sending hosts file to node ${hostname}..."
+            continue  # continue to next node and skip this one
+        fi
         log -f ${CURRENT_FUNC} "Applying changes for ${role} node: ${hostname}"
         ssh -q ${hostname} <<< """
             sudo cp /tmp/hosts ${HOSTSFILE_PATH}
@@ -236,6 +336,11 @@ deploy_hostsfile () {
         log -f ${CURRENT_FUNC} "Finished modifying hosts file for ${role} node: ${hostname}"
        ##################################################################
     done
+    if [ $error_raised -eq 0 ]; then
+        log -f ${CURRENT_FUNC} "Finished deploying hosts file"
+    else
+        log -f ${CURRENT_FUNC} "ERROR" "Some errors occured during the hosts file deployment"
+    fi
 }
 
 
@@ -259,11 +364,10 @@ reset_cluster () {
         log -f ${CURRENT_FUNC} "Started resetting k8s ${role} node node: ${hostname}"
         ssh -q ${hostname} <<< """
             sudo kubeadm reset -f > /dev/null 2>&1 || true
-            sudo rm -rf \
-                \$HOME/.kube/* \
-                /root/.kube/* \
-                /etc/cni/net.d/* \
-                /etc/kubernetes/* \
+            sudo rm -rf \$HOME/.kube/* \
+                        /root/.kube/* \
+                        /etc/cni/net.d/* \
+                        /etc/kubernetes/*
         """
         log -f ${CURRENT_FUNC} "Finished resetting k8s ${role} node node: ${hostname}"
        ##################################################################
@@ -306,7 +410,7 @@ prerequisites_requirements() {
         log -f ${CURRENT_FUNC} "Finished deploying logger function for ${role} node: ${hostname}"
         #####################################################################################
         log -f ${CURRENT_FUNC} "Configuring repos for ${role} node: ${hostname}"
-        configure_repos $hostname
+        configure_repos $hostname "almalinux-baseos.repo"
         log -f ${CURRENT_FUNC} "Finished configuring repos for ${role} node: ${hostname}"
         #####################################################################################
         log -f ${CURRENT_FUNC} "Starting dnf optimisations for ${role} node: ${hostname}"
@@ -544,7 +648,7 @@ EOF
             containerd config default | sudo tee \$CONFIG_FILE >/dev/null
 
             log -f ${CURRENT_FUNC} 'Backing up the original config file' ${VERBOSE}
-            cp -f -n \$CONFIG_FILE \${CONFIG_FILE}.bak
+            sudo cp -f -n \$CONFIG_FILE \${CONFIG_FILE}.bak
 
             log -f ${CURRENT_FUNC} 'Configuring containerD for our cluster' ${VERBOSE}
             sudo sed -i '/\[plugins\\.\"io\\.containerd\\.nri\\.v1\\.nri\"\]/,/^\[/{
@@ -1603,9 +1707,9 @@ install_rancher () {
 
 
 #################################################################
-if [ $RESET_CLUSTER_ARG -eq 1 ]; then
-    reset_cluster
-fi
+# if [ $RESET_CLUSTER_ARG -eq 1 ]; then
+#     reset_cluster
+# fi
 #################################################################
 if [ "$PREREQUISITES" = true ]; then
     #################################################################
@@ -1614,6 +1718,9 @@ if [ "$PREREQUISITES" = true ]; then
         log -f "main" "ERROR" "An error occured while updating the hosts files."
         exit 1
     fi
+
+    echo end of test
+    exit 1
     #################################################################
     prerequisites_requirements
     if [ $? -ne 0 ]; then
@@ -1668,22 +1775,22 @@ if [ $? -ne 0 ]; then
     log -f "main" "ERROR" "Failed to start cilium service."
     exit 1
 fi
-##################################################################
-install_certmanager_prerequisites
+# ##################################################################
+# install_certmanager_prerequisites
 
-install_certmanager
-if [ $? -ne 0 ]; then
-    log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
-    exit 1
-fi
-##################################################################
-# TODO, status checks and tests
-install_rancher
+# install_certmanager
+# if [ $? -ne 0 ]; then
+#     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
+#     exit 1
+# fi
+# ##################################################################
+# # TODO, status checks and tests
+# install_rancher
 
-install_longhorn_prerequisites
-install_longhorn
+# install_longhorn_prerequisites
+# install_longhorn
 
-install_vault
+# install_vault
 
 log "deploy.sh" "INFO" "deployment finished"
 
