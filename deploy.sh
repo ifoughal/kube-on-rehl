@@ -48,7 +48,7 @@ CONTROLPLANE_SUBNET=$(echo $CONTROLPLANE_ADDRESS | awk -F. '{print $1"."$2"."$3"
 # set -e  # Enable immediate exit on error
 # set -o pipefail  # Fail if any piped command fails
 
-
+STRICT_HOSTKEYS=0
 RESET_CLUSTER_ARG=0
 ################################################################################################################################################################
 # Parse command-line arguments manually (including --dry-run)
@@ -68,6 +68,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -r|--reset)
             RESET_CLUSTER_ARG=1
+            shift
+            ;;
+        --strist-hostkeys)
+            STRICT_HOSTKEYS=1
             shift
             ;;
         -v)
@@ -158,6 +162,7 @@ log -f "deploy.sh" "Finished loading inventory file: $INVENTORY"
 debug_log=$(alias | grep -E "^alias debug_log=" | head -n 1)
 ##################################################################
 
+
 deploy_hostsfile () {
     ##################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
@@ -171,7 +176,7 @@ deploy_hostsfile () {
     log -f ${CURRENT_FUNC} "installing required packages to deploy the cluster"
     eval "sudo dnf update -y ${VERBOSE}"
     eval "sudo dnf upgrade -y  ${VERBOSE}"
-    eval "sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools ${VERBOSE}"
+    eval "sudo dnf install -y sshpass python3-pip yum-utils bash-completion git wget bind-utils net-tools ${VERBOSE}"
     eval "sudo pip install yq  >/dev/null 2>&1"
     log -f ${CURRENT_FUNC} "Finished installing required packages to deploy the cluster"
    ##################################################################
@@ -188,7 +193,9 @@ deploy_hostsfile () {
 
     hosts_updated=false
     ##################################################################
-    # while read -r node; do
+    local CONFIG_FILE="$HOME/.ssh/config"
+    local TARGET_CONFIG_FILE="\$HOME/.ssh/config"
+    local TMP_CONFIG_FILE="${CONFIG_FILE}.tmp"
     while read -r node; do
         ##################################################################
         local hostname=$(echo "$node" | jq -r '.hostname')
@@ -196,9 +203,6 @@ deploy_hostsfile () {
         local role=$(echo "$node" | jq -r '.role')
         ##################################################################
         # TODO generate ssh config file for each node
-        CONFIG_FILE="$HOME/.ssh/config"
-        TMP_CONFIG_FILE="${CONFIG_FILE}.tmp"
-
         # Ensure config file exists
         touch "$CONFIG_FILE"
         # Define the block to insert/update
@@ -228,13 +232,13 @@ EOF
             capture { block=block $0 ORS }
             END { print block }
         ' "$CONFIG_FILE")
-        ##################################################################
+        #####################################################################################
         # Normalize SSH_BLOCK
         local normalized_ssh_block=$(echo "$SSH_BLOCK" | sed '/^\s*$/d' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
         # Normalize current_block
         local normalized_current_block=$(echo "$current_block" | sed '/^\s*$/d' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        ##################################################################
+        #####################################################################################
         if [[ -z "$current_block" ]]; then
             # New host — mark as update needed
             hosts_updated=true
@@ -247,7 +251,7 @@ EOF
 
             log -f $CURRENT_FUNC "Host: $hostname already exists but differs, updating..."
         fi
-        ##################################################################
+        #####################################################################################
         # If the host exists, replace it
         if grep -q "Host $hostname" "$CONFIG_FILE"; then
             # Use awk to remove the old block
@@ -270,7 +274,7 @@ EOF
             # Append new block
             printf "%s" "$SSH_BLOCK" >> "$CONFIG_FILE"
         fi
-        ##################################################################
+        #####################################################################################
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     if [ "$hosts_updated" == true ]; then
         log -f ${CURRENT_FUNC} "SSH config file updated successfully. Relaunch terminal to apply changes."
@@ -278,13 +282,68 @@ EOF
     else
         log -f ${CURRENT_FUNC} "No changes made to SSH config file."
     fi
-    ##################################################################
+
+    #####################################################################################
     while read -r node; do
-       ##################################################################
+        #####################################################################################
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
+        local port=$(echo "$node" | jq -r '.port // 22')
         local role=$(echo "$node" | jq -r '.role')
-        ##################################################################
+        local user=$(echo "$node" | jq -r '.user')
+        local password=$(echo "$node" | jq -r '.password')
+        #####################################################################################
+        # export keys to nodes:
+        if [ $STRICT_HOSTKEYS -eq 0 ]; then
+            log -f ${CURRENT_FUNC} "Adding SSH fingerprint of $role node ${hostname} to known_hosts file..."
+            if ! ssh-keyscan -H "$hostname" >> ~/.ssh/known_hosts 2>/dev/null; then
+                log -f $CURRENT_FUNC "ERROR" "Failed to add SSH fingerprint for $hostname."
+                error_raised=1
+                continue
+            fi
+            if ! ssh-keyscan -p $port $ip >> ~/.ssh/known_hosts 2>/dev/null; then
+                log -f $CURRENT_FUNC "ERROR" "Failed to add SSH fingerprint for $hostname."
+                error_raised=1
+                continue
+            fi
+        fi
+        #####################################################################################
+        log -f ${CURRENT_FUNC} "Exporting ssh-key to $role node ${hostname}..."
+        if ! sshpass -p "$password" ssh-copy-id -f -p "$port" "${user}@${ip}" >/dev/null 2>&1; then
+            log -f $CURRENT_FUNC "ERROR" "Failed to copy ssh id for $hostname."
+            error_raised=1
+            continue
+        fi
+        if ! sshpass -p "$password" ssh-copy-id -f "$hostname" >/dev/null 2>&1; then
+            log -f $CURRENT_FUNC "ERROR" "Failed to copy ssh id for $hostname."
+            error_raised=1
+            continue
+        fi
+        log -f ${CURRENT_FUNC} "Finished exporting ssh-key to $role node ${hostname}..."
+        #####################################################################################
+        log -f ${CURRENT_FUNC} "sending SSH config file to target $role node ${hostname}"
+        # scp -q $CONFIG_FILE ${hostname}:/tmp
+        output=$(scp -q "$CONFIG_FILE" "${hostname}:/tmp" 2>&1)
+        if [ $? -ne 0 ]; then
+            echo output: $output
+            error_raised=1
+            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while sending SSH config file to node ${hostname}..."
+            exit 1
+            continue  # continue to next node and skip this one
+        fi
+        # Check if the output contains the SSH key scan prompt
+        if echo "$output" | grep -q "The authenticity of host"; then
+            echo "Error: SSH key scan prompt detected."
+            return 1
+        fi
+        #####################################################################################
+        log -f ${CURRENT_FUNC} "Applying new SSH config for ${role} node ${hostname}"
+        ssh -q ${hostname} <<< """
+            sudo cp /tmp/config ${TARGET_CONFIG_FILE}
+            sudo chown \$(id -u):\$(id -g) ${TARGET_CONFIG_FILE}
+        """
+        log -f ${CURRENT_FUNC} "Finished updating SSH config file for ${role} node ${hostname}"
+        #####################################################################################
         # Append the entry to the file (e.g., /etc/hosts)
         # Normalize spaces in the input line (collapse multiple spaces/tabs into one)
         local line="$ip         $hostname"
@@ -325,7 +384,7 @@ EOF
             sudo pip install yq >/dev/null 2>&1
         """
         log -f ${CURRENT_FUNC} "Finished installing tools node: ${hostname}"
-       ##################################################################
+        ##################################################################
         log -f ${CURRENT_FUNC} "sending hosts file to target $role node: ${hostname}"
         scp -q $HOSTSFILE_PATH ${hostname}:/tmp
         if [ $? -ne 0 ]; then
@@ -1745,19 +1804,23 @@ install_rancher () {
 
 }
 
-
-#################################################################
-# if [ $RESET_CLUSTER_ARG -eq 1 ]; then
-#     reset_cluster
-# fi
 #################################################################
 if [ "$PREREQUISITES" = true ]; then
-    #################################################################
-    # deploy_hostsfile
-    # if [ $? -ne 0 ]; then
-    #     log -f "main" "ERROR" "An error occured while updating the hosts files."
-    #     exit 1
-    # fi
+    deploy_hostsfile
+    if [ $? -ne 0 ]; then
+        log -f "main" "ERROR" "An error occured while updating the hosts files."
+        exit 1
+    fi
+fi
+
+echo end of test
+exit 1
+#################################################################
+if [ $RESET_CLUSTER_ARG -eq 1 ]; then
+    reset_cluster
+fi
+#################################################################
+if [ "$PREREQUISITES" = true ]; then
     #################################################################
     prerequisites_requirements
     if [ $? -ne 0 ]; then
