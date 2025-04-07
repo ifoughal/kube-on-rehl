@@ -393,11 +393,11 @@ EOF
             log -f ${CURRENT_FUNC} "ERROR" "Error occurred while sending hosts file to node ${hostname}..."
             continue  # continue to next node and skip this one
         fi
-        log -f ${CURRENT_FUNC} "Applying changes for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Applying changes for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             sudo cp /tmp/hosts ${HOSTSFILE_PATH}
         """
-        log -f ${CURRENT_FUNC} "Finished modifying hosts file for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Finished modifying hosts file for ${role} node ${hostname}"
        ##################################################################
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     if [ $error_raised -eq 0 ]; then
@@ -435,14 +435,14 @@ reset_cluster () {
         """
         log -f ${CURRENT_FUNC} "Finished resetting k8s ${role} node node: ${hostname}"
        ##################################################################
-        log -f ${CURRENT_FUNC} "Reseting volumes for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Reseting volumes for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             sudo rm -rf "${EXTRAVOLUMES_ROOT}"/*
 
             sudo mkdir -p "${EXTRAVOLUMES_ROOT}"/cilium/hubble-relay
             sudo mkdir -p "${EXTRAVOLUMES_ROOT}"/cilium/hubble-relay
         """
-        log -f ${CURRENT_FUNC} "finished reseting host persistent volumes mounts for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "finished reseting host persistent volumes mounts for ${role} node ${hostname}"
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
    ##################################################################
     log -f ${CURRENT_FUNC} "Finished reseting cluster"
@@ -469,15 +469,15 @@ prerequisites_requirements() {
             continue
         fi
         #####################################################################################
-        log -f ${CURRENT_FUNC} "Deploying logger function for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Deploying logger function for ${role} node ${hostname}"
         scp -q ./log $hostname:/tmp/
         ssh -q $hostname <<< """
             sudo mv /tmp/log /usr/local/bin/log
             sudo chmod +x /usr/local/bin/log
         """
-        log -f ${CURRENT_FUNC} "Finished deploying logger function for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Finished deploying logger function for ${role} node ${hostname}"
         #####################################################################################
-        log -f ${CURRENT_FUNC} "Adjusting NTP for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Adjusting NTP for ${role} node ${hostname}"
         ssh -q $hostname <<< """
             sudo timedatectl set-ntp true > /dev/null 2>&1
             sudo timedatectl set-timezone $TIMEZONE > /dev/null 2>&1
@@ -494,25 +494,25 @@ prerequisites_requirements() {
             log -f ${CURRENT_FUNC} "ERROR" "Error occurred while checking NTP sync for node ${hostname}..."
             continue  # continue to next node and skip this one
         else
-            log -f ${CURRENT_FUNC} "NTP sync check passed for ${role} node: ${hostname}"
+            log -f ${CURRENT_FUNC} "NTP sync check passed for ${role} node ${hostname}"
         fi
-        log -f ${CURRENT_FUNC} "Finished adjusting NTP for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Finished adjusting NTP for ${role} node ${hostname}"
         #####################################################################################
-        log -f ${CURRENT_FUNC} "Configuring repos for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Configuring repos for ${role} node ${hostname}"
         configure_repos $hostname "almalinux-baseos.repo"
         if [ $? -ne 0 ]; then
             error_raised=1
             log -f ${CURRENT_FUNC} "ERROR" "Error occurred while configuring repos for node ${hostname}..."
             continue  # continue to next node and skip this one
         else
-            log -f ${CURRENT_FUNC} "repos configured successfully for ${role} node: ${hostname}"
+            log -f ${CURRENT_FUNC} "repos configured successfully for ${role} node ${hostname}"
         fi
         #####################################################################################
-        log -f ${CURRENT_FUNC} "Starting dnf optimisations for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Starting dnf optimisations for ${role} node ${hostname}"
         optimize_dnf $hostname "${VERBOSE}"
-        log -f ${CURRENT_FUNC} "Finished dnf optimisations for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Finished dnf optimisations for ${role} node ${hostname}"
         #####################################################################################
-        log -f ${CURRENT_FUNC} "Started gid and uid visudo configuration for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Started gid and uid visudo configuration for ${role} node ${hostname}"
 
         local log_prefix=$(date +"\033[0;32m%Y-%m-%d %H:%M:%S,%3N ")
         ssh -q ${hostname} <<< """
@@ -525,9 +525,9 @@ prerequisites_requirements() {
                 fi
             '''
         """
-        log -f ${CURRENT_FUNC} "Finished gid and uid visudo configuration for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Finished gid and uid visudo configuration for ${role} node ${hostname}"
         #####################################################################################
-        log -f ${CURRENT_FUNC} "Check if the groups exists with the specified GIDs for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Check if the groups exists with the specified GIDs for ${role} node ${hostname}"
         local log_prefix=$(date +"\033[0;32m%Y-%m-%d %H:%M:%S,%3N")
         ssh -q ${hostname} <<< """
             if getent group $SUDO_GROUP | grep -q "${SUDO_GROUP}:"; then
@@ -537,9 +537,9 @@ prerequisites_requirements() {
                 echo "$SUDO_PASSWORD" | sudo -S groupadd ${SUDO_GROUP} 1> /dev/null
             fi
         """
-        log -f ${CURRENT_FUNC} "Finished checking the sudoer groups with the specified GIDs for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Finished checking the sudoer groups with the specified GIDs for ${role} node ${hostname}"
         #####################################################################################
-        log -f ${CURRENT_FUNC} "Check if the user '${SUDO_USERNAME}' exists for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Check if the user '${SUDO_USERNAME}' exists for ${role} node ${hostname}"
         local log_prefix=$(date +"\033[0;32m%Y-%m-%d %H:%M:%S,%3N")
         ssh -q ${hostname} <<< """
             if id "$SUDO_USERNAME" &>/dev/null; then
@@ -556,10 +556,10 @@ prerequisites_requirements() {
             log -f ${CURRENT_FUNC} "ERROR" "Error occurred while configuring user on node ${hostname}..."
             continue  # continue to next node and skip this one
         fi
-        log -f ${CURRENT_FUNC} "Finished check if the user '${SUDO_USERNAME}' exists for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Finished check if the user '${SUDO_USERNAME}' exists for ${role} node ${hostname}"
         #####################################################################################
         if [ ! -z $SUDO_NEW_PASSWORD ]; then
-            log -f ${CURRENT_FUNC} "setting password for user '${SUDO_USERNAME}' for ${role} node: ${hostname}"
+            log -f ${CURRENT_FUNC} "setting password for user '${SUDO_USERNAME}' for ${role} node ${hostname}"
             ssh -q ${hostname} << EOF
 echo "$SUDO_PASSWORD" | sudo -S bash -c "echo $SUDO_USERNAME:$SUDO_NEW_PASSWORD | chpasswd"
 EOF
@@ -569,10 +569,10 @@ EOF
                 log -f ${CURRENT_FUNC} "ERROR" "Error occurred while setting new sudo password for node ${hostname}."
                 continue  # continue to next node and skip this one
             fi
-            log -f ${CURRENT_FUNC} "Finished setting password for user '${SUDO_USERNAME}' for ${role} node: ${hostname}"
+            log -f ${CURRENT_FUNC} "Finished setting password for user '${SUDO_USERNAME}' for ${role} node ${hostname}"
         fi
         #####################################################################################
-        log -f ${CURRENT_FUNC}"Started checking if the kernel is recent enough for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC}"Started checking if the kernel is recent enough for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             log -f kernel-version \"checking if the kernel is recent enough...\" ${VERBOSE}
             kernel_version=\$(uname -r)
@@ -582,7 +582,7 @@ EOF
             if [[ \$(printf '%s\n' \"$recommended_rehl_version\" \"\$kernel_version\" | sort -V | head -n1) == \"$recommended_rehl_version\" ]]; then
                 log -f kernel-version \"Kernel version is sufficient.\" ${VERBOSE}
             else
-                log -f kernel-version \"ERROR\" \"${log_prefix_error} Kernel version is below the recommended version $recommended_rehl_version for ${role} node: ${hostname}\"
+                log -f kernel-version \"ERROR\" \"${log_prefix_error} Kernel version is below the recommended version $recommended_rehl_version for ${role} node ${hostname}\"
                 exit 1
             fi
         """
@@ -592,9 +592,9 @@ EOF
             log -f ${CURRENT_FUNC} "ERROR" "Kernel mismatch for ${role} node ${hostname}."
             continue  # continue to next node and skip this one
         fi
-        log -f ${CURRENT_FUNC} "Finished checking if the kernel is recent enough for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Finished checking if the kernel is recent enough for ${role} node ${hostname}"
         #####################################################################################
-        log -f ${CURRENT_FUNC} "Checking eBPF support for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Checking eBPF support for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             # Check if bpftool is installed
             if ! command -v bpftool &> /dev/null; then
@@ -622,12 +622,12 @@ EOF
         """
         if [ $? -ne 0 ]; then
             error_raised=1
-            log -f ${CURRENT_FUNC} "ERROR" "Error occurred checking eBPF support for ${role} node: ${hostname}"
+            log -f ${CURRENT_FUNC} "ERROR" "Error occurred checking eBPF support for ${role} node ${hostname}"
             continue  # continue to next node and skip this one
         fi
-        log -f ${CURRENT_FUNC} "Finished checking eBPF support for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Finished checking eBPF support for ${role} node ${hostname}"
         #####################################################################################
-        log -f ${CURRENT_FUNC} "Checking if bpf is mounted for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Checking if bpf is mounted for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             mount_output=\$(mount | grep /sys/fs/bpf)
             log -f ${CURRENT_FUNC} \"mount_output: \$mount_output\"
@@ -641,16 +641,16 @@ EOF
         """
         if [ $? -ne 0 ]; then
             error_raised=1
-            log -f ${CURRENT_FUNC} "ERROR" "Error occurred checking eBPF mount for ${role} node: ${hostname}"
+            log -f ${CURRENT_FUNC} "ERROR" "Error occurred checking eBPF mount for ${role} node ${hostname}"
             continue # continue to next node...
         fi
-        log -f ${CURRENT_FUNC} "Finished checking if bpf is mounted for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Finished checking if bpf is mounted for ${role} node ${hostname}"
         ###################################################################################
-        log -f $CURRENT_FUNC "Started updating env variables for ${role} node: ${hostname}"
+        log -f $CURRENT_FUNC "Started updating env variables for ${role} node ${hostname}"
         update_path ${hostname}
-        log -f $CURRENT_FUNC "Finished updating env variables for ${role} node: ${hostname}"
+        log -f $CURRENT_FUNC "Finished updating env variables for ${role} node ${hostname}"
         ################################################################
-        log -f ${CURRENT_FUNC} "Started disabling swap for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Started disabling swap for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             sudo swapoff -a
             sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
@@ -662,9 +662,9 @@ EOF
             log -f ${CURRENT_FUNC} "ERROR" "Error occurred while disabling swap node ${hostname}..."
             continue # continue to next node...
         fi
-        log -f ${CURRENT_FUNC} "Finished Disabling swap for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Finished Disabling swap for ${role} node ${hostname}"
         ################################################################
-        log -f ${CURRENT_FUNC} "Disable SELinux temporarily and modify config for persistence for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Disable SELinux temporarily and modify config for persistence for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             if sudo setenforce 0 2>/dev/null; then
                 log -f \"${CURRENT_FUNC}\" 'SELinux set to permissive mode temporarily.' ${VERBOSE}
@@ -690,15 +690,15 @@ EOF
         # Check if the SSH command failed
         if [ $? -ne 0 ]; then
             error_raised=1
-            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while configuring SELinux for for ${role} node: ${hostname}"
+            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while configuring SELinux for for ${role} node ${hostname}"
             continue # continue to next node...
         fi
-        log -f ${CURRENT_FUNC} "Finished disabling SELinux temporarily and modify config for persistence for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Finished disabling SELinux temporarily and modify config for persistence for ${role} node ${hostname}"
         ################################################################*
 #         # TODO
 #         # update_firewall $hostname
         ############################################################################
-        log -f ${CURRENT_FUNC} "Configuring bridge network for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Configuring bridge network for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             sudo echo -e 'overlay\nbr_netfilter' | sudo tee /etc/modules-load.d/containerd.conf > /dev/null
             sudo modprobe overlay
@@ -724,17 +724,17 @@ EOF
             done
             sudo sysctl --system ${VERBOSE}
         """
-        log -f ${CURRENT_FUNC} "Finished configuring bridge network for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Finished configuring bridge network for ${role} node ${hostname}"
         ############################################################################
-        log -f ${CURRENT_FUNC} "Installing containerD for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Installing containerD for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             sudo dnf install -y yum-utils ${VERBOSE}
             sudo dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo  ${VERBOSE}
             sudo dnf install containerd.io -y ${VERBOSE}
         """
-        log -f ${CURRENT_FUNC} "Finished installing containerD for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Finished installing containerD for ${role} node ${hostname}"
         ############################################################################
-        log -f ${CURRENT_FUNC} "Enabling containerD NRI with systemD and cgroups for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Enabling containerD NRI with systemD and cgroups for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             CONFIG_FILE='/etc/containerd/config.toml'
 
@@ -782,10 +782,10 @@ EOF
         """
         if [ $? -ne 0 ]; then
             error_raised=1
-            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while enabling containerD NRI with systemD and cgroups for ${role} node: ${hostname}"
+            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while enabling containerD NRI with systemD and cgroups for ${role} node ${hostname}"
             continue  # continue to next node and skip this one
         else
-            log -f ${CURRENT_FUNC} "ContainerD NRI with systemD and cgroups enabled successfully for ${role} node: ${hostname}"
+            log -f ${CURRENT_FUNC} "ContainerD NRI with systemD and cgroups enabled successfully for ${role} node ${hostname}"
         fi
         #############################################################################
         log -f ${CURRENT_FUNC} "Installing GO on node: $hostname"
@@ -797,14 +797,14 @@ EOF
         add_bashcompletion $hostname helm
         log -f ${CURRENT_FUNC} "Finished installing Helm on node: $hostname"
         #############################################################################
-        log -f ${CURRENT_FUNC} "Configuring containerd for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Configuring containerd for ${role} node ${hostname}"
         configure_containerD $hostname $PAUSE_VERSION $SUDO_GROUP "$HTTP_PROXY" "$HTTPS_PROXY" "$NO_PROXY"
         if [ $? -ne 0 ]; then
             error_raised=1
-            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while configuring containerd for ${role} node: ${hostname}"
+            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while configuring containerd for ${role} node ${hostname}"
             continue  # continue to next node and skip this one
         else
-            log -f ${CURRENT_FUNC} "Containerd configured successfully for ${role} node: ${hostname}"
+            log -f ${CURRENT_FUNC} "Containerd configured successfully for ${role} node ${hostname}"
         fi
         #############################################################################
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
@@ -868,13 +868,13 @@ exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
             sudo dnf update -y ${VERBOSE}
         "
         ##################################################################
-        log -f ${CURRENT_FUNC} "Removing prior installed versions for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Removing prior installed versions for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             sudo dnf remove -y kubelet kubeadm kubectl --disableexcludes=kubernetes ${VERBOSE}
             sudo rm -rf /etc/kubernetes
         """
         ##################################################################
-        log -f ${CURRENT_FUNC} "installing k8s tools for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "installing k8s tools for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             sudo dnf install -y kubelet-${K8S_MINOR_VERSION} kubeadm-${K8S_MINOR_VERSION} kubectl-${K8S_MINOR_VERSION} --disableexcludes=kubernetes ${VERBOSE}
             sudo systemctl enable --now kubelet > /dev/null 2>&1
@@ -1132,7 +1132,7 @@ join_cluster () {
             sudo chown \$(id -u):\$(id -g) \$HOME/.kube/config
         """
 
-        log -f ${CURRENT_FUNC} "initiating cluster join for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "initiating cluster join for ${role} node ${hostname}"
         if [ $role == "worker" ]; then
             ssh -q ${hostname} <<< """
                 eval sudo ${JOIN_COMMAND_WORKER} >/dev/null 2>&1 || true
@@ -1142,7 +1142,7 @@ join_cluster () {
                 eval sudo ${JOIN_COMMAND_CONTROLPLANE} >/dev/null 2>&1 || true
             """
         fi
-        log -f ${CURRENT_FUNC} "Finished joining cluster for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Finished joining cluster for ${role} node ${hostname}"
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     ##################################################################
 
@@ -1447,246 +1447,291 @@ install_certmanager () {
 
 install_longhorn_prerequisites() {
     ##################################################################
-    log -f ${CURRENT_FUNC} "Ensuring that 'noexec' is unset for '/var' on cluster nodes."
-
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ##################################################################
+    local error_raised=0
     while read -r node; do
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
-local role=$(echo "$node" | jq -r '.role')
-
-        log -f ${CURRENT_FUNC} "Ensuring that 'noexec' is unset for '/var' on node: '${hostname}'"
-        ssh -q ${hostname} '
+        local role=$(echo "$node" | jq -r '.role')
+        ##################################################################
+        log -f ${CURRENT_FUNC} "Ensuring that 'noexec' is unset for '/var' for ${role} node '${hostname}'"
+        ssh -q "${hostname}" <<< "
+            set -euo pipefail
             # Backup the current /etc/fstab file
             sudo cp /etc/fstab /etc/fstab.bak
 
             # Remove 'noexec' from the mount options for /var only
-            sudo sed -i '\''s|\(^/dev/[^[:space:]]\+\s\+/var\s\+[^[:space:]]\+\s\+[^[:space:]]*\),noexec|\1|'\'' /etc/fstab
+            sudo sed -i \"s|\\(^/dev/[^[:space:]]\\+\\s\\+/var\\s\\+[^[:space:]]\\+\\s\\+[^[:space:]]*\\),noexec|\\1|\" /etc/fstab
 
             # Remount the /var filesystem to apply changes
             sudo mount -o remount /var
-        '
-        log -f ${CURRENT_FUNC} "Finished Ensuring that 'noexec' is unset for '/var' on node: '${hostname}'"
-    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
-    log -f ${CURRENT_FUNC} "Finished ensuring that 'noexec' is unset for '/var'  on cluster nodes."
-    ##################################################################
-    log -f ${CURRENT_FUNC} "installing required utilities for longhorn"
-    while read -r node; do
-        local hostname=$(echo "$node" | jq -r '.hostname')
-        local ip=$(echo "$node" | jq -r '.ip')
-local role=$(echo "$node" | jq -r '.role')
-
-        log -f ${CURRENT_FUNC} "installing longhorn prerequisites for ${role} node: ${hostname}"
+        "
+        if [ ! $? -eq 0 ]; then
+            log -f ${CURRENT_FUNC} "ERROR" "Failed to ensure that 'noexec' is unset for '/var' for ${role} node ${hostname}"
+            error_raised=1
+            continue
+        fi
+        log -f ${CURRENT_FUNC} "Finished Ensuring that 'noexec' is unset for '/var' for ${role} node ${hostname}"
+        ##################################################################
+        log -f ${CURRENT_FUNC} "Installing required utility packages for longhorn on ${role} node: ${hostname}"
         ssh -q ${hostname} <<< """
+            set -euo pipefail
             sudo dnf update -y ${VERBOSE}
             sudo dnf install curl jq nfs-utils cryptsetup \
                 device-mapper iscsi-initiator-utils -y ${VERBOSE}
         """
+        if [ ! $? -eq 0 ]; then
+            log -f ${CURRENT_FUNC} "ERROR" "Failed to install required utility packages for longhorn on ${role} node ${hostname}"
+            error_raised=1
+            continue
+        fi
+        log -f ${CURRENT_FUNC} "Finished installing required utility packages for longhorn on ${role} node: ${hostname}"
+        ##################################################################
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
-    log -f ${CURRENT_FUNC} "Finished installing required utilities for longhorn"
     ##################################################################
-    log -f ${CURRENT_FUNC} "Creating namespace: ${LONGHORN_NS} for longhorn"
-    # kubectl create ns $LONGHORN_NS >/dev/null 2>&1 || true
-    helm_chart_prerequisites "longhorn" " https://charts.longhorn.io" "$LONGHORN_NS" "true" "true"
-
-
-
-    echo end of test
-    exit 1
+    if [ $error_raised -eq 1 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to ensure prerequisites for one or multiple nodes..."
+        return 1
+    fi
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Started longhorn helm chart prerequisites"
+    helm_chart_prerequisites "$CONTROL_PLANE_HOST" "longhorn" " https://charts.longhorn.io" "$LONGHORN_NS" "true" "true"
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to install longhorn helm chart prerequisites"
+        return 1
+    fi
+    log -f ${CURRENT_FUNC} "Finished longhorn helm chart prerequisites"
     #################################################################
-    log -f ${CURRENT_FUNC} "install NFS/iSCSI on the cluster"
+    log -f ${CURRENT_FUNC} "Started NFS/iSCSI installation on the cluster"
     # REF: https://github.com/longhorn/longhorn/tree/master/deploy/prerequisite
     #
     ERROR_RAISED=0
     for service in "nfs" "iscsi"; do
         log -f ${CURRENT_FUNC} "Started installation of ${service} on all nodes"
-        kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/${LONGHORN_VERSION}/deploy/prerequisite/longhorn-${service}-installation.yaml >/dev/null 2>&1 || true
+        ssh -q ${CONTROL_PLANE_HOST} <<< """
+            set -euo pipefail
+            ########################################################################
+            kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/${LONGHORN_VERSION}/deploy/prerequisite/longhorn-${service}-installation.yaml -n $LONGHORN_NS >/dev/null 2>&1 || true
+            ########################################################################
+            upper_service=\$(echo ${service} | awk '{print toupper(\$0)}')
+            TIMEOUT=180  # 3 minutes in seconds
+            START_TIME=\$(date +%s)
+            while true; do
+                # Wait for the pods to be in Running state
+                log -f ${CURRENT_FUNC} \"Waiting for Longhorn '\${upper_service}' installation pods to be in Running state...\"
+                sleep 30
+                log -f ${CURRENT_FUNC} 'Finished sleeping...'
+                log -f ${CURRENT_FUNC} \"Getting pods from namespace: '${LONGHORN_NS}'\"
+                PODS=\$(kubectl -n $LONGHORN_NS get pod 2>/dev/null || true)
+                log -f ${CURRENT_FUNC} \"Finished getting pods from namespace: '${LONGHORN_NS}'\"
 
-        upper_service=$(echo ${service} | awk '{print toupper($0)}')
-        TIMEOUT=180  # 3 minutes in seconds
-        START_TIME=$(date +%s)
-        while true; do
-            # Wait for the pods to be in Running state
-            log -f ${CURRENT_FUNC} "Waiting for Longhorn ${upper_service} installation pods to be in Running state..."
-            sleep 30
-            log -f ${CURRENT_FUNC} "Finished sleeping..."
-            log -f ${CURRENT_FUNC} "Getting pods from namespace: '${LONGHORN_NS}'"
-            PODS=$(kubectl -n $LONGHORN_NS get pod 2>/dev/null || true)
-            log -f ${CURRENT_FUNC} "Finished getting pods from namespace: '${LONGHORN_NS}'"
-            # Check if PODS is empty
-            if [ -z "$PODS" ]; then
-                log -f ${CURRENT_FUNC} "WARNING" "No matching pods found for: 'longhorn-${service}-installation'"
-                continue
-            fi
-            PODS=$(echo $PODS | grep longhorn-${service}-installation)
-            RUNNING_COUNT=$(echo "$PODS" | grep -c "Running")
-            TOTAL_COUNT=$(echo "$PODS" | wc -l)
+                if [ -z \"\$PODS\" ]; then
+                    log -f ${CURRENT_FUNC} 'WARNING' \"No matching pods found for: 'longhorn-${service}-installation'\"
+                    continue
+                fi
+                PODS=\$(echo \$PODS | grep longhorn-${service}-installation)
+                RUNNING_COUNT=\$(echo \"\$PODS\" | grep -c 'Running')
+                TOTAL_COUNT=\$(echo \"\$PODS\" | wc -l)
 
-            log -f ${CURRENT_FUNC} "Running Longhorn ${upper_service} install containers: ${RUNNING_COUNT}/${TOTAL_COUNT}"
-            if [[ $RUNNING_COUNT -eq $TOTAL_COUNT ]]; then
-                break
-            fi
+                log -f ${CURRENT_FUNC} \"Running Longhorn \${upper_service} install containers: \${RUNNING_COUNT}/\${TOTAL_COUNT}\"
+                if [[ \$RUNNING_COUNT -eq \$TOTAL_COUNT ]]; then
+                    break
+                fi
 
-            CURRENT_TIME=$(date +%s)
-            ELAPSED_TIME=$((CURRENT_TIME - START_TIME))
+                CURRENT_TIME=\$(date +%s)
+                ELAPSED_TIME=\$((CURRENT_TIME - START_TIME))
 
-            if [[ $ELAPSED_TIME -ge $TIMEOUT ]]; then
-                log -f ${CURRENT_FUNC} "ERROR" "Timeout reached. Exiting..."
-                exit 1
-            fi
-        done
+                if [[ \$ELAPSED_TIME -ge \$TIMEOUT ]]; then
+                    log -f ${CURRENT_FUNC} 'ERROR' \"Reached maximum retry count: \${max_retries} for service: ${service} Exiting...\"
+                    exit 1
+                fi
+            done
+            ########################################################################
+            current_retry=0
+            max_retries=3
+            while true; do
+                current_retry=\$((current_retry + 1))
+                log -f ${CURRENT_FUNC} \"Checking Longhorn '\${upper_service}' setup completion... try N: \${current_retry}\"
+                all_pods_up=1
+                # Get the logs of the service installation container
+                for POD_NAME in \$(kubectl -n $LONGHORN_NS get pod | grep longhorn-${service}-installation | awk '{print \$1}' || true); do
+                    LOGS=\$(kubectl -n $LONGHORN_NS logs \$POD_NAME -c ${service}-installation || true)
+                    if echo \"\$LOGS\" | grep -q \"${service} install successfully\"; then
+                        log -f ${CURRENT_FUNC} \"Longhorn \${upper_service} installation successful in pod \$POD_NAME\"
+                    else
+                        log -f ${CURRENT_FUNC} \"Longhorn \${upper_service} installation failed or incomplete in pod \$POD_NAME\"
+                        all_pods_up=0
+                    fi
+                done
 
-        current_retry=0
-        max_retries=3
-        while true; do
-            current_retry=$((current_retry + 1))
-            log -f ${CURRENT_FUNC} "Checking Longhorn ${upper_service} setup completion... try N: ${current_retry}"
-            all_pods_up=1
-            # Get the logs of the service installation container
-            for POD_NAME in $(kubectl -n $LONGHORN_NS get pod | grep longhorn-${service}-installation | awk '{print $1}' || true); do
-                LOGS=$(kubectl -n $LONGHORN_NS logs $POD_NAME -c ${service}-installation || true)
-                if echo "$LOGS" | grep -q "${service} install successfully"; then
-                    log -f ${CURRENT_FUNC} "Longhorn ${upper_service} installation successful in pod $POD_NAME"
-                else
-                    log -f ${CURRENT_FUNC} "Longhorn ${upper_service} installation failed or incomplete in pod $POD_NAME"
-                    all_pods_up=0
+                if [ \$all_pods_up -eq 1 ]; then
+                    break
+                fi
+                sleep 30
+                if [ \$current_retry -eq \$max_retries ]; then
+                    log -f ${CURRENT_FUNC} \"ERROR\" \"Reached maximum retry count: \${max_retries} for service: ${service} Exiting...\"
+                    exit 1
                 fi
             done
 
-            if [ $all_pods_up -eq 1 ]; then
-                break
-            fi
-            sleep 30
-            if [ $current_retry -eq $max_retries ]; then
-                log -f ${CURRENT_FUNC} "ERROR" "Reached maximum retry count: ${max_retries}. Exiting..."
-                ERROR_RAISED=1
-                break
-            fi
-        done
-        kubectl delete -f https://raw.githubusercontent.com/longhorn/longhorn/${LONGHORN_VERSION}/deploy/prerequisite/longhorn-${service}-installation.yaml  >/dev/null 2>&1 || true
+            kubectl delete -f https://raw.githubusercontent.com/longhorn/longhorn/${LONGHORN_VERSION}/deploy/prerequisite/longhorn-${service}-installation.yaml  >/dev/null 2>&1 || true
+        """
+        if [ $? -ne 0 ]; then
+            log -f ${CURRENT_FUNC} "ERROR" "Failed to install longhorn ${service} on the cluster."
+            ERROR_RAISED=1
+            continue
+        fi
     done
-
     if [ $ERROR_RAISED -eq 1 ]; then
-        exit 1
+        for service in "nfs" "iscsi"; do
+            ssh -q ${CONTROL_PLANE_HOST} <<< """
+                kubectl delete -f https://raw.githubusercontent.com/longhorn/longhorn/${LONGHORN_VERSION}/deploy/prerequisite/longhorn-${service}-installation.yaml  >/dev/null 2>&1 || true
+            """
+        done
+        return 1
     fi
     log -f ${CURRENT_FUNC} "Finished installing NFS/iSCSI on the cluster."
     ##################################################################
     while read -r node; do
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
-local role=$(echo "$node" | jq -r '.role')
+        local role=$(echo "$node" | jq -r '.role')
         ##################################################################
-        log -f ${CURRENT_FUNC} "Checking if the containerd service is active for ${role} node: ${hostname}"
-        ssh -q ${hostname} '
+        log -f ${CURRENT_FUNC} "Checking if the containerd service is active for ${role} node ${hostname}"
+        ssh -q ${hostname} <<< """
+            set -euo pipefail
             if systemctl is-active --quiet iscsid; then
-                echo "iscsi deployed successfully."
+                log -f ${CURRENT_FUNC} 'iscsi deployed successfully.'
             else
-                echo "iscsi service is not running..."
+                log -f ${CURRENT_FUNC} \"ERROR\" 'iscsi service is not running...'
                 exit 1
             fi
-        '
-        log -f ${CURRENT_FUNC} "Finished checking if the containerd service is active for ${role} node: ${hostname}"
+        """
+        if [ $? -ne 0 ]; then
+            log -f ${CURRENT_FUNC} "ERROR" "iscsi service is not running on node: ${hostname}"
+            return 1
+        fi
+        log -f ${CURRENT_FUNC} "Finished checking if the containerd service is active for ${role} node ${hostname}"
         ##################################################################
-        log -f ${CURRENT_FUNC} "Ensure kernel support for NFS v4.1/v4.2: for ${role} node: ${hostname}"
-        ssh -q ${hostname} '
+        log -f ${CURRENT_FUNC} "Ensure kernel support for NFS v4.1/v4.2: for ${role} node ${hostname}"
+        ssh -q "${hostname}" <<< """
+            error_raised=0
             for ver in 1 2; do
-                if $(cat /boot/config-`uname -r`| grep -q "CONFIG_NFS_V4_${ver}=y"); then
-                    echo NFS v4.${ver} is supported
+                if \$(cat /boot/config-\$(uname -r) | grep -q \"CONFIG_NFS_V4_\${ver}=y\"); then
+                    log -f $CURRENT_FUNC \"NFS v4.\${ver} is supported\"
                 else
-                    echo ERROR: NFS v4.${ver} is not supported
-                    exit $ver
+                    log -f $CURRENT_FUNC 'ERROR' \"NFS v4.\${ver} is not supported\"
+                    error_raised=1
                 fi
             done
-        '
+            exit \$error_raised
+        """
+        if [ $? -ne 0 ]; then
+            log -f ${CURRENT_FUNC} "ERROR" "NFS v4.1/v4.2 is not supported on node: ${hostname}"
+            return 1
+        fi
+        log -f ${CURRENT_FUNC} "Finished ensuring kernel support for NFS v4.1/v4.2: for ${role} node ${hostname}"
         ##################################################################
-        log -f ${CURRENT_FUNC} "enabling iscsi_tcp & dm_crypt for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "enabling iscsi_tcp & dm_crypt for ${role} node ${hostname}"
         # Check if the module is already in the file
-        ssh -q ${hostname} '
-            # Ensure the iscsi_tcp module loads automatically on boot
-            MODULE_FILE="/etc/modules"
-            MODULE_NAME="iscsi_tcp"
+        ssh -q ${hostname} <<< """
+            set -euo pipefail
 
-            if ! grep -q "^${MODULE_NAME}$" ${MODULE_FILE}; then
-                echo "${MODULE_NAME}" | sudo tee -a ${MODULE_FILE}
-                echo "Added ${MODULE_NAME} to ${MODULE_FILE}"
+            # Ensure the iscsi_tcp module loads automatically on boot
+            MODULE_FILE='/etc/modules'
+            MODULE_NAME='iscsi_tcp'
+
+            if ! grep -q \"^\${MODULE_NAME}\$\" \${MODULE_FILE}; then
+                echo \"\${MODULE_NAME}\" | sudo tee -a ${MODULE_FILE}
+                log -f ${CURRENT_FUNC} \"Added \${MODULE_NAME} to \${MODULE_FILE}\"
             else
-                echo "${MODULE_NAME} is already present in ${MODULE_FILE}"
+                log -f ${CURRENT_FUNC} \"\${MODULE_NAME} is already present in \${MODULE_FILE}\"
             fi
 
             # Load the iscsi_tcp module
             sudo modprobe iscsi_tcp
-            echo "Loaded ${MODULE_NAME} module"
+            log -f ${CURRENT_FUNC} \"Loaded \${MODULE_NAME} module\"
 
             # Enable dm_crypt
             sudo modprobe dm_crypt
-            echo "Loaded dm_crypt module"
-        '
-        log -f ${CURRENT_FUNC} "Finished enabling iscsi_tcp & dm_crypt for ${role} node: ${hostname}"
+            log -f ${CURRENT_FUNC} \"Loaded dm_crypt module\"
+        """
+        if [ $? -ne 0 ]; then
+            log -f ${CURRENT_FUNC} "ERROR" "Failed to enable iscsi_tcp & dm_crypt for ${role} node ${hostname}"
+            return 1
+        fi
+        log -f ${CURRENT_FUNC} "Finished enabling iscsi_tcp & dm_crypt for ${role} node ${hostname}"
         ##################################################################
-        log -f ${CURRENT_FUNC} "Started installing Longhorn-cli for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Started installing Longhorn-cli for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
-            # set -e  # Exit on error
-            # set -o pipefail  # Fail if any piped command fails
-            if command -v longhornctl &> /dev/null; then
-                echo "longhornctl not found. Installing..."
-                CLI_ARCH=amd64
-                if [ "\$\(uname -m\)" = "aarch64" ]; then CLI_ARCH=arm64; fi
-                cd /tmp
+            set -euo pipefail
 
-                # curl -sSfL -o longhornctl https://github.com/longhorn/cli/releases/download/\${LONGHORN_VERSION}/longhornctl-linux-\${CLI_ARCH}
+            if command -v longhornctl &> /dev/null; then
+                log -f ${CURRENT_FUNC} \"longhornctl not found. Installing on ${role} node ${hostname}\"
+                CLI_ARCH=amd64
+                if [ \"\$(uname -m)\" = 'aarch64' ]; then CLI_ARCH=arm64; fi
+                cd /tmp
 
                 url=https://github.com/longhorn/cli/releases/download/${LONGHORN_VERSION}/longhornctl-linux-\${CLI_ARCH}
 
                 # Check if the URL exists
                 if curl --output /dev/null --silent --head --fail \$url; then
-                    echo Downloading longhornctl from source
+                    log -f ${CURRENT_FUNC} \"Downloading longhornctl from source on ${role} node ${hostname}\"
                     curl -sSfL -o /tmp/longhornctl \${url}
 
-                    echo Moving longhornctl to /usr/local/bin
                     sudo mv /tmp/longhornctl /usr/local/bin/
 
-                    echo Making longhornctl executable
                     sudo chmod +x /usr/local/bin/longhornctl
 
-                    echo Creating symbolic link to /usr/bin
                     sudo ln -sf /usr/local/bin/longhornctl /usr/bin
-                    echo longhornctl installed successfully.
+                    log -f ${CURRENT_FUNC} \"longhornctl installed successfully on ${role} node ${hostname}\"
                 else
-                    echo failed to download longhornctl from url: \${url}
+                    log -f ${CURRENT_FUNC} \"ERROR\" \"longhornctl not found. Installing on ${role} node ${hostname}\"
                     exit 1
                 fi
             else
-                echo "longhornctl is already installed."
+                log -f ${CURRENT_FUNC} \"longhornctl is already installed.\"
             fi
         """
-        log -f ${CURRENT_FUNC} "Finished installing Longhorn-cli for ${role} node: ${hostname}"
-
+        if [ $? -ne 0 ]; then
+            log -f ${CURRENT_FUNC} "ERROR" "Failed to install Longhorn-cli for ${role} node ${hostname}"
+            return 1
+        fi
+        log -f ${CURRENT_FUNC} "Finished installing Longhorn-cli for ${role} node ${hostname}"
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     ##################################################################
     log -f ${CURRENT_FUNC} "Running the environment check script on the cluster..."
-    url=https://raw.githubusercontent.com/longhorn/longhorn/${LONGHORN_VERSION}/scripts/environment_check.sh
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        set -euo pipefail
 
-    if curl --output /dev/null --silent --head --fail $url; then
-        curl -sSfL -o /tmp/environment_check.sh ${url}
-        sudo chmod +x /tmp/environment_check.sh
+        url=https://raw.githubusercontent.com/longhorn/longhorn/${LONGHORN_VERSION}/scripts/environment_check.sh
 
-        OUTPUT=$(/tmp/environment_check.sh)
+        if curl --output /dev/null --silent --head --fail \$url; then
+            curl -sSfL -o /tmp/environment_check.sh \${url}
+            sudo chmod +x /tmp/environment_check.sh
 
-        # Print the output
-        log -f ${CURRENT_FUNC} "$OUTPUT"
-        # Check for errors in the output
-        if echo "$OUTPUT" | grep -q '\[ERROR\]'; then
-            log -f ${CURRENT_FUNC} "ERROR" "Errors found in the environment check:"
-            echo "$OUTPUT" | grep '\[ERROR\]'
-            exit
+            OUTPUT=\$(/tmp/environment_check.sh)
+
+            # Check for errors in the output
+            if echo \"\$OUTPUT\" | grep -q '\[ERROR\]'; then
+                log -f ${CURRENT_FUNC} 'ERROR' \"Errors found in the longhorn cluster environment check:\n\t\$OUTPUT\" | grep '\[ERROR\]'
+                exit 1
+            else
+                log -f ${CURRENT_FUNC} 'No errors found in the Longhorn cluster environment check.'
+            fi
         else
-            log -f ${CURRENT_FUNC} "No errors found in the environment check."
+            log -f ${CURRENT_FUNC} 'ERROR' \"failed to download environment_check from url: \${url}\"
+            exit 1
         fi
-    else
-        log -f ${CURRENT_FUNC} "ERROR" "failed to download environment_check from url: ${url}"
-        exit 1
+        log -f ${CURRENT_FUNC} 'Finished Running the environment check script on the cluster...'
+    """
+
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} 'ERROR' 'Failed to run the environment check script on the cluster'
+        return 1
     fi
-    log -f ${CURRENT_FUNC} "Finished Running the environment check script on the cluster..."
-    ##################################################################
+    log -f ${CURRENT_FUNC} "Finished running the environment check script on the cluster..."
     ##################################################################
     log -f ${CURRENT_FUNC} "Check the prerequisites and configurations for Longhorn:"
     log -f ${CURRENT_FUNC} "currently preflight doesnt support almalinux"
@@ -1694,59 +1739,74 @@ local role=$(echo "$node" | jq -r '.role')
     while read -r node; do
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
-local role=$(echo "$node" | jq -r '.role')
+        local role=$(echo "$node" | jq -r '.role')
 
-        local hostname=$(echo "$node" | jq -r '.hostname')
-        local ip=$(echo "$node" | jq -r '.ip')
-local role=$(echo "$node" | jq -r '.role')
         log -f ${CURRENT_FUNC} "sending camo script to target node: ${hostname}"
         scp -q ./longhorn/os-camo.sh ${hostname}:/tmp/
-        log -f ${CURRENT_FUNC} "Executing camofoulage for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Executing camofoulage for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             sudo chmod +x /tmp/os-camo.sh
             /tmp/os-camo.sh camo
         """
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     ##################################################################
-    OUTPUT=$(longhornctl check preflight 2>&1)
-    log -f ${CURRENT_FUNC} "Started checking the longhorn preflight pre installation"
-    kubectl delete -n default ds/longhorn-preflight-checker ds/longhorn-preflight-installer  >/dev/null 2>&1 || true
-    # Check for errors in the output
-    if echo "$OUTPUT" | grep -q 'level\=error'; then
-        log -f ${CURRENT_FUNC} "ERROR" "Errors found in the environment check:"
-        echo "$OUTPUT" | grep 'level\=error'
-        exit 1
-    else
-        log -f ${CURRENT_FUNC} "No errors found during the longhornctl preflight environment check."
+    log -f ${CURRENT_FUNC} 'Started checking the longhorn preflight pre installation'
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        export KUBERNETES_SERVICE_HOST=$CONTROL_PLANE_HOST
+        export KUBERNETES_SERVICE_PORT=$CONTROLPLANE_API_PORT
+        export KUBERNETES_MASTER=https://$CONTROL_PLANE_HOST:$CONTROLPLANE_API_PORT
+
+        OUTPUT=\$(longhornctl check preflight global-options --kube-config=\$HOME/.kube/config 2>&1)
+
+        kubectl delete -n default ds/longhorn-preflight-checker ds/longhorn-preflight-installer  >/dev/null 2>&1 || true
+
+        # Check for errors in the output
+        if echo \"\$OUTPUT\" | grep -q 'level\=error'; then
+            log -f ${CURRENT_FUNC} 'ERROR' \"Errors found in the environment check: \n\t\$OUTPUT\" | grep 'level\=error'
+            exit 1
+        else
+            log -f ${CURRENT_FUNC} 'No errors found during the longhornctl preflight environment check.'
+        fi
+    """
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to check the preflights of longhorn"
+        return 1
     fi
-    log -f ${CURRENT_FUNC} "Finished checking the preflight of longhorn"
+    log -f ${CURRENT_FUNC} "Finished checking the preflights of longhorn"
     ##################################################################
     log -f ${CURRENT_FUNC} "Installing the preflight of longhorn"
-    OUTPUT=$(longhornctl install preflight 2>&1)
-    kubectl delete -n default ds/longhorn-preflight-checker ds/longhorn-preflight-installer  >/dev/null 2>&1 || true
-    # Print the output
-    # Check for errors in the output
-    if echo "$OUTPUT" | grep -q 'level\=error'; then
-        log -f ${CURRENT_FUNC} "ERROR" "Errors found during the in longhornctl install preflight"
-        echo "$OUTPUT" | grep 'level\=error'
-        exit 1
-    else
-        log -f ${CURRENT_FUNC} "No errors found in the environment check."
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        OUTPUT=\$(longhornctl install preflight global-options --kube-config=\$HOME/.kube/config 2>&1)
+        kubectl delete -n default ds/longhorn-preflight-checker ds/longhorn-preflight-installer  >/dev/null 2>&1 || true
+        # Check for errors in the output
+        if echo \"\$OUTPUT\" | grep -q 'level\=error'; then
+            log -f ${CURRENT_FUNC} 'ERROR' \"Errors found during the in longhornctl install preflight \n\t\$OUTPUT\" | grep 'level\=error'
+            exit 1
+        else
+            log -f ${CURRENT_FUNC} 'No errors found in the environment check.'
+        fi
+    """
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to install the preflights of longhorn"
+        return 1
     fi
-    log -f ${CURRENT_FUNC} "Finished installing the preflight of longhorn"
+    log -f ${CURRENT_FUNC} "Finished installing the preflights of longhorn"
     ##################################################################
     # check the preflight again after install:
     log -f ${CURRENT_FUNC} "Started checking the longhorn preflight post installation"
-    OUTPUT=$(longhornctl check preflight 2>&1)
-    kubectl delete -n default ds/longhorn-preflight-checker ds/longhorn-preflight-installer >/dev/null 2>&1 || true
-    # Print the output
-    # Check for errors in the output
-    if echo "$OUTPUT" | grep -q 'level\=error'; then
-        log -f ${CURRENT_FUNC} "ERROR" "Errors found in the environment check:"
-        echo "$OUTPUT" | grep 'level\=error'
-        exit 1
-    else
-        log -f ${CURRENT_FUNC} "No errors found during the longhornctl preflight environment check."
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        OUTPUT=\$(longhornctl check preflight global-options --kube-config=\$HOME/.kube/config 2>&1)
+        kubectl delete -n default ds/longhorn-preflight-checker ds/longhorn-preflight-installer >/dev/null 2>&1 || true
+        if echo \"\$OUTPUT\" | grep -q 'level\=error'; then
+            log -f ${CURRENT_FUNC} 'ERROR' \"Errors found in the environment check: \n\t\$OUTPUT\" | grep 'level\=error'
+            exit 1
+        else
+            log -f ${CURRENT_FUNC} 'No errors found during the longhornctl preflight environment check.'
+        fi
+    """
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to check the longhorn preflight post installation"
+        return 1
     fi
     log -f ${CURRENT_FUNC} "Finished checking the longhorn preflight post installation"
     ##################################################################
@@ -1756,7 +1816,7 @@ local role=$(echo "$node" | jq -r '.role')
         local ip=$(echo "$node" | jq -r '.ip')
 local role=$(echo "$node" | jq -r '.role')
 
-        log -f ${CURRENT_FUNC} "Resetting camofoulage for ${role} node: ${hostname}"
+        log -f ${CURRENT_FUNC} "Resetting camofoulage for ${role} node ${hostname}"
         ssh -q ${hostname} /tmp/os-camo.sh revert
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     #################################################################
@@ -1992,28 +2052,25 @@ install_rancher () {
 #     log -f "main" "ERROR" "Failed to start cilium service."
 #     exit 1
 # fi
-###########################################################################################################
-###########################################################################################################
 ##################################################################
-if ! install_certmanager_prerequisites; then
-    log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
-    exit 1
-fi
-##################################################################
-if ! install_certmanager; then
-    log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
-    exit 1
-fi
-
-
-
-echo end of test
-exit 1
+# if ! install_certmanager_prerequisites; then
+#     log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
+#     exit 1
+# fi
+# ##################################################################
+# if ! install_certmanager; then
+#     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
+#     exit 1
+# fi
 ##################################################################
 # # TODO, status checks and tests
 # install_rancher
+##################################################################
+if ! install_longhorn_prerequisites; then
+    log -f "main" "ERROR" "Failed to install longhorn prerequisites"
+    exit 1
+fi
 
-# install_longhorn_prerequisites
 # install_longhorn
 
 # install_vault
