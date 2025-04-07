@@ -5,8 +5,9 @@ VAULT_LOGS=./logs/vault.log
 CILIUM_LOGS=./logs/cilium.log
 KUBEADMINIT_LOGS=./logs/kubeadm_init_errors.log
 
+################################################################################################################################################################
 mkdir -p ./logs
-
+################################################################################################################################################################
 sudo touch ${LONGHORN_LOGS}
 sudo chmod 666 ${LONGHORN_LOGS}
 
@@ -35,7 +36,10 @@ recommended_rehl_version="4.18"
 ################################################################################################################################################################
 # reading .env file
 . .env
-# source .env
+################################################################################################################################################################
+sudo timedatectl set-ntp true > /dev/null 2>&1
+sudo timedatectl set-timezone $TIMEZONE > /dev/null 2>&1
+sudo timedatectl status > /dev/null 2>&1
 ################################################################################################################################################################
 CONTROLPLANE_ADDRESS=$(eval ip -o -4 addr show $CONTROLPLANE_INGRESS_INTER | awk '{print $4}' | cut -d/ -f1)  # 192.168.66.129
 CONTROLPLANE_SUBNET=$(echo $CONTROLPLANE_ADDRESS | awk -F. '{print $1"."$2"."$3".0/24"}')
@@ -150,19 +154,22 @@ log -f "deploy.sh" "Finished loading inventory file: $INVENTORY"
 #   1xxx: cilium errors
 #       1001: cilium status errors
 #
-
+##################################################################
 debug_log=$(alias | grep -E "^alias debug_log=" | head -n 1)
-
+##################################################################
 
 deploy_hostsfile () {
     ##################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
     ##################################################################
+    hosts_updated=false
+    local error_raised=0
+    ##################################################################
     # Path to the YAML file
     # Extract the 'nodes' array from the YAML and process it with jq
     # yq '.nodes["control_plane_nodes"]' "$INVENTORY" | jq -r '.[] | "\(.ip) \(.hostname)"' | while read -r line; do
     log -f ${CURRENT_FUNC} "installing required packages to deploy the cluster"
-    eval "sudo dnf update -y  ${VERBOSE}"
+    eval "sudo dnf update -y ${VERBOSE}"
     eval "sudo dnf upgrade -y  ${VERBOSE}"
     eval "sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools ${VERBOSE}"
     eval "sudo pip install yq  >/dev/null 2>&1"
@@ -178,13 +185,106 @@ deploy_hostsfile () {
         log -f ${CURRENT_FUNC} "ERROR" "'jq' command not found. Please install jq to parse JSON files or run prerequisites..."
         exit 1
     fi
-   ##################################################################
-    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+
+    hosts_updated=false
+    ##################################################################
+    # while read -r node; do
+    while read -r node; do
+        ##################################################################
+        local hostname=$(echo "$node" | jq -r '.hostname')
+        local ip=$(echo "$node" | jq -r '.ip')
+        local role=$(echo "$node" | jq -r '.role')
+        ##################################################################
+        # TODO generate ssh config file for each node
+        CONFIG_FILE="$HOME/.ssh/config"
+        TMP_CONFIG_FILE="${CONFIG_FILE}.tmp"
+
+        # Ensure config file exists
+        touch "$CONFIG_FILE"
+        # Define the block to insert/update
+        SSH_BLOCK=$(cat <<EOF
+
+Host $hostname
+    HostName $ip
+    User $SUDO_USERNAME
+    IdentityFile ~/.ssh/id_rsa
+    PasswordAuthentication no
+    Port 22
+EOF
+        )
+        ##################################################################
+        # Extract current block (if exists)
+        current_block=$(awk -v host="Host $hostname" '
+            BEGIN { capture=0 }
+            $0 ~ "^Host " {
+                if ($0 == host) {
+                    capture=1
+                    block=$0 ORS
+                    next
+                } else {
+                    capture=0
+                }
+            }
+            capture { block=block $0 ORS }
+            END { print block }
+        ' "$CONFIG_FILE")
+        ##################################################################
+        # Normalize SSH_BLOCK
+        local normalized_ssh_block=$(echo "$SSH_BLOCK" | sed '/^\s*$/d' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+        # Normalize current_block
+        local normalized_current_block=$(echo "$current_block" | sed '/^\s*$/d' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        ##################################################################
+        if [[ -z "$current_block" ]]; then
+            # New host — mark as update needed
+            hosts_updated=true
+            log -f $CURRENT_FUNC "New host detected: $hostname"
+        elif [[ "$normalized_ssh_block" != "$normalized_current_block" ]]; then
+            # Host exists but differs — mark as update needed
+            hosts_updated=true
+            echo SSH_BLOCK: $SSH_BLOCK
+            echo current_block: $current_block
+
+            log -f $CURRENT_FUNC "Host: $hostname already exists but differs, updating..."
+        fi
+        ##################################################################
+        # If the host exists, replace it
+        if grep -q "Host $hostname" "$CONFIG_FILE"; then
+            # Use awk to remove the old block
+            awk -v host="Host $hostname" '
+                BEGIN { skip=0 }
+                $0 ~ "^Host " {
+                    if ($0 == host) {
+                        skip=1
+                    } else {
+                        skip=0
+                    }
+                }
+                skip == 0 { print }
+            ' "$CONFIG_FILE" > "$TMP_CONFIG_FILE"
+
+            # Append the updated block
+            printf "%s" "$SSH_BLOCK" >> "$TMP_CONFIG_FILE"
+            mv "$TMP_CONFIG_FILE" "$CONFIG_FILE"
+        else
+            # Append new block
+            printf "%s" "$SSH_BLOCK" >> "$CONFIG_FILE"
+        fi
+        ##################################################################
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
+    if [ "$hosts_updated" == true ]; then
+        log -f ${CURRENT_FUNC} "SSH config file updated successfully. Relaunch terminal to apply changes."
+        exit 0
+    else
+        log -f ${CURRENT_FUNC} "No changes made to SSH config file."
+    fi
+    ##################################################################
+    while read -r node; do
        ##################################################################
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
         local role=$(echo "$node" | jq -r '.role')
-       ##################################################################
+        ##################################################################
         # Append the entry to the file (e.g., /etc/hosts)
         # Normalize spaces in the input line (collapse multiple spaces/tabs into one)
         local line="$ip         $hostname"
@@ -226,16 +326,25 @@ deploy_hostsfile () {
         """
         log -f ${CURRENT_FUNC} "Finished installing tools node: ${hostname}"
        ##################################################################
-        log -f ${CURRENT_FUNC} "sending hosts file to target node: ${hostname}"
+        log -f ${CURRENT_FUNC} "sending hosts file to target $role node: ${hostname}"
         scp -q $HOSTSFILE_PATH ${hostname}:/tmp
-
+        if [ $? -ne 0 ]; then
+            error_raised=1
+            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while sending hosts file to node ${hostname}..."
+            continue  # continue to next node and skip this one
+        fi
         log -f ${CURRENT_FUNC} "Applying changes for ${role} node: ${hostname}"
         ssh -q ${hostname} <<< """
             sudo cp /tmp/hosts ${HOSTSFILE_PATH}
         """
         log -f ${CURRENT_FUNC} "Finished modifying hosts file for ${role} node: ${hostname}"
        ##################################################################
-    done
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
+    if [ $error_raised -eq 0 ]; then
+        log -f ${CURRENT_FUNC} "Finished deploying hosts file"
+    else
+        log -f ${CURRENT_FUNC} "ERROR" "Some errors occured during the hosts file deployment"
+    fi
 }
 
 
@@ -249,8 +358,8 @@ reset_cluster () {
     eval "sudo cilium uninstall > /dev/null 2>&1" || true
     sleep 15
     log -f ${CURRENT_FUNC} "Finished uninstalling Cilium from cluster..."
-   ##################################################################
-    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+    ##################################################################
+    while read -r node; do
        ##################################################################
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
@@ -259,11 +368,10 @@ reset_cluster () {
         log -f ${CURRENT_FUNC} "Started resetting k8s ${role} node node: ${hostname}"
         ssh -q ${hostname} <<< """
             sudo kubeadm reset -f > /dev/null 2>&1 || true
-            sudo rm -rf \
-                \$HOME/.kube/* \
-                /root/.kube/* \
-                /etc/cni/net.d/* \
-                /etc/kubernetes/* \
+            sudo rm -rf \$HOME/.kube/* \
+                        /root/.kube/* \
+                        /etc/cni/net.d/* \
+                        /etc/kubernetes/*
         """
         log -f ${CURRENT_FUNC} "Finished resetting k8s ${role} node node: ${hostname}"
        ##################################################################
@@ -275,7 +383,7 @@ reset_cluster () {
             sudo mkdir -p "${EXTRAVOLUMES_ROOT}"/cilium/hubble-relay
         """
         log -f ${CURRENT_FUNC} "finished reseting host persistent volumes mounts for ${role} node: ${hostname}"
-    done
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
    ##################################################################
     log -f ${CURRENT_FUNC} "Finished reseting cluster"
 }
@@ -291,11 +399,15 @@ prerequisites_requirements() {
     #########################################################################################
     log -f ${CURRENT_FUNC} "WARNING" "Will install cluster prerequisites, manual nodes reboot is required."
     #########################################################################################
-    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+    while read -r node; do
        #####################################################################################
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
         local role=$(echo "$node" | jq -r '.role')
+
+        if [ ! $hostname == "worker-node-2" ]; then
+            continue
+        fi
         #####################################################################################
         log -f ${CURRENT_FUNC} "Deploying logger function for ${role} node: ${hostname}"
         scp -q ./log $hostname:/tmp/
@@ -305,9 +417,36 @@ prerequisites_requirements() {
         """
         log -f ${CURRENT_FUNC} "Finished deploying logger function for ${role} node: ${hostname}"
         #####################################################################################
+        log -f ${CURRENT_FUNC} "Adjusting NTP for ${role} node: ${hostname}"
+        ssh -q $hostname <<< """
+            sudo timedatectl set-ntp true > /dev/null 2>&1
+            sudo timedatectl set-timezone $TIMEZONE > /dev/null 2>&1
+            sudo timedatectl status > /dev/null 2>&1
+
+            sudo dnf install -y chrony > /dev/null 2>&1
+            sudo systemctl enable --now chronyd > /dev/null 2>&1
+            sudo chronyc makestep > /dev/null 2>&1
+        """
+        #####################################################################################
+        check_ntp_sync $hostname
+        if [ $? -ne 0 ]; then
+            error_raised=1
+            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while checking NTP sync for node ${hostname}..."
+            continue  # continue to next node and skip this one
+        else
+            log -f ${CURRENT_FUNC} "NTP sync check passed for ${role} node: ${hostname}"
+        fi
+        log -f ${CURRENT_FUNC} "Finished adjusting NTP for ${role} node: ${hostname}"
+        #####################################################################################
         log -f ${CURRENT_FUNC} "Configuring repos for ${role} node: ${hostname}"
-        configure_repos $hostname
-        log -f ${CURRENT_FUNC} "Finished configuring repos for ${role} node: ${hostname}"
+        configure_repos $hostname "almalinux-baseos.repo"
+        if [ $? -ne 0 ]; then
+            error_raised=1
+            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while configuring repos for node ${hostname}..."
+            continue  # continue to next node and skip this one
+        else
+            log -f ${CURRENT_FUNC} "repos configured successfully for ${role} node: ${hostname}"
+        fi
         #####################################################################################
         log -f ${CURRENT_FUNC} "Starting dnf optimisations for ${role} node: ${hostname}"
         optimize_dnf $hostname "${VERBOSE}"
@@ -544,7 +683,7 @@ EOF
             containerd config default | sudo tee \$CONFIG_FILE >/dev/null
 
             log -f ${CURRENT_FUNC} 'Backing up the original config file' ${VERBOSE}
-            cp -f -n \$CONFIG_FILE \${CONFIG_FILE}.bak
+            sudo cp -f -n \$CONFIG_FILE \${CONFIG_FILE}.bak
 
             log -f ${CURRENT_FUNC} 'Configuring containerD for our cluster' ${VERBOSE}
             sudo sed -i '/\[plugins\\.\"io\\.containerd\\.nri\\.v1\\.nri\"\]/,/^\[/{
@@ -559,9 +698,10 @@ EOF
 
 
             sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' \$CONFIG_FILE
-            sudo sed -i 's|sandbox_image = \"registry.k8s.io/pause:3.8\"|sandbox_image = \"registry.k8s.io/pause:3.10\"|' \$CONFIG_FILE
+            # sudo sed -i 's|sandbox_image = \"registry.k8s.io/pause:\"|sandbox_image = \"registry.k8s.io/pause:$PAUSE_VERSION\"|' \$CONFIG_FILE
+            sudo sed -i 's|sandbox_image = \\\"registry.k8s.io/pause:[^\"]*\\\"|sandbox_image = \\\"registry.k8s.io/pause:$PAUSE_VERSION\\\"|' "\$CONFIG_FILE"
 
-            # sudo sed -i 's|root = \"/var/lib/containerd\"|root = \"/mnt/longhorn-1/var/lib/containerd\"|' $CONFIG_FILE
+            # sudo sed -i 's|root = \"/var/lib/containerd\"|root = \"/mnt/longhorn-1/var/lib/containerd\"|' \$CONFIG_FILE
 
             sudo mkdir -p /etc/nri/conf.d /opt/nri/plugins
             sudo chown -R root:root /etc/nri /opt/nri
@@ -584,8 +724,9 @@ EOF
             error_raised=1
             log -f ${CURRENT_FUNC} "ERROR" "Error occurred while enabling containerD NRI with systemD and cgroups for ${role} node: ${hostname}"
             continue  # continue to next node and skip this one
+        else
+            log -f ${CURRENT_FUNC} "ContainerD NRI with systemD and cgroups enabled successfully for ${role} node: ${hostname}"
         fi
-        log -f ${CURRENT_FUNC} "Finished containerD NRI with systemD and cgroups for ${role} node: ${hostname}"
         #############################################################################
         log -f ${CURRENT_FUNC} "Installing GO on node: $hostname"
         install_go $hostname $GO_VERSION $TINYGO_VERSION
@@ -597,15 +738,23 @@ EOF
         log -f ${CURRENT_FUNC} "Finished installing Helm on node: $hostname"
         #############################################################################
         log -f ${CURRENT_FUNC} "Configuring containerd for ${role} node: ${hostname}"
-        configure_containerD $hostname $HTTP_PROXY $HTTPS_PROXY $NO_PROXY $PAUSE_VERSION $SUDO_GROUP
-        log -f ${CURRENT_FUNC} "Finished configuration of containerd for ${role} node: ${hostname}"
+        configure_containerD $hostname $PAUSE_VERSION $SUDO_GROUP "$HTTP_PROXY" "$HTTPS_PROXY" "$NO_PROXY"
+        if [ $? -ne 0 ]; then
+            error_raised=1
+            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while configuring containerd for ${role} node: ${hostname}"
+            continue  # continue to next node and skip this one
+        else
+            log -f ${CURRENT_FUNC} "Containerd configured successfully for ${role} node: ${hostname}"
+        fi
         #############################################################################
-    done
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     #############################################################################
     if [ $error_raised -eq 0 ]; then
         log -f ${CURRENT_FUNC} "Finished cluster prerequisites installation and checks"
+        return 0
     else
         log -f ${CURRENT_FUNC} "ERROR" "Some errors occured during the cluster prerequisites installation and checks"
+        return 1
     fi
 }
 
@@ -643,7 +792,7 @@ gpgcheck=1
 gpgkey=https://pkgs.k8s.io/core:/stable:/v$K8S_MAJOR_VERSION/rpm/repodata/repomd.xml.key
 exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
 """
-    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+    while read -r node; do
         ##################################################################
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
@@ -675,7 +824,7 @@ exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
         add_bashcompletion ${hostname} kubeadm $VERBOSE
         add_bashcompletion ${hostname} kubectl $VERBOSE
         ##################################################################
-    done
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
    ##################################################################
     log -f ${CURRENT_FUNC} "Kubernetes prerequisites setup completed successfully."
    ##################################################################
@@ -787,7 +936,7 @@ install_cilium_prerequisites () {
         sleep 30
     """
     ##################################################################
-    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+    while read -r node; do
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
         local role=$(echo "$node" | jq -r '.role')
@@ -821,7 +970,7 @@ install_cilium_prerequisites () {
         """
         add_bashcompletion ${hostname}  cilium $VERBOSE
         log -f ${CURRENT_FUNC} "Finished installing cilium cli"
-    done
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     ##################################################################
     helm_chart_prerequisites "cilium" "https://helm.cilium.io" "$CILIUM_NS" "false" "false"
     ##################################################################
@@ -904,7 +1053,7 @@ join_cluster () {
     JOIN_COMMAND_CONTROLPLANE="${JOIN_COMMAND_WORKER} --control-plane"
 
     # for i in $(seq 2 "$((2 + NODES_LAST - 2))"); do
-    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+    while read -r node; do
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
         local role=$(echo "$node" | jq -r '.role')
@@ -935,9 +1084,8 @@ join_cluster () {
             """
         fi
         log -f ${CURRENT_FUNC} "Finished joining cluster for ${role} node: ${hostname}"
-    done
-
-
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
+    ##################################################################
 
 }
 
@@ -1035,7 +1183,7 @@ install_certmanager_prerequisites() {
     CURRENT_FUNC=${FUNCNAME[0]}
     ##################################################################
     # install cert-manager cli:
-    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+    while read -r node; do
         ##################################################################
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
@@ -1054,7 +1202,7 @@ install_certmanager_prerequisites() {
         add_bashcompletion $hostname "cmctl"
         log -f "${CURRENT_FUNC}" "Finished certmanager cli install for ${role} node: $hostname"
         ##################################################################
-    done
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     ##################################################################
     helm_chart_prerequisites "$CONTROL_PLANE_HOST" "cert-manager" "https://charts.jetstack.io" "$CERTMANAGER_NS" "true" "true"
     ##################################################################
@@ -1112,7 +1260,7 @@ install_longhorn_prerequisites() {
     ##################################################################
     log -f ${CURRENT_FUNC} "Ensuring that 'noexec' is unset for '/var' on cluster nodes."
 
-    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+    while read -r node; do
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
 local role=$(echo "$node" | jq -r '.role')
@@ -1129,11 +1277,11 @@ local role=$(echo "$node" | jq -r '.role')
             sudo mount -o remount /var
         '
         log -f ${CURRENT_FUNC} "Finished Ensuring that 'noexec' is unset for '/var' on node: '${hostname}'"
-    done
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     log -f ${CURRENT_FUNC} "Finished ensuring that 'noexec' is unset for '/var'  on cluster nodes."
     ##################################################################
     log -f ${CURRENT_FUNC} "installing required utilities for longhorn"
-    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+    while read -r node; do
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
 local role=$(echo "$node" | jq -r '.role')
@@ -1144,7 +1292,7 @@ local role=$(echo "$node" | jq -r '.role')
             sudo dnf install curl jq nfs-utils cryptsetup \
                 device-mapper iscsi-initiator-utils -y ${VERBOSE}
         """
-    done
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     log -f ${CURRENT_FUNC} "Finished installing required utilities for longhorn"
     ##################################################################
     log -f ${CURRENT_FUNC} "Creating namespace: ${LONGHORN_NS} for longhorn"
@@ -1233,7 +1381,7 @@ local role=$(echo "$node" | jq -r '.role')
     fi
     log -f ${CURRENT_FUNC} "Finished installing NFS/iSCSI on the cluster."
     ##################################################################
-    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+    while read -r node; do
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
 local role=$(echo "$node" | jq -r '.role')
@@ -1323,7 +1471,7 @@ local role=$(echo "$node" | jq -r '.role')
         """
         log -f ${CURRENT_FUNC} "Finished installing Longhorn-cli for ${role} node: ${hostname}"
 
-    done
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     ##################################################################
     log -f ${CURRENT_FUNC} "Running the environment check script on the cluster..."
     url=https://raw.githubusercontent.com/longhorn/longhorn/${LONGHORN_VERSION}/scripts/environment_check.sh
@@ -1354,7 +1502,7 @@ local role=$(echo "$node" | jq -r '.role')
     log -f ${CURRENT_FUNC} "Check the prerequisites and configurations for Longhorn:"
     log -f ${CURRENT_FUNC} "currently preflight doesnt support almalinux"
     #  so if on almalinx; run os-camo o, alll nodes prior to check preflight
-    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+    while read -r node; do
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
 local role=$(echo "$node" | jq -r '.role')
@@ -1369,7 +1517,7 @@ local role=$(echo "$node" | jq -r '.role')
             sudo chmod +x /tmp/os-camo.sh
             /tmp/os-camo.sh camo
         """
-    done
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     ##################################################################
     OUTPUT=$(longhornctl check preflight 2>&1)
     log -f ${CURRENT_FUNC} "Started checking the longhorn preflight pre installation"
@@ -1414,14 +1562,14 @@ local role=$(echo "$node" | jq -r '.role')
     log -f ${CURRENT_FUNC} "Finished checking the longhorn preflight post installation"
     ##################################################################
     # revert camo:
-    echo "$CLUSTER_NODES" | jq -c '.[]' | while read -r node; do
+    while read -r node; do
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
 local role=$(echo "$node" | jq -r '.role')
 
         log -f ${CURRENT_FUNC} "Resetting camofoulage for ${role} node: ${hostname}"
         ssh -q ${hostname} /tmp/os-camo.sh revert
-    done
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     #################################################################
     log -f ${CURRENT_FUNC} "Finished installing required utilities for longhorn"
 }
@@ -1598,22 +1746,18 @@ install_rancher () {
 }
 
 
-
-
-
-
 #################################################################
-if [ $RESET_CLUSTER_ARG -eq 1 ]; then
-    reset_cluster
-fi
+# if [ $RESET_CLUSTER_ARG -eq 1 ]; then
+#     reset_cluster
+# fi
 #################################################################
 if [ "$PREREQUISITES" = true ]; then
     #################################################################
-    deploy_hostsfile
-    if [ $? -ne 0 ]; then
-        log -f "main" "ERROR" "An error occured while updating the hosts files."
-        exit 1
-    fi
+    # deploy_hostsfile
+    # if [ $? -ne 0 ]; then
+    #     log -f "main" "ERROR" "An error occured while updating the hosts files."
+    #     exit 1
+    # fi
     #################################################################
     prerequisites_requirements
     if [ $? -ne 0 ]; then
@@ -1668,22 +1812,22 @@ if [ $? -ne 0 ]; then
     log -f "main" "ERROR" "Failed to start cilium service."
     exit 1
 fi
-##################################################################
-install_certmanager_prerequisites
+# ##################################################################
+# install_certmanager_prerequisites
 
-install_certmanager
-if [ $? -ne 0 ]; then
-    log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
-    exit 1
-fi
-##################################################################
-# TODO, status checks and tests
-install_rancher
+# install_certmanager
+# if [ $? -ne 0 ]; then
+#     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
+#     exit 1
+# fi
+# ##################################################################
+# # TODO, status checks and tests
+# install_rancher
 
-install_longhorn_prerequisites
-install_longhorn
+# install_longhorn_prerequisites
+# install_longhorn
 
-install_vault
+# install_vault
 
 log "deploy.sh" "INFO" "deployment finished"
 
