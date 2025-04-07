@@ -1077,8 +1077,8 @@ install_cilium () {
             2>&1 || true)
 
         if echo \$OUTPUT | grep 'Error'; then
-            log -f \"${FUNCNAME[0]}\" 'ERROR' $OUTPUT
-            return 1
+            log -f \"${FUNCNAME[0]}\" 'ERROR' \$OUTPUT
+            exit 1
         fi
         #############################################################
         sleep 30
@@ -1091,12 +1091,12 @@ install_cilium () {
         sleep 30
         #############################################################
     """
-
-
-
-
-
-    log -f ${CURRENT_FUNC} "Finished installing cilium"
+    #############################################################
+    if [ $? -eq 0 ]; then
+        log -f ${CURRENT_FUNC} "Finished deploying cilium."
+    else
+        return 1
+    fi
     #############################################################
 }
 
@@ -1812,9 +1812,6 @@ if [ "$PREREQUISITES" = true ]; then
         exit 1
     fi
 fi
-
-echo end of test
-exit 1
 #################################################################
 if [ $RESET_CLUSTER_ARG -eq 1 ]; then
     reset_cluster
@@ -1855,8 +1852,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 #################################################################
-install_cilium
-if [ $? -ne 0 ]; then
+if ! install_cilium; then
     log -f main "ERROR" "An error occurred while installing cilium"
     exit 1
 fi
