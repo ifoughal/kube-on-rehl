@@ -1013,7 +1013,7 @@ restart_cilium() {
                 exit 1001
             fi
 
-            CILIUM_STATUS=\$(cilium status)
+            CILIUM_STATUS=\$(cilium status | tr -d '\0')
 
             if echo "\$CILIUM_STATUS" | grep -qi 'error'; then
                 log -f \"${CURRENT_FUNC}\" \"cilium status contains errors... restarting cilium. Try: \$current_retry\"
