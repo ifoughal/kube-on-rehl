@@ -47,6 +47,7 @@ CONTROLPLANE_SUBNET=$(echo $CONTROLPLANE_ADDRESS | awk -F. '{print $1"."$2"."$3"
 
 # set -e  # Enable immediate exit on error
 # set -o pipefail  # Fail if any piped command fails
+# set -euo pipefail
 
 STRICT_HOSTKEYS=0
 RESET_CLUSTER_ARG=0
@@ -915,14 +916,14 @@ install_cluster () {
     ####################################################################
     ssh -q $CONTROL_PLANE_HOST <<< """
         ####################################################################
-        # set -e  # Exit on error
-        ####################################################################
         KUBEADM_INIT_OUTPUT=\$(eval $KUBE_ADM_COMMAND  2>&1 || true)
 
         if echo \$(echo \"\$KUBEADM_INIT_OUTPUT\" | tr '[:upper:]' '[:lower:]') | grep 'error'; then
             log -f \"${CURRENT_FUNC}\" 'ERROR' \"\$KUBEADM_INIT_OUTPUT\"
-            return 1
+            exit 1
         fi
+        ####################################################################
+        set -e  # Exit on error
         ####################################################################
         if [ \"$DRY_RUN\" = true ]; then
             log -f \"${CURRENT_FUNC}\" 'Control plane dry-run initialized without errors.'
@@ -942,7 +943,6 @@ install_cluster () {
         ####################################################################
     """
     ####################################################################
-
     if [ $? -eq 0 ]; then
         log -f ${CURRENT_FUNC} "Finished deploying control-plane node."
     else
@@ -1263,7 +1263,70 @@ install_certmanager_prerequisites() {
         ##################################################################
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     ##################################################################
-    helm_chart_prerequisites "$CONTROL_PLANE_HOST" "cert-manager" "https://charts.jetstack.io" "$CERTMANAGER_NS" "true" "true"
+    helm_chart_prerequisites "$CONTROL_PLANE_HOST" "cert-manager" "https://charts.jetstack.io" "$CERTMANAGER_NS"
+    ##################################################################
+    log -f "${CURRENT_FUNC}" "removing cert-manager CRDs from cluster"
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        kubectl delete -f https://github.com/jetstack/cert-manager/releases/download/${CERTMANAGER_VERSION}/cert-manager.crds.yaml -n ${CERTMANAGER_NS} > /dev/null 2>&1 || true
+    """
+    ##################################################################
+    log -f "${CURRENT_FUNC}" "removing cert-manager CRDs from cluster"
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        kubectl delete customresourcedefinitions.apiextensions.k8s.io -A \
+            certificaterequests.cert-manager.io \
+            certificates.cert-manager.io \
+            clusterissuers.cert-manager.io \
+            issuers.cert-manager.io \
+            orders.acme.cert-manager.io \
+            challenges.acme.cert-manager.io \
+            > /dev/null 2>&1 || true
+    """
+    ##################################################################
+    log -f "${CURRENT_FUNC}" "removing cert-manager RBAC roles from cluster"
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        kubectl delete ClusterRole -A \
+            cert-manager-cluster-view \
+            cert-manager-controller-approve:cert-manager-io \
+            cert-manager-controller-certificates \
+            cert-manager-controller-certificatesigningrequests \
+            cert-manager-controller-challenges \
+            cert-manager-controller-clusterissuers \
+            cert-manager-controller-ingress-shim \
+            cert-manager-controller-issuers \
+            cert-manager-controller-orders \
+            cert-manager-edit \
+            cert-manager-view \
+            cert-manager-webhook:subjectaccessreviews \
+            > /dev/null 2>&1 || true
+    """
+    ##################################################################
+    log -f "${CURRENT_FUNC}" "removing cert-manager RBAC role bindings from cluster"
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        kubectl delete ClusterRoleBinding -A \
+            cert-manager-controller-approve:cert-manager-io \
+            cert-manager-controller-certificates \
+            cert-manager-controller-certificatesigningrequests \
+            cert-manager-controller-challenges \
+            cert-manager-controller-clusterissuers \
+            cert-manager-controller-ingress-shim \
+            cert-manager-controller-issuers \
+            cert-manager-controller-orders \
+            cert-manager-webhook:subjectaccessreviews \
+            > /dev/null 2>&1 || true
+    """
+    ##################################################################
+    log -f "${CURRENT_FUNC}" "removing cert-manager roles from cluster"
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        kubectl delete ClusterRole -A \
+            cert-manager:leaderelection \
+            > /dev/null 2>&1 || true
+    """
+    ##################################################################
+    log -f "${CURRENT_FUNC}" "removing cert-manager startup job from cluster"
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        kubectl delete -n kube-system jobs.batch cert-manager-startupapicheck \
+            > /dev/null 2>&1 || true
+    """
     ##################################################################
     log -f "$CURRENT_FUNC" "Sending certmanager values to control-plane node: ${CONTROL_PLANE_HOST}"
     ssh -q ${CONTROL_PLANE_HOST} <<< """
@@ -1271,6 +1334,68 @@ install_certmanager_prerequisites() {
         rm -rf /tmp/certmanager &&  mkdir -p /tmp/certmanager
     """
     scp -q ./certmanager/values.yaml $CONTROL_PLANE_HOST:/tmp/certmanager/
+    ##################################################################
+    log -f "$CURRENT_FUNC" "Sending certmanager test deployment to control-plane node: ${CONTROL_PLANE_HOST}"
+    scp -q ./certmanager/test-resources.yaml $CONTROL_PLANE_HOST:/tmp/certmanager/
+    ##################################################################
+}
+
+
+verify_cert_manager_installation() {
+    ##################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Started testing cert-manager installation"
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        TEST_MANIFEST=/tmp/certmanager/test-resources.yaml
+        TEST_NS=cert-manager-test
+        CERT_NAME=selfsigned-cert
+        SECRET_NAME=selfsigned-cert-tls
+        TIMEOUT=60
+
+        log -f ${CURRENT_FUNC} 'Applying test certificate manifest...'
+        output=\$(kubectl apply -f \${TEST_MANIFEST} 2>&1)
+        if [[ \$? -ne 0 ]]; then
+            log -f ${CURRENT_FUNC} 'ERROR' \"Failed to apply test certificate manifest.\n\t\$output\"
+            exit 1
+        fi
+        log -f ${CURRENT_FUNC} \"Waiting for certificate '\${CERT_NAME}' to become Ready in namespace '\${TEST_NS}'...\"
+
+        end=\$((SECONDS + TIMEOUT))
+        while true; do
+            status=\$(kubectl get certificate \${CERT_NAME} -n \${TEST_NS} -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' || echo 'null')
+
+            if [[ "\${status}" == \"True\" ]]; then
+                log -f ${CURRENT_FUNC} '[✅] Certificate is Ready!'
+                break
+            fi
+
+            if (( SECONDS >= end )); then
+                log -f ${CURRENT_FUNC} 'ERROR' '[❌] Timeout waiting for certificate to be Ready.'
+                exit 1
+            fi
+
+            echo -n '.'
+            sleep 2
+        done
+
+        log -f ${CURRENT_FUNC} \"Verifying that the secret '\${SECRET_NAME}' exists...\"
+        if kubectl get secret \${SECRET_NAME} -n \${TEST_NS} &>/dev/null; then
+            log -f ${CURRENT_FUNC} \"[✅] Secret '\${SECRET_NAME}' found.\"
+        else
+            log -f ${CURRENT_FUNC} 'ERROR' \"[❌] Secret '\${SECRET_NAME}' not found.\"
+            exit 1
+        fi
+
+        log -f ${CURRENT_FUNC} '[🎉] cert-manager is functioning correctly!'
+    """
+    ##################################################################
+    if [ $? -eq 0 ]; then
+        log -f "${CURRENT_FUNC}" "Finished testing cert-manager installation"
+    else
+        log -f "${CURRENT_FUNC}" "ERROR" "Failed to test cert-manager installation"
+        return 1
+    fi
     ##################################################################
 }
 
@@ -1282,36 +1407,41 @@ install_certmanager () {
     log -f "${CURRENT_FUNC}" "Started installing cert-manger on namespace: '${CERTMANAGER_NS}'"
     # TODO: --set http_proxy --set https_proxy --set no_proxy
     ssh -q ${CONTROL_PLANE_HOST} <<< """
-        helm install cert-manager jetstack/cert-manager  \
+        output=\$(helm install cert-manager jetstack/cert-manager  \
             --version ${CERTMANAGER_VERSION} \
             --namespace ${CERTMANAGER_NS} \
+            --set namespace=${CERTMANAGER_NS} \
+            --set clusterResourceNamespace=${CERTMANAGER_NS} \
+            --set global.leaderElection.namespace=${CERTMANAGER_NS} \
             --create-namespace \
             --set replicaCount=${REPLICAS} \
+            --set podDisruptionBudget.enabled=true \
             --set webhook.replicaCount=${REPLICAS} \
             --set cainjector.replicaCount=${REPLICAS} \
-            -f /tmp/certmanager/values.yaml
-
-        # helm install cert-manager jetstack/cert-manager \
-        #     --namespace ${CERTMANAGER_NS} \
-        #     --create-namespace \
-        #     --set crds.enabled=true
+            --set crds.enabled=true \
+            --set crds.keep=true \
+            ${VERBOSE} || true)
+        # Check if the Helm install command was successful
+        if [ ! \$? -eq 0 ]; then
+            log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install cert-manager:\n\t\${output}\"
+            exit 1
+        fi
     """
-    log -f "${CURRENT_FUNC}" "Finished installing cert-manger on namespace: '${CERTMANAGER_NS}'"
-    echo end of test
-    exit 1
+    if [ $? -eq 0 ]; then
+        log -f "${CURRENT_FUNC}" "Finished installing cert-manger on namespace: '${CERTMANAGER_NS}'"
+    else
+        log -f "${CURRENT_FUNC}" "ERROR" "Failed to install cert-manager"
+        return 1
+    fi
     ##################################################################
-    # test certmanager:
-    # Needs to be automated....
-    # kubectl apply -f certmanager/test-resources.yaml
-
-    # # Check the status, grep through the event types
-    # kubectl describe certificate -n cert-manager-test
-    # kubectl get secrets -n cert-manager-test
-
-    # # Clean up the test resources.
-    # kubectl delete -f certmanager/test-resources.yaml
-
-    # --cluster-resource-namespace=
+    # starting cert-manager test to ensure certs distribution
+    verify_cert_manager_installation
+    if [ $? -eq 0 ]; then
+        log -f "${CURRENT_FUNC}" "Finished cert-manager installation"
+    else
+        log -f "${CURRENT_FUNC}" "ERROR" "Failed to install cert-manager"
+        return 1
+    fi
 }
 
 
@@ -1681,7 +1811,7 @@ install_longhorn () {
     # Check if the Helm install command was successful
     if [ ! $? -eq 0 ]; then
         log -f ${CURRENT_FUNC} "ERROR" "Failed to install Longhorn:\n\t${output}"
-        exit 1
+        return 1
     fi
 
 
@@ -1804,82 +1934,82 @@ install_rancher () {
 
 }
 
-#################################################################
-if [ "$PREREQUISITES" = true ]; then
-    deploy_hostsfile
-    if [ $? -ne 0 ]; then
-        log -f "main" "ERROR" "An error occured while updating the hosts files."
-        exit 1
-    fi
-fi
-#################################################################
-if [ $RESET_CLUSTER_ARG -eq 1 ]; then
-    reset_cluster
-fi
-#################################################################
-if [ "$PREREQUISITES" = true ]; then
-    #################################################################
-    prerequisites_requirements
-    if [ $? -ne 0 ]; then
-        log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
-        exit 1
-    fi
-    #################################################################
-    install_kubetools
-    if [ $? -ne 0 ]; then
-        log -f "main" "ERROR" "Failed to install kuberenetes required tools for cluster deployment."
-    fi
-    #################################################################
-else
-    log "deploy.sh" "INFO" "Cluster prerequisites have been skipped"
-fi
-#################################################################
-install_cluster
-if [ $? -ne 0 ]; then
-    log -f main "ERROR" "An error occurred while deploying the cluster"
-    exit 1
-fi
-#################################################################
-install_gateway_CRDS
-if [ $? -ne 0 ]; then
-    log -f main "ERROR" "An error occurred while deploying gateway CRDS"
-    exit 1
-fi
-#################################################################
-install_cilium_prerequisites
-if [ $? -ne 0 ]; then
-    log -f main "ERROR" "An error occurred while installing cilium prerequisites"
-    exit 1
-fi
-#################################################################
-if ! install_cilium; then
-    log -f main "ERROR" "An error occurred while installing cilium"
-    exit 1
-fi
-#################################################################
-join_cluster
-#################################################################
-install_gateway
-install_gateway_return_code=$?
-if [ $? -ne 0 ]; then
-    log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
-    exit 1
-fi
-##################################################################
-restart_cilium
-if [ $? -ne 0 ]; then
-    log -f "main" "ERROR" "Failed to start cilium service."
-    exit 1
-fi
-# ##################################################################
-# install_certmanager_prerequisites
-
-# install_certmanager
-# if [ $? -ne 0 ]; then
-#     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
+# #################################################################
+# if [ "$PREREQUISITES" = true ]; then
+#     if ! deploy_hostsfile; then
+#         log -f "main" "ERROR" "An error occured while updating the hosts files."
+#         exit 1
+#     fi
+# fi
+# #################################################################
+# if [ $RESET_CLUSTER_ARG -eq 1 ]; then
+#     reset_cluster
+# fi
+# #################################################################
+# if [ "$PREREQUISITES" = true ]; then
+#     #################################################################
+#     if ! prerequisites_requirements; then
+#         log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
+#         exit 1
+#     fi
+#     #################################################################
+#     if ! install_kubetools; then
+#         log -f "main" "ERROR" "Failed to install kuberenetes required tools for cluster deployment."
+#     fi
+#     #################################################################
+# else
+#     log "deploy.sh" "INFO" "Cluster prerequisites have been skipped"
+# fi
+# #################################################################
+# if ! install_cluster; then
+#     log -f main "ERROR" "An error occurred while deploying the cluster"
+#     exit 1
+# fi
+# #################################################################
+# if ! install_gateway_CRDS; then
+#     log -f main "ERROR" "An error occurred while deploying gateway CRDS"
+#     exit 1
+# fi
+# #################################################################
+# if ! install_cilium_prerequisites; then
+#     log -f main "ERROR" "An error occurred while installing cilium prerequisites"
+#     exit 1
+# fi
+# #################################################################
+# if ! install_cilium; then
+#     log -f main "ERROR" "An error occurred while installing cilium"
+#     exit 1
+# fi
+# #################################################################
+# join_cluster
+# #################################################################
+# if ! install_gateway; then
+#     log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
 #     exit 1
 # fi
 # ##################################################################
+# if ! restart_cilium; then
+#     log -f "main" "ERROR" "Failed to start cilium service."
+#     exit 1
+# fi
+###########################################################################################################
+###########################################################################################################
+##################################################################
+if ! install_certmanager_prerequisites; then
+    log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
+    exit 1
+fi
+##################################################################
+if ! install_certmanager; then
+    log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
+    exit 1
+fi
+
+
+
+echo end of test
+exit 1
+##################################################################
 # # TODO, status checks and tests
 # install_rancher
 
