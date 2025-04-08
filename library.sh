@@ -325,37 +325,37 @@ add_bashcompletion () {
 
 helm_chart_prerequisites () {
     ##################################################################
-    local CONTROL_PLAN_NODE=$1
+    local CONTROL_PLANE_NODE=$1
     local CHART_NAME=$2
     local CHART_REPO=$3
     local CHART_NS=$4
     local DELETE_NS=$5
     local CREATE_NS=$6
+    local timeout=${7:-"10s"}
     ##################################################################
-
-    ssh -q ${CONTROL_PLAN_NODE} <<< """
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        set -euo pipefail
         log -f \"${CURRENT_FUNC}\" \"Adding '$CHART_NAME' repo to Helm\"
-        eval \"helm repo add ${CHART_NAME} $CHART_REPO --force-update ${VERBOSE}\" || true
-        eval \"helm repo update ${VERBOSE}\" || true
+        helm repo add ${CHART_NAME} $CHART_REPO --force-update ${VERBOSE}
+        helm repo update ${VERBOSE}
         ##################################################################
         log -f \"${CURRENT_FUNC}\" \"uninstalling and ensuring the cluster is cleaned from $CHART_NAME\"
-        eval \"helm uninstall -n $CHART_NS $CHART_NAME > /dev/null 2>&1\" || true
+        helm uninstall -n $CHART_NS $CHART_NAME > /dev/null 2>&1 || true
         ##################################################################
-        if [ \"$DELETE_NS\" == "true" ] || [ \"$DELETE_NS\" == "1" ]; then
+        if [ \"$DELETE_NS\" == \"true\" ] || [ \"$DELETE_NS\" == \"1\" ]; then
             log -f \"${CURRENT_FUNC}\" \"deleting '$CHART_NS' namespace\"
-            eval \"kubectl delete ns $CHART_NS --now=true --ignore-not-found ${VERBOSE}\"
+            kubectl delete ns $CHART_NS --now=true --ignore-not-found --timeout ${timeout} > /dev/null 2>&1 || true
 
             output=\$(kubectl get ns $CHART_NS --ignore-not-found)
 
-            if [ ! -z \"\$output\"]; then
+            if [ ! -z \"\$output\" ]; then
                 log -f \"${CURRENT_FUNC}\" \"Force deleting '$CHART_NS' namespace\"
-                kubectl get namespace \"$CHART_NS\" -o json 2>/dev/null \
-                | tr -d '\n' | sed \"s/'finalizers': \[[^]]\+\]/'finalizers': []\" \
+                kubectl get namespace \"$CHART_NS\" -o json 2>/dev/null \\
+                | tr -d '\n' | sed 's/\"finalizers\": \[[^]]\+\]/\"finalizers\": []/' \\
                 | kubectl replace --raw /api/v1/namespaces/$CHART_NS/finalize -f - ${VERBOSE} || true
                 log -f \"${CURRENT_FUNC}\" \"sleeping for 60 seconds while deleting '$CHART_NS' namespace\"
                 sleep 60
             fi
-
         else
             log -f \"${CURRENT_FUNC}\" 'Skipping NS deletion'
         fi
@@ -363,13 +363,15 @@ helm_chart_prerequisites () {
         if [ \"$CREATE_NS\" == 'true' ] || [ \"$CREATE_NS\" == '1' ]; then
             ##################################################################
             log -f \"${CURRENT_FUNC}\" \"Creating '$CHART_NS' chart namespace: '$CHART_NS'\"
-            eval \"kubectl create ns $CHART_NS ${VERBOSE}\" || true
+            kubectl create ns $CHART_NS ${VERBOSE} || true
             ##################################################################
         else
             log -f \"${CURRENT_FUNC}\" 'Skipping NS creation'
         fi
         ##################################################################
     """
+    return $?
+    ##################################################################
 }
 
 
@@ -695,3 +697,26 @@ cilium_cleanup () {
     kubectl -n kube-system delete deploy -l name=cilium >/dev/null 2>&1 || true
     kubectl -n kube-system delete deploy -l app=cilium >/dev/null 2>&1 || true
 }
+
+
+# create_namespace() {
+#     local namespace=$1
+#     local max_retries=5
+#     local attempt=1
+
+#     while [ $attempt -le $max_retries ]; do
+#         kubectl create ns "$namespace" ${VERBOSE}
+#         if [ $? -eq 0 ]; then
+#             echo "Namespace '$namespace' created successfully."
+#             break
+#         else
+#             echo "Attempt $attempt/$max_retries failed to create namespace '$namespace'. Retrying in 10 seconds..."
+#             attempt=$((attempt + 1))
+#             sleep 10
+#         fi
+#     done
+
+#     if [ $attempt -gt $max_retries ]; then
+#         echo "Failed to create namespace '$namespace' after $max_retries attempts."
+#     fi
+# }
