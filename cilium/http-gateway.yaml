@@ -1,49 +1,32 @@
+---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
-  name: http-gateway
+  name: https-gateway
   namespace: kube-system
 spec:
   gatewayClassName: cilium
   infrastructure:
     annotations:
-      io.cilium/lb-ipam-ips: "10.66.65.7"
+      io.cilium/lb-ipam-ips: "10.66.65.8"
       lbipam.cilium.io/sharing-key: "kafkaCluster"
       lbipam.cilium.io/sharing-cross-namespace: "*"
       ingress.cilium.io/service-external-traffic-policy: Cluster
   listeners:
-  - name: shared-http
+  - name: http
     protocol: HTTP
     port: 80
     allowedRoutes:
       namespaces:
         from: All
----
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: tls-gateway
-  namespace: kube-system
-spec:
-  gatewayClassName: cilium
-  infrastructure:
-    annotations:
-      io.cilium/lb-ipam-ips: "10.66.65.7"
-      lbipam.cilium.io/sharing-key: "kafkaCluster"
-      lbipam.cilium.io/sharing-cross-namespace: "*"
-      ingress.cilium.io/service-external-traffic-policy: Cluster
-  listeners:
-  - name: shared-tls
+  - name: https
     protocol: HTTPS
     port: 443
     allowedRoutes:
       namespaces:
         from: All
     tls:
+      mode: Terminate
       certificateRefs:
       - kind: Secret
         name: shared-tls
-        # from: Selector
-        # selector:
-        #   matchLabels:
-        #     shared-gateway-access: "true"
