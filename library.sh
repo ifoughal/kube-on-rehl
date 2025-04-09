@@ -332,6 +332,8 @@ helm_chart_prerequisites () {
     local DELETE_NS=$5
     local CREATE_NS=$6
     local timeout=${7:-"10s"}
+    local sleep_time=${8:-"15s"}
+
     ##################################################################
     ssh -q ${CONTROL_PLANE_NODE} <<< """
         set -euo pipefail
@@ -347,14 +349,13 @@ helm_chart_prerequisites () {
             kubectl delete ns $CHART_NS --now=true --ignore-not-found --timeout ${timeout} > /dev/null 2>&1 || true
 
             output=\$(kubectl get ns $CHART_NS --ignore-not-found)
-
             if [ ! -z \"\$output\" ]; then
                 log -f \"${CURRENT_FUNC}\" \"Force deleting '$CHART_NS' namespace\"
                 kubectl get namespace \"$CHART_NS\" -o json 2>/dev/null \\
                 | tr -d '\n' | sed 's/\"finalizers\": \[[^]]\+\]/\"finalizers\": []/' \\
                 | kubectl replace --raw /api/v1/namespaces/$CHART_NS/finalize -f - ${VERBOSE} || true
-                log -f \"${CURRENT_FUNC}\" \"sleeping for 60 seconds while deleting '$CHART_NS' namespace\"
-                sleep 60
+                log -f \"${CURRENT_FUNC}\" \"sleeping for $sleep_time seconds while deleting '$CHART_NS' namespace\"
+                sleep $sleep_time
             fi
         else
             log -f \"${CURRENT_FUNC}\" 'Skipping NS deletion'
