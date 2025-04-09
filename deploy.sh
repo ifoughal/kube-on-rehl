@@ -407,6 +407,27 @@ EOF
     fi
 }
 
+reset_storage() {
+    ##################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Started reseting cluster storage"
+    ##################################################################
+    while read -r node; do
+        ##################################################################
+        local hostname=$(echo "$node" | jq -r '.hostname')
+        local ip=$(echo "$node" | jq -r '.ip')
+        local role=$(echo "$node" | jq -r '.role')
+        ##################################################################
+        log -f ${CURRENT_FUNC} "Reseting volumes for ${role} node ${hostname}"
+        ssh -q ${hostname} <<< """
+            sudo rm -rf "${EXTRAVOLUMES_ROOT}"/*
+        """
+        log -f ${CURRENT_FUNC} "finished reseting host persistent volumes mounts for ${role} node ${hostname}"
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Finished reseting cluster storage"
+}
 
 reset_cluster () {
     ##################################################################
@@ -420,11 +441,11 @@ reset_cluster () {
     log -f ${CURRENT_FUNC} "Finished uninstalling Cilium from cluster..."
     ##################################################################
     while read -r node; do
-       ##################################################################
+        ##################################################################
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
         local role=$(echo "$node" | jq -r '.role')
-       ##################################################################
+        ##################################################################
         log -f ${CURRENT_FUNC} "Started resetting k8s ${role} node node: ${hostname}"
         ssh -q ${hostname} <<< """
             sudo kubeadm reset -f > /dev/null 2>&1 || true
@@ -434,15 +455,7 @@ reset_cluster () {
                         /etc/kubernetes/*
         """
         log -f ${CURRENT_FUNC} "Finished resetting k8s ${role} node node: ${hostname}"
-       ##################################################################
-        log -f ${CURRENT_FUNC} "Reseting volumes for ${role} node ${hostname}"
-        ssh -q ${hostname} <<< """
-            sudo rm -rf "${EXTRAVOLUMES_ROOT}"/*
 
-            sudo mkdir -p "${EXTRAVOLUMES_ROOT}"/cilium/hubble-relay
-            sudo mkdir -p "${EXTRAVOLUMES_ROOT}"/cilium/hubble-relay
-        """
-        log -f ${CURRENT_FUNC} "finished reseting host persistent volumes mounts for ${role} node ${hostname}"
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
    ##################################################################
     log -f ${CURRENT_FUNC} "Finished reseting cluster"
@@ -1031,8 +1044,6 @@ install_cilium_prerequisites () {
         log -f ${CURRENT_FUNC} "Finished installing cilium cli"
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     ##################################################################
-    helm_chart_prerequisites "cilium" "https://helm.cilium.io" "$CILIUM_NS" "false" "false"
-    ##################################################################
     # # cleaning up cilium and maglev tables
     # # EXPERIMENTAL ONLY AND STILL UNDER TESTING....
     # # echo "Started cleanup completed!"
@@ -1047,6 +1058,14 @@ install_cilium () {
     ##################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
     #############################################################
+    log -f ${CURRENT_FUNC} "Started cilium helm chart prerequisites"
+    helm_chart_prerequisites ${CONTROL_PLANE_HOST} "cilium" "https://helm.cilium.io" "$CILIUM_NS" "false" "false"
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to install cilium helm chart prerequisites"
+        return 1
+    fi
+    log -f ${CURRENT_FUNC} "Finished cilium helm chart prerequisites"
+    ##################################################################
     log -f ${CURRENT_FUNC} "Started installing cilium"
     #############################################################
     log -f ${CURRENT_FUNC} "Cilium native routing subnet is: ${CONTROLPLANE_SUBNET}"
@@ -1069,17 +1088,20 @@ install_cilium () {
             --values /tmp/values.yaml \
             --set operator.replicas=${REPLICAS} \
             --set hubble.relay.replicas=${REPLICAS} \
-            --set hubble.ui.replicas=${REPLICAS} \
+            --set hubble.ui.replicas=1 \
             --set maglev.hashSeed="${HASH_SEED}"  \
             --set encryption.enabled=true \
             --set encryption.nodeEncryption=true \
             --set encryption.type=wireguard \
-            2>&1 || true)
+            --set cleanBpfState=true \
+            --set cleanState=false \
+            ${VERBOSE} || true)
 
         if echo \$OUTPUT | grep 'Error'; then
             log -f \"${FUNCNAME[0]}\" 'ERROR' \$OUTPUT
             exit 1
         fi
+        echo \$OUTPUT
         #############################################################
         sleep 30
         log -f \"${FUNCNAME[0]}\" 'Removing default cilium ingress.'
@@ -1087,8 +1109,6 @@ install_cilium () {
         #############################################################
         log -f \"${FUNCNAME[0]}\" 'Apply LB IPAM on cluster'
         eval \"kubectl apply -f /tmp/loadbalancer-ip-pool.yaml ${VERBOSE}\"
-        #############################################################
-        sleep 30
         #############################################################
     """
     #############################################################
@@ -1256,14 +1276,11 @@ install_certmanager_prerequisites() {
             chmod +x cmctl
             sudo mv cmctl /usr/bin
             sudo ln -sf /usr/bin /usr/local/bin
-
         """
         add_bashcompletion $hostname "cmctl"
         log -f "${CURRENT_FUNC}" "Finished certmanager cli install for ${role} node: $hostname"
         ##################################################################
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
-    ##################################################################
-    helm_chart_prerequisites "$CONTROL_PLANE_HOST" "cert-manager" "https://charts.jetstack.io" "$CERTMANAGER_NS"
     ##################################################################
     log -f "${CURRENT_FUNC}" "removing cert-manager CRDs from cluster"
     ssh -q ${CONTROL_PLANE_HOST} <<< """
@@ -1328,16 +1345,7 @@ install_certmanager_prerequisites() {
             > /dev/null 2>&1 || true
     """
     ##################################################################
-    log -f "$CURRENT_FUNC" "Sending certmanager values to control-plane node: ${CONTROL_PLANE_HOST}"
-    ssh -q ${CONTROL_PLANE_HOST} <<< """
-        # create tmp dir for certmanager
-        rm -rf /tmp/certmanager &&  mkdir -p /tmp/certmanager
-    """
-    scp -q ./certmanager/values.yaml $CONTROL_PLANE_HOST:/tmp/certmanager/
-    ##################################################################
-    log -f "$CURRENT_FUNC" "Sending certmanager test deployment to control-plane node: ${CONTROL_PLANE_HOST}"
-    scp -q ./certmanager/test-resources.yaml $CONTROL_PLANE_HOST:/tmp/certmanager/
-    ##################################################################
+    log -f "${CURRENT_FUNC}" "Finished installing cert-manager prerequisites"
 }
 
 
@@ -1403,6 +1411,24 @@ verify_cert_manager_installation() {
 install_certmanager () {
     ##################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Started cert-manager helm chart prerequisites"
+    helm_chart_prerequisites "$CONTROL_PLANE_HOST" "cert-manager" "https://charts.jetstack.io" "$CERTMANAGER_NS" "true" "true"
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to install cert-manager helm chart prerequisites"
+        return 1
+    fi
+    log -f ${CURRENT_FUNC} "Finished cert-manager helm chart prerequisites"
+    ##################################################################
+    log -f "$CURRENT_FUNC" "Sending certmanager values to control-plane node: ${CONTROL_PLANE_HOST}"
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        # create tmp dir for certmanager
+        rm -rf /tmp/certmanager &&  mkdir -p /tmp/certmanager
+    """
+    # scp -q ./certmanager/values.yaml $CONTROL_PLANE_HOST:/tmp/certmanager/
+    ##################################################################
+    log -f "$CURRENT_FUNC" "Sending certmanager test deployment to control-plane node: ${CONTROL_PLANE_HOST}"
+    scp -q ./certmanager/test-resources.yaml $CONTROL_PLANE_HOST:/tmp/certmanager/
     ##################################################################
     log -f "${CURRENT_FUNC}" "Started installing cert-manger on namespace: '${CERTMANAGER_NS}'"
     # TODO: --set http_proxy --set https_proxy --set no_proxy
@@ -1819,120 +1845,233 @@ local role=$(echo "$node" | jq -r '.role')
         log -f ${CURRENT_FUNC} "Resetting camofoulage for ${role} node ${hostname}"
         ssh -q ${hostname} /tmp/os-camo.sh revert
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
-    #################################################################
+    ##################################################################
     log -f ${CURRENT_FUNC} "Finished installing required utilities for longhorn"
 }
 
 
-# create_namespace() {
-#     local namespace=$1
-#     local max_retries=5
-#     local attempt=1
-
-#     while [ $attempt -le $max_retries ]; do
-#         kubectl create ns "$namespace" ${VERBOSE}
-#         if [ $? -eq 0 ]; then
-#             echo "Namespace '$namespace' created successfully."
-#             break
-#         else
-#             echo "Attempt $attempt/$max_retries failed to create namespace '$namespace'. Retrying in 10 seconds..."
-#             attempt=$((attempt + 1))
-#             sleep 10
-#         fi
-#     done
-
-#     if [ $attempt -gt $max_retries ]; then
-#         echo "Failed to create namespace '$namespace' after $max_retries attempts."
-#     fi
-# }
-
-
 install_longhorn () {
     ##################################################################
-    helm_chart_prerequisites "longhorn" " https://charts.longhorn.io" "$LONGHORN_NS" "true" "true"
+    CURRENT_FUNC=${FUNCNAME[0]}
     ##################################################################
-    log -f ${CURRENT_FUNC} "Started deploying longhorn in ns $LONGHORN_NS"
-    output=$(helm install longhorn longhorn/longhorn  \
-        --namespace $LONGHORN_NS  \
-        --version ${LONGHORN_VERSION} \
-        -f ./longhorn/values.yaml \
-        --set defaultSettings.defaultReplicaCount=${REPLICAS} \
-        --set persistence.defaultClassReplicaCount=${REPLICAS} \
-        --set csi.attacherReplicaCount=${REPLICAS} \
-        --set csi.provisionerReplicaCount=${REPLICAS} \
-        --set csi.resizerReplicaCount=${REPLICAS} \
-        --set csi.snapshotterReplicaCount=${REPLICAS} \
-        --set longhornUI.replicas=${REPLICAS} \
-        --set longhornConversionWebhook.replicas=${REPLICAS} \
-        --set longhornAdmissionWebhook.replicas=${REPLICAS} \
-        --set longhornRecoveryBackend.replicas=${REPLICAS} \
-        > "${LONGHORN_LOGS}" 2>&1 || true)
-
-    # Check if the Helm install command was successful
-    if [ ! $? -eq 0 ]; then
-        log -f ${CURRENT_FUNC} "ERROR" "Failed to install Longhorn:\n\t${output}"
+    log -f ${CURRENT_FUNC} "Started longhorn helm chart prerequisites"
+    helm_chart_prerequisites "${CONTROL_PLANE_HOST}" "longhorn" " https://charts.longhorn.io" "$LONGHORN_NS" "true" "true"
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to install longhorn helm chart prerequisites"
         return 1
     fi
 
-
-    echo end of test
-    exit 1
-    log -f ${CURRENT_FUNC} "Finished deploying longhorn in ns $LONGHORN_NS"
-    ##################################################################
-    # Wait for the pods to be running
-    log -f ${CURRENT_FUNC} "Waiting for Longhorn pods to be running..."
-    sleep 70  # approximate time for longhorn to boostrap
-    current_retry=0
-    max_retries=3
-    while true; do
-        current_retry=$((current_retry + 1))
-        if [ $current_retry -gt $max_retries ]; then
-            log -f ${CURRENT_FUNC} "ERROR" "Reached maximum retry count. Exiting."
-            exit 1
-        fi
-        log -f ${CURRENT_FUNC} "Checking Longhorn chart deployment completion... try N: $current_retry"
-        PODS=$(kubectl -n $LONGHORN_NS get pods --no-headers | grep -v 'Running\|Completed' || true)
-        if [ -z "$PODS" ]; then
-            log -f ${CURRENT_FUNC} "All Longhorn pods are running."
-            break
-        else
-            log -f ${CURRENT_FUNC} "Waiting for pods to be ready..."
-        fi
-        sleep 60
-    done
-    ##################################################################
-    log -f ${CURRENT_FUNC} "Applying longhorn HTTPRoute for ingress."
-    kubectl apply -f longhorn/http-routes.yaml
+    log -f ${CURRENT_FUNC} "Finished longhorn helm chart prerequisites"
+    #################################################################
+    reset_storage
+    # #################################################################
+    # ssh -q ${CONTROL_PLANE_HOST} <<< """
+    #     # create tmp dir for longhorn
+    #     rm -rf /tmp/longhorn &&  mkdir -p /tmp/longhorn
+    # """
+    # #################################################################
+    # log -f ${CURRENT_FUNC} "sending longhorn http-routes to control-plane node: ${CONTROL_PLANE_HOST}"
+    # scp -q ./longhorn/http-routes.yaml $CONTROL_PLANE_HOST:/tmp/longhorn/
+    # ##################################################################
+    # log -f ${CURRENT_FUNC} "sending longhorn values.yaml to control-plane node: ${CONTROL_PLANE_HOST}"
+    # scp -q ./longhorn/values.yaml $CONTROL_PLANE_HOST:/tmp/longhorn/
+    # ##################################################################
+    # log -f "${CURRENT_FUNC}" "Started installing longhorn on namespace: '${LONGHORN_NS}'"
+    # # TODO: --set http_proxy --set https_proxy --set no_proxy
+    # ssh -q ${CONTROL_PLANE_HOST} <<< """
+    #     output=\$(helm install longhorn longhorn/longhorn  \
+    #         --namespace $LONGHORN_NS  \
+    #         --version ${LONGHORN_VERSION} \
+    #         -f /tmp/longhorn/values.yaml \
+    #         --set persistence.defaultClassReplicaCount=${LONGHORN_REPLICAS} \
+    #         --set csi.attacherReplicaCount=${LONGHORN_REPLICAS} \
+    #         --set csi.provisionerReplicaCount=${LONGHORN_REPLICAS} \
+    #         --set csi.resizerReplicaCount=${LONGHORN_REPLICAS} \
+    #         --set csi.snapshotterReplicaCount=${LONGHORN_REPLICAS} \
+    #         --set longhornUI.replicas=${LONGHORN_REPLICAS} \
+    #         --set longhornConversionWebhook.replicas=${LONGHORN_REPLICAS} \
+    #         --set longhornAdmissionWebhook.replicas=${LONGHORN_REPLICAS} \
+    #         --set longhornRecoveryBackend.replicas=${LONGHORN_REPLICAS} \
+    #         ${VERBOSE} || true)
+    #     # Check if the Helm install command was successful
+    #     if [ ! \$? -eq 0 ]; then
+    #         log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install longhorn:\n\t\${output}\"
+    #         exit 1
+    #     fi
+    # """
+    # if [ $? -eq 0 ]; then
+    #     log -f "${CURRENT_FUNC}" "Finished installing longhorn on namespace: '${LONGHORN_NS}'"
+    # else
+    #     log -f "${CURRENT_FUNC}" "ERROR" "Failed to install longhorn"
+    #     return 1
+    # fi
+    # ##################################################################
+    # # Wait for the pods to be running
+    # log -f ${CURRENT_FUNC} "Waiting for Longhorn pods to be running..."
+    # ssh -q ${CONTROL_PLANE_HOST} <<< """
+    #     sleep 90  # approximate time for longhorn to boostrap
+    #     current_retry=0
+    #     max_retries=5
+    #     sleep_time=30
+    #     while true; do
+    #         current_retry=\$((current_retry + 1))
+    #         if [ \$current_retry -gt \$max_retries ]; then
+    #             log -f ${CURRENT_FUNC} 'ERROR' 'Reached maximum retry count. Exiting.'
+    #             exit 1
+    #         fi
+    #         log -f ${CURRENT_FUNC} \"Checking Longhorn chart deployment completion... try N: \$current_retry\"
+    #         PODS=\$(kubectl -n $LONGHORN_NS get pods --no-headers | grep -v 'Running\|Completed' || true)
+    #         if [ -z \"\$PODS\" ]; then
+    #             log -f ${CURRENT_FUNC} 'All Longhorn pods are running.'
+    #             exit 0
+    #         else
+    #             log -f ${CURRENT_FUNC} 'Waiting for pods to be ready...'
+    #         fi
+    #         sleep \$sleep_time
+    #     done
+    # """
+    # if [ $? -ne 0 ]; then
+    #     log -f ${CURRENT_FUNC} "ERROR" "longhorn pods are not running as expected"
+    #     return 1
+    # fi
+    # ##################################################################
+    # log -f ${CURRENT_FUNC} "Applying longhorn HTTP-Route for ingress."
+    # ssh -q ${CONTROL_PLANE_HOST} <<< """
+    #     eval \"kubectl apply -f /tmp/longhorn/http-routes.yaml ${VERBOSE}\"
+    # """
     ##################################################################
     log -f ${CURRENT_FUNC} "Finished deploying Longhorn on the cluster."
 }
 
 
+install_consul() {
+    ##################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Started consul helm chart prerequisites"
+    helm_chart_prerequisites "$CONTROL_PLANE_HOST" "hashicorp" " https://helm.releases.hashicorp.com" "$CONSUL_NS" "true" "true"
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to install consul helm chart prerequisites"
+        return 1
+    fi
+    log -f ${CURRENT_FUNC} "Finished consul helm chart prerequisites"
+    #################################################################
+    log -f ${CURRENT_FUNC} "removing consul crds"
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        kubectl delete crd --selector app=consul
+    """
+    #################################################################
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        # create tmp dir for longhorn
+        rm -rf /tmp/consul &&  mkdir -p /tmp/consul
+    """
+    ##################################################################
+    log -f ${CURRENT_FUNC} "sending consul values.yaml to control-plane node: ${CONTROL_PLANE_HOST}"
+    scp -q ./consul/values.yaml $CONTROL_PLANE_HOST:/tmp/consul/
+    ##################################################################
+    # log -f ${CURRENT_FUNC} "sending consul http-routes.yaml to control-plane node: ${CONTROL_PLANE_HOST}"
+    # scp -q ./consul/http-routes.yaml $CONTROL_PLANE_HOST:/tmp/consul/
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Installing hashicorp consul Helm chart"
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        output=\$(helm install consul hashicorp/consul \
+            --namespace $CONSUL_NS \
+            --create-namespace \
+            --version $CONSUL_VERSION \
+            -f /tmp/consul/values.yaml \
+            ${VERBOSE} || true)
+            # Check if the Helm install command was successful
+        if [ ! \$? -eq 0 ]; then
+            log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install consul:\n\t\${output}\"
+            exit 1
+        fi
+    """
+    if [ $? -eq 0 ]; then
+        log -f "${CURRENT_FUNC}" "Finished installing consul on namespace: '${CONSUL_NS}'"
+    else
+        log -f "${CURRENT_FUNC}" "ERROR" "Failed to install consul"
+        return 1
+    fi
+    ##################################################################
+    # log -f ${CURRENT_FUNC} "applying http-routes for vault ingress"
+    # ssh -q ${CONTROL_PLANE_HOST} <<< """
+    #     kubectl apply -f /tmp/vault/http-routes.yaml ${VERBOSE}
+    # """
+}
 
-
-
-        # --set server.dataStorage.mountPath="${EXTRAVOLUMES_ROOT}"/vault/data \
-        # --set server.auditStorage.mountPath="${EXTRAVOLUMES_ROOT}"/vault/audit \
 
 install_vault () {
     ##################################################################
-    helm_chart_prerequisites "hashicorp" " https://helm.releases.hashicorp.com" "$VAULT_NS" "true" "true"
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Started vault helm chart prerequisites"
+    helm_chart_prerequisites "$CONTROL_PLANE_HOST" "hashicorp" " https://helm.releases.hashicorp.com" "$VAULT_NS" "true" "true"
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to install vault helm chart prerequisites"
+        return 1
+    fi
+    log -f ${CURRENT_FUNC} "Finished vault helm chart prerequisites"
+    #################################################################
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        # create tmp dir for longhorn
+        rm -rf /tmp/vault &&  mkdir -p /tmp/vault
+    """
+    ##################################################################
+    log -f ${CURRENT_FUNC} "sending vault values.yaml to control-plane node: ${CONTROL_PLANE_HOST}"
+    scp -q ./vault/values.yaml $CONTROL_PLANE_HOST:/tmp/vault/
+    ##################################################################
+    log -f ${CURRENT_FUNC} "sending vault http-routes.yaml to control-plane node: ${CONTROL_PLANE_HOST}"
+    scp -q ./vault/http-routes.yaml $CONTROL_PLANE_HOST:/tmp/vault/
     ##################################################################
     log -f ${CURRENT_FUNC} "Installing hashicorp vault Helm chart"
-    helm install vault hashicorp/vault -n $VAULT_NS \
-        --create-namespace --version $VAULT_VERSION \
-        -f vault/values.yaml \
-        --set injector.replicas=${REPLICAS} \
-        --set server.ha.replicas=${REPLICAS} \
-        > "${VAULT_LOGS}" 2>&1 || true
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        output=\$(helm install vault hashicorp/vault \
+            --namespace $VAULT_NS \
+            --create-namespace \
+            --version $VAULT_VERSION \
+            -f /tmp/vault/values.yaml \
+            ${VERBOSE} || true)
+            # Check if the Helm install command was successful
+        if [ ! \$? -eq 0 ]; then
+            log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install vault:\n\t\${output}\"
+            exit 1
+        fi
+        echo \$output
+    """
+    # -- set server.dev.enabled=true \
+
+    #
+    # --set injector.replicas=1 \
+    # --set server.ha.replicas=1 \
+    # ${REPLICAS}
+    # --set server.dataStorage.mountPath="${EXTRAVOLUMES_ROOT}"/vault/data \
+    # --set server.auditStorage.mountPath="${EXTRAVOLUMES_ROOT}"/vault/audit \
+    if [ $? -eq 0 ]; then
+        log -f "${CURRENT_FUNC}" "Finished installing vault on namespace: '${VAULT_NS}'"
+    else
+        log -f "${CURRENT_FUNC}" "ERROR" "Failed to install vault"
+        return 1
+    fi
     ##################################################################
+    log -f ${CURRENT_FUNC} "applying http-routes for vault ingress"
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        kubectl apply -f /tmp/vault/http-routes.yaml ${VERBOSE}
+    """
 }
 
 
 
 install_rancher () {
-    helm_chart_prerequisites "rancher-${RANCHER_BRANCH}" "https://releases.rancher.com/server-charts/${RANCHER_BRANCH}" "$RANCHER_NS" "true" "true"
-
+    ##################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Started rancher-${RANCHER_BRANCH} helm chart prerequisites"
+    helm_chart_prerequisites "$CONTROL_PLANE_HOST" "rancher-${RANCHER_BRANCH}" "https://releases.rancher.com/server-charts/${RANCHER_BRANCH}" "$RANCHER_NS" "true" "true"
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to install rancher-${RANCHER_BRANCH} helm chart prerequisites"
+        return 1
+    fi
+    log -f ${CURRENT_FUNC} "Finished rancher-${RANCHER_BRANCH} helm chart prerequisites"
     # ##################################################################
     # log -f ${CURRENT_FUNC} "adding rancher repo to helm"
     # helm repo add rancher-${RANCHER_BRANCH} https://releases.rancher.com/server-charts/${RANCHER_BRANCH} ${VERBOSE} || true
@@ -1951,130 +2090,317 @@ install_rancher () {
     # log -f ${CURRENT_FUNC} "Creating rancher NS: '$RANCHER_NS'"
     # kubectl create ns $RANCHER_NS ${VERBOSE} || true
     ##################################################################
-    log -f ${CURRENT_FUNC} "WARNING" "Warning: Currently rancher supports kubeVersion up to 1.31.0"
-    log -f ${CURRENT_FUNC} "WARNING" "initiating workaround to force the install..."
+    # log -f ${CURRENT_FUNC} "WARNING" "Warning: Currently rancher supports kubeVersion up to 1.31.0"
+    # log -f ${CURRENT_FUNC} "WARNING" "initiating workaround to force the install..."
 
-    DEVEL=""
-    if [ ${RANCHER_BRANCH} == "alpha" ]; then
-        log -f ${CURRENT_FUNC} "WARNING" "Deploying rancher from alpha branch..."
-        DEVEL="--devel"
-    fi
-    # helm install rancher rancher-${RANCHER_BRANCH}/rancher \
-    # helm install rancher ./rancher/rancher-${RANCHER_VERSION}.tar.gz \
+    # DEVEL=""
+    # if [ ${RANCHER_BRANCH} == "alpha" ]; then
+    #     log -f ${CURRENT_FUNC} "WARNING" "Deploying rancher from alpha branch..."
+    #     DEVEL="--devel"
+    # fi
+    # # helm install rancher rancher-${RANCHER_BRANCH}/rancher \
+    # # helm install rancher ./rancher/rancher-${RANCHER_VERSION}.tar.gz \
 
 
-    log -f ${CURRENT_FUNC} "Started deploying rancher on the cluster"
-    eval """
-        helm install rancher rancher-${RANCHER_BRANCH}/rancher ${DEVEL} \
-        --version ${RANCHER_VERSION}  \
-        --namespace ${RANCHER_NS} \
-        --set hostname=${RANCHER_FQDN} \
-        --set bootstrapPassword=${RANCHER_ADMIN_PASS}  \
-        --set replicas=${REPLICAS} \
-        -f rancher/values.yaml ${VERBOSE} \
-        ${VERBOSE}
-    """
-    # kubectl -n $RANCHER_NS rollout status deploy/rancher
-    log -f ${CURRENT_FUNC} "Finished deploying rancher on the cluster"
+    # log -f ${CURRENT_FUNC} "Started deploying rancher on the cluster"
+    # eval """
+    #     helm install rancher rancher-${RANCHER_BRANCH}/rancher ${DEVEL} \
+    #     --version ${RANCHER_VERSION}  \
+    #     --namespace ${RANCHER_NS} \
+    #     --set hostname=${RANCHER_FQDN} \
+    #     --set bootstrapPassword=${RANCHER_ADMIN_PASS}  \
+    #     --set replicas=${REPLICAS} \
+    #     -f rancher/values.yaml ${VERBOSE} \
+    #     ${VERBOSE}
+    # """
+    # # kubectl -n $RANCHER_NS rollout status deploy/rancher
+    # log -f ${CURRENT_FUNC} "Finished deploying rancher on the cluster"
 
-    admin_url="https://rancher.pfs.pack/dashboard/?setup=$(kubectl get secret --namespace ${RANCHER_NS} bootstrap-secret -o go-template='{{.data.bootstrapPassword|base64decode}}')"
-    log -f ${CURRENT_FUNC} "Access the admin panel at: $admin_url"
+    # admin_url="https://rancher.pfs.pack/dashboard/?setup=$(kubectl get secret --namespace ${RANCHER_NS} bootstrap-secret -o go-template='{{.data.bootstrapPassword|base64decode}}')"
+    # log -f ${CURRENT_FUNC} "Access the admin panel at: $admin_url"
 
-    admin_password=$(kubectl get secret --namespace ${RANCHER_NS} bootstrap-secret -o go-template='{{.data.bootstrapPassword|base64decode}}{{ "\n" }}')
-    log -f ${CURRENT_FUNC} "Admin bootstrap password is: ${admin_password}"
-    ##################################################################
-    log -f ${CURRENT_FUNC} "Applying rancher HTTPRoute for ingress."
-    kubectl apply -f rancher/http-routes.yaml
-    ##################################################################
-    sleep 150
-    log -f ${CURRENT_FUNC} "Removing completed pods"
-    kubectl delete pods -n ${RANCHER_NS} --field-selector=status.phase=Succeeded
-    ##################################################################
+    # admin_password=$(kubectl get secret --namespace ${RANCHER_NS} bootstrap-secret -o go-template='{{.data.bootstrapPassword|base64decode}}{{ "\n" }}')
+    # log -f ${CURRENT_FUNC} "Admin bootstrap password is: ${admin_password}"
+    # ##################################################################
+    # log -f ${CURRENT_FUNC} "Applying rancher HTTPRoute for ingress."
+    # kubectl apply -f rancher/http-routes.yaml
+    # ##################################################################
+    # sleep 150
+    # log -f ${CURRENT_FUNC} "Removing completed pods"
+    # kubectl delete pods -n ${RANCHER_NS} --field-selector=status.phase=Succeeded
+    # ##################################################################
     log -f ${CURRENT_FUNC} "Rancher installation completed."
 
 }
 
-# #################################################################
-# if [ "$PREREQUISITES" = true ]; then
-#     if ! deploy_hostsfile; then
-#         log -f "main" "ERROR" "An error occured while updating the hosts files."
-#         exit 1
-#     fi
-# fi
-# #################################################################
-# if [ $RESET_CLUSTER_ARG -eq 1 ]; then
-#     reset_cluster
-# fi
-# #################################################################
-# if [ "$PREREQUISITES" = true ]; then
-#     #################################################################
-#     if ! prerequisites_requirements; then
-#         log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
-#         exit 1
-#     fi
-#     #################################################################
-#     if ! install_kubetools; then
-#         log -f "main" "ERROR" "Failed to install kuberenetes required tools for cluster deployment."
-#     fi
-#     #################################################################
-# else
-#     log "deploy.sh" "INFO" "Cluster prerequisites have been skipped"
-# fi
-# #################################################################
-# if ! install_cluster; then
-#     log -f main "ERROR" "An error occurred while deploying the cluster"
-#     exit 1
-# fi
-# #################################################################
-# if ! install_gateway_CRDS; then
-#     log -f main "ERROR" "An error occurred while deploying gateway CRDS"
-#     exit 1
-# fi
-# #################################################################
-# if ! install_cilium_prerequisites; then
-#     log -f main "ERROR" "An error occurred while installing cilium prerequisites"
-#     exit 1
-# fi
-# #################################################################
-# if ! install_cilium; then
-#     log -f main "ERROR" "An error occurred while installing cilium"
-#     exit 1
-# fi
-# #################################################################
-# join_cluster
-# #################################################################
-# if ! install_gateway; then
-#     log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
-#     exit 1
-# fi
-# ##################################################################
-# if ! restart_cilium; then
-#     log -f "main" "ERROR" "Failed to start cilium service."
-#     exit 1
-# fi
+
+
+install_cephrook(){
+    ###################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ###################################################################
+    log -f ${CURRENT_FUNC} "Started rook-ceph helm chart prerequisites"
+    helm_chart_prerequisites "$CONTROL_PLANE_HOST" "rook" "https://charts.rook.io/release" "$ROOKCEPH_NS" "true" "true"
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to install rook-ceph helm chart prerequisites"
+        return 1
+    fi
+    log -f ${CURRENT_FUNC} "Finished rook-ceph helm chart prerequisites"
+    ##################################################################
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        rm -rf /tmp/rook-ceph &&  mkdir -p /tmp/rook-ceph
+    """
+    # ##################################################################
+    # log -f ${CURRENT_FUNC} "sending rook-ceph values.yaml to control-plane node: ${CONTROL_PLANE_HOST}"
+    # scp -q ./rook-ceph/values.yaml $CONTROL_PLANE_HOST:/tmp/rook-ceph/
+    # ##################################################################
+    # log -f ${CURRENT_FUNC} "sending rook-ceph cluster-values.yaml to control-plane node: ${CONTROL_PLANE_HOST}"
+    # scp -q ./rook-ceph/cluster-values.yaml $CONTROL_PLANE_HOST:/tmp/rook-ceph/
+    # ##################################################################
+    # log -f ${CURRENT_FUNC} "Installing rook-ceph Helm chart"
+    # ssh -q ${CONTROL_PLANE_HOST} <<< """
+    #     output=\$(helm install rook-ceph rook/rook-ceph \
+    #         --namespace $ROOKCEPH_NS \
+    #         --create-namespace \
+    #         --version $ROOKCEPH_VERSION \
+    #         -f /tmp/rook-ceph/values.yaml \
+    #         ${VERBOSE} || true)
+    #     if [ ! \$? -eq 0 ]; then
+    #         log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install rook-ceph:\n\t\${output}\"
+    #         exit 1
+    #     fi
+    # """
+    # if [ $? -eq 0 ]; then
+    #     log -f "${CURRENT_FUNC}" "Finished installing rook-ceph on namespace: '${ROOKCEPH_NS}'"
+    # else
+    #     log -f "${CURRENT_FUNC}" "ERROR" "Failed to install rook-ceph"
+    #     return 1
+    # fi
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Finished deploying rook-ceph on the cluster."
+
+}
+
+
+
+install_cephrook_cluster(){
+    ###################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ###################################################################
+    log -f ${CURRENT_FUNC} "Started rook-ceph helm chart prerequisites"
+    helm_chart_prerequisites "$CONTROL_PLANE_HOST" "rook-cluster" "https://charts.rook.io/release" "$ROOKCEPH_NS" "true" "true"
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to install rook-ceph helm chart prerequisites"
+        return 1
+    fi
+    log -f ${CURRENT_FUNC} "Finished rook-ceph helm chart prerequisites"
+    # ##################################################################
+    # ssh -q ${CONTROL_PLANE_HOST} <<< """
+    #     rm -rf /tmp/rook-ceph-cluster &&  mkdir -p /tmp/rook-ceph-cluster
+    # """
+    # ##################################################################
+    # log -f ${CURRENT_FUNC} "sending rook-ceph cluster-values.yaml to control-plane node: ${CONTROL_PLANE_HOST}"
+    # scp -q ./rook-ceph/cluster-values.yaml $CONTROL_PLANE_HOST:/tmp/rook-ceph-cluster/
+    # ##################################################################
+    # log -f ${CURRENT_FUNC} "Installing rook-ceph cluster Helm chart"
+    # ssh -q ${CONTROL_PLANE_HOST} <<< """
+    #     output=\$(helm install rook-ceph-cluster rook-cluster/rook-ceph-cluster \
+    #         --namespace $ROOKCEPH_NS \
+    #         --create-namespace \
+    #         --set operatorNamespace=$ROOKCEPH_NS \
+    #         --version $ROOKCEPH_VERSION \
+    #         -f /tmp/rook-ceph-cluster/cluster-values.yaml \
+    #         ${VERBOSE} || true)
+    #     if [ ! \$? -eq 0 ]; then
+    #         log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install rook-ceph:\n\t\${output}\"
+    #         exit 1
+    #     fi
+    #     echo \$output
+    # """
+    # if [ $? -eq 0 ]; then
+    #     log -f "${CURRENT_FUNC}" "Finished installing rook-ceph cluster on namespace: '${ROOKCEPH_NS}'"
+    # else
+    #     log -f "${CURRENT_FUNC}" "ERROR" "Failed to install rook-ceph cluster"
+    #     return 1
+    # fi
+    # ##################################################################
+    # log -f ${CURRENT_FUNC} "Finished deploying rook-ceph cluster on the cluster."
+
+}
+
+
+
+
+
+install_kafka() {
+    ###################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ###################################################################
+    log -f ${CURRENT_FUNC} "Started kafka helm chart prerequisites"
+    helm_chart_prerequisites "$CONTROL_PLANE_HOST" "bitnami" "https://charts.bitnami.com/bitnami" "$KAFKA_NS" "true" "true"
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to install kafka helm chart prerequisites"
+        return 1
+    fi
+    log -f ${CURRENT_FUNC} "Finished kafka helm chart prerequisites"
+    ##################################################################
+    log -f ${CURRENT_FUNC} "removing kafka crds"
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        kubectl delete crd --selector app=kafka --now=true ${VERBOSE} || true
+    """
+    ##################################################################
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        # create tmp dir for kafka
+        rm -rf /tmp/kafka &&  mkdir -p /tmp/kafka
+    """
+    ##################################################################
+    log -f ${CURRENT_FUNC} "sending kafka values.yaml to control-plane node: ${CONTROL_PLANE_HOST}"
+    scp -q ./kafka/values.yaml $CONTROL_PLANE_HOST:/tmp/kafka/
+    ##################################################################
+    log -f ${CURRENT_FUNC} "sending kafka http-routes.yaml to control-plane node: ${CONTROL_PLANE_HOST}"
+    scp -q ./kafka/http-routes.yaml $CONTROL_PLANE_HOST:/tmp/kafka/
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Installing bitnami kafka Helm chart"
+    ssh -q ${CONTROL_PLANE_HOST} <<< """
+        output=\$(helm install kafka bitnami/kafka \
+            --namespace $KAFKA_NS \
+            --create-namespace \
+            --version $KAFKA_VERSION \
+            -f /tmp/kafka/values.yaml \
+            ${VERBOSE} || true)
+            # Check if the Helm install command was successful
+        if [ ! \$? -eq 0 ]; then
+            log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install kafka:\n\t\${output}\"
+            exit 1
+        fi
+    """
+    if [ $? -eq 0 ]; then
+        log -f "${CURRENT_FUNC}" "Finished installing kafka on namespace: '${KAFKA_NS}'"
+    else
+        log -f "${CURRENT_FUNC}" "ERROR" "Failed to install kafka"
+        return 1
+    fi
+    ##################################################################
+    # log -f ${CURRENT_FUNC} "applying http-routes for kafka ingress"
+    # ssh -q ${CONTROL_PLANE_HOST} <<< """
+    #     kubectl apply -f /tmp/kafka/http-routes.yaml ${VERBOSE}
+    # """
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Finished deploying kafka on the cluster."
+}
+
+
+#################################################################
+if [ "$PREREQUISITES" = true ]; then
+    if ! deploy_hostsfile; then
+        log -f "main" "ERROR" "An error occured while updating the hosts files."
+        exit 1
+    fi
+fi
+#################################################################
+if [ $RESET_CLUSTER_ARG -eq 1 ]; then
+    reset_cluster
+fi
+#################################################################
+if [ "$PREREQUISITES" = true ]; then
+    #################################################################
+    if ! prerequisites_requirements; then
+        log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
+        exit 1
+    fi
+    #################################################################
+    if ! install_kubetools; then
+        log -f "main" "ERROR" "Failed to install kuberenetes required tools for cluster deployment."
+    fi
+else
+    log "deploy.sh" "INFO" "Cluster prerequisites have been skipped"
+fi
+#################################################################
+if ! install_cluster; then
+    log -f main "ERROR" "An error occurred while deploying the cluster"
+    exit 1
+fi
+#################################################################
+if ! install_gateway_CRDS; then
+    log -f main "ERROR" "An error occurred while deploying gateway CRDS"
+    exit 1
+fi
+#################################################################
+if ! install_cilium_prerequisites; then
+    log -f main "ERROR" "An error occurred while installing cilium prerequisites"
+    exit 1
+fi
+#################################################################
+if ! install_cilium; then
+    log -f main "ERROR" "An error occurred while installing cilium"
+    exit 1
+fi
+#################################################################
+join_cluster
+#################################################################
+if ! install_gateway; then
+    log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
+    exit 1
+fi
 ##################################################################
-# if ! install_certmanager_prerequisites; then
-#     log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
-#     exit 1
-# fi
-# ##################################################################
-# if ! install_certmanager; then
-#     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
-#     exit 1
-# fi
-##################################################################
-# # TODO, status checks and tests
-# install_rancher
-##################################################################
-if ! install_longhorn_prerequisites; then
-    log -f "main" "ERROR" "Failed to install longhorn prerequisites"
+if ! restart_cilium; then
+    log -f "main" "ERROR" "Failed to start cilium service."
+    exit 1
+fi
+#################################################################
+if [ "$PREREQUISITES" = true ]; then
+    if ! install_certmanager_prerequisites; then
+        log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
+        exit 1
+    fi
+fi
+if ! install_certmanager; then
+    log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
     exit 1
 fi
 
-# install_longhorn
+# ################################################################
+# # TODO, status checks and tests
+# # install_rancher
 
-# install_vault
+# #################################################################
+# if [ "$PREREQUISITES" = true ]; then
+#     if ! install_longhorn_prerequisites; then
+#         log -f "main" "ERROR" "Failed to install longhorn prerequisites"
+#         exit 1
+#     fi
+# fi
+# if ! install_longhorn; then
+#     log -f "main" "ERROR" "Failed to install longhorn on the cluster"
+#     exit 1
+# fi
+##################################################################
+# if ! install_cephrook; then
+#     log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
+#     exit 1
+# fi
+##################################################################
+if ! install_cephrook_cluster; then
+    log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
+    exit 1
+fi
+# ##################################################################
+# # if ! install_consul; then
+# #     log -f "main" "ERROR" "Failed to install consul on the cluster"
+# #     exit 1
+# # fi
+# ##################################################################
+# if ! install_vault; then
+#     log -f "main" "ERROR" "Failed to install longhorn on the cluster"
+#     exit 1
+# fi
 
+##################################################################
+# if ! install_kafka; then
+#     log -f "main" "ERROR" "Failed to install kafka on the cluster"
+#     exit 1
+# fi
+##################################################################
 log "deploy.sh" "INFO" "deployment finished"
 
 
@@ -2110,3 +2436,6 @@ log "deploy.sh" "INFO" "deployment finished"
 # When doing TLS Passthrough, backends will see Cilium Envoy’s IP address as the source of the forwarded TLS streams.
 # https://docs.cilium.io/en/v1.17/network/servicemesh/gateway-api/gateway-api/#tls-passthrough-and-source-ip-visibility
 
+
+# kubectl delete -f https://raw.githubusercontent.com/longhorn/longhorn/v1.8.1/examples/storageclass.yaml
+# kubectl delete -f https://raw.githubusercontent.com/longhorn/longhorn/v1.8.1/examples/pod_with_pvc.yaml
