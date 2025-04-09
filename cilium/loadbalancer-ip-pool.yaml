@@ -1,12 +1,13 @@
 apiVersion: "cilium.io/v2alpha1"
 kind: CiliumLoadBalancerIPPool
 metadata:
-  name: "external-ips"
+  name: "loadbalancer-ip-pool"
 spec:
   blocks:
-  - cidr: "10.66.65.7/32"
-  # - start: "10.66.65.8"
-  #   stop: "10.66.65.9"
+  # - cidr: "10.66.65.8/32"
+  # - cidr: "10.66.65.9/32"
+  - start: "10.66.65.8"
+    stop: "10.66.65.9"
   disabled: false
 
 # services must be annotated with: to be able to share the same lb ip
