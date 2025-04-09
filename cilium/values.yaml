@@ -316,15 +316,15 @@ hubble:
     # -- Port to listen to.
     listenPort: "4245"
     # -- Additional hubble-relay volumes.
-    extraVolumes:
-    - name: hubble-relay
-      hostPath:
-        path: /mnt/longhorn-1/extraVolumes/cilium/hubble-relay
-        type: Directory
-    # -- Additional hubble-relay volumeMounts.
-    extraVolumeMounts:
-    - name: hubble-relay
-      mountPath: /var/
+    # extraVolumes:
+    # - name: hubble-relay
+    #   hostPath:
+    #     path: /mnt/longhorn-1/extraVolumes/cilium/hubble-relay
+    #     type: Directory
+    # # -- Additional hubble-relay volumeMounts.
+    # extraVolumeMounts:
+    # - name: hubble-relay
+    #   mountPath: /var/
   ui:
     enabled: True
     # replicas: 2
