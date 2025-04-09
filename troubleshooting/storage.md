@@ -86,3 +86,11 @@ sudo resize2fs /dev/rootvg/lv_var
 sudo xfs_growfs /dev/almalinux/root
 ```
 
+
+
+
+###### check logs when PV/PVC fail:
+```bash
+kubectl logs -n longhorn-system -l  app=longhorn-manager
+```
+

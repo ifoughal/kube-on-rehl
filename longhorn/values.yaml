@@ -9,8 +9,9 @@ persistence:
   # defaultFsType: ext4
   defaultFsType: xfs
   defaultMkfsParams: ""
-  # defaultClassReplicaCount: 2
-  defaultDataLocality: disabled # best-effort otherwise
+  defaultClassReplicaCount: 1
+  # defaultDataLocality: best-effort # otherwise disabled when replicaCount > 1
+  defaultDataLocality: strict-local
   defaultReplicaAutoBalance: ignored # "disabled", "least-effort" or "best-effort" otherwise
   reclaimPolicy: Delete
   migratable: false
@@ -30,10 +31,10 @@ persistence:
 
 csi:
   kubeletRootDir: ~
-  # attacherReplicaCount: ~
-  # provisionerReplicaCount: ~
-  # resizerReplicaCount: ~
-  # snapshotterReplicaCount: ~
+  attacherReplicaCount: 1
+  provisionerReplicaCount: 1
+  resizerReplicaCount: 1
+  snapshotterReplicaCount: 1
 
 defaultSettings:
   autoSalvage: false   # set to true in prod
@@ -43,28 +44,31 @@ defaultSettings:
   replicaZoneSoftAntiAffinity: false
   replicaDiskSoftAntiAffinity: false
   volumeAttachmentRecoveryPolicy: never
-  defaultLonghornStaticStorageClass: longhorn-static
+  defaultLonghornStaticStorageClass: longhron # longhorn-static
   nodeDownPodDeletionPolicy: do-nothing
 
-  # defaultReplicaCount: 2
-  defaultDataLocality: strict-local  # incompatible with ReadWriteMany (RWX)
-
-  # guaranteedEngineManagerCPU: 0.25
-  # guaranteedReplicaManagerCPU: 0.25
+  defaultReplicaCount: 1
+  # defaultDataLocality: disabled # ~
+  defaultDataLocality: strict-local # incompatible with ReadWriteMany (RWX)
+  # defaultDataLocality: best-effort
+  guaranteedInstanceManagerCpu: 1
+  guaranteedEngineManagerCPU: 1
+  guaranteedReplicaManagerCPU: 1
   backupTarget: ~
   # backupTarget: s3://backupbucket@us-east-1/backupstore
   backupTargetCredentialSecret: ~
 
+  orphanAutoDeletion: true
 
   allowRecurringJobWhileVolumeDetached: ~
-  createDefaultDiskLabeledNodes: ~
+  createDefaultDiskLabeledNodes: true
   # defaultDataPath: /mnt/longhorn-1/longhorn/
   defaultDataPath: /var/lib/longhorn/
 
-  replicaAutoBalance: ~
-  storageOverProvisioningPercentage: ~
-  storageMinimalAvailablePercentage: ~
-  upgradeChecker: ~
+  replicaAutoBalance: least-effort
+  storageOverProvisioningPercentage: 600
+  storageMinimalAvailablePercentage: 15
+  upgradeChecker: false
   backupstorePollInterval: ~
   failedBackupTTL: ~
   restoreVolumeRecurringJobs: ~
@@ -89,7 +93,6 @@ defaultSettings:
   backingImageRecoveryWaitInterval: ~
 
   kubernetesClusterAutoscalerEnabled: ~
-  orphanAutoDeletion: ~
   storageNetwork: ~
   deletingConfirmationFlag: ~
   engineReplicaTimeout: ~
@@ -145,7 +148,7 @@ longhornDriver:
   #  label-key2: "label-value2"
 
 longhornUI:
-  # replicas: 2
+  replicas: 1
   priorityClass: ~
   tolerations: []
   ## If you want to set tolerations for Longhorn UI Deployment, delete the `[]` in the line above
@@ -161,7 +164,7 @@ longhornUI:
   #  label-key2: "label-value2"
 
 longhornConversionWebhook:
-  # replicas: 2
+  replicas: 1
   priorityClass: ~
   tolerations: []
   ## If you want to set tolerations for Longhorn conversion webhook Deployment, delete the `[]` in the line above
@@ -177,7 +180,7 @@ longhornConversionWebhook:
   #  label-key2: "label-value2"
 
 longhornAdmissionWebhook:
-  # replicas: 2
+  replicas: 1
   priorityClass: ~
   tolerations: []
   ## If you want to set tolerations for Longhorn admission webhook Deployment, delete the `[]` in the line above
@@ -193,7 +196,7 @@ longhornAdmissionWebhook:
   #  label-key2: "label-value2"
 
 longhornRecoveryBackend:
-  # replicas: 2
+  replicas: 1
   priorityClass: ~
   tolerations: []
   ## If you want to set tolerations for Longhorn recovery backend Deployment, delete the `[]` in the line above

@@ -72,8 +72,9 @@ SUB_DISK=2
 VOLUME_PATH=/var
 VOLUME_TO_EXTEND=/dev/rootvg/lv_var
 
-PARTITION_SIZE="+10G"
+PARTITION_SIZE="+30G"
 
+#create a new partition
 sudo fdisk "$DISK" <<EOF
 n
 ${SUB_DISK}
@@ -82,17 +83,17 @@ ${PARTITION_SIZE}
 w
 EOF
 
-
+#############################################
 SUB_DISK=${DISK}${SUB_DISK}    # EG: /dev/sdb2
 
 # # Extend rootvg:
-vgextend rootvg ${SUB_DISK}
+sudo vgextend rootvg ${SUB_DISK}
 
-lvextend -L+10G $VOLUME_TO_EXTEND
+sudo lvextend -L+10G $VOLUME_TO_EXTEND
 # if ext4
-resize2fs ${VOLUME_TO_EXTEND}
+sudo resize2fs ${VOLUME_TO_EXTEND}
 # else if xfs:
-xfs_growfs ${VOLUME_PATH}
+sudo xfs_growfs ${VOLUME_PATH}
 #############################################
 
 DISK="/dev/sdb"      # Change this if using another disk

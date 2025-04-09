@@ -6,7 +6,7 @@ metadata:
   namespace: longhorn-system
 spec:
   parentRefs:
-  - name: https-gateway
+  - name: shared-https-gateway
     namespace: kube-system
     sectionName: http
   hostnames:
@@ -25,10 +25,10 @@ metadata:
   name: longhorn-https-redirect
   namespace: longhorn-system
   labels:
-    gateway: https-gateway
+    gateway: shared-https-gateway
 spec:
   parentRefs:
-  - name: https-gateway
+  - name: shared-https-gateway
     namespace: kube-system
     sectionName: https
   hostnames:

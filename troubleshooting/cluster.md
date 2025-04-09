@@ -39,3 +39,9 @@ curl -4  https://metallb-webhook-service.metallb-system.svc -vvv --insecure
 kubeadm token create --print-join-command
 ```
 
+# Get pod status in boolean example:
+```bash
+kubectl get pods -n kube-system -l k8s-app=cilium -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}'
+```
+
+
