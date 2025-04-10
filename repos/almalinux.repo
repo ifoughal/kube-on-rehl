@@ -4,24 +4,28 @@ mirrorlist=https://mirrors.almalinux.org/mirrorlist/$OS_VERSION/baseos
 # baseurl=https://repo.almalinux.org/almalinux/$OS_VERSION/BaseOS/$basearch/os/
 enabled=1
 gpgcheck=1
-countme=1
+countme=0
 gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux-9
 metadata_expire=86400
 enabled_metadata=1
 
 [almalinux-appstream]
 name=AlmaLinux $OS_VERSION AppStream
-baseurl=https://repo.almalinux.org/almalinux/$OS_VERSION/AppStream/aarch64/os/
+baseurl=https://repo.almalinux.org/almalinux/$OS_VERSION/AppStream/$ARCH/os/
 enabled=1
 gpgcheck=1
 gpgkey=https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux
+metadata_expire=86400
+enabled_metadata=1
 
 [crb]
 name=AlmaLinux 9 - CRB
-baseurl=http://repo.almalinux.org/almalinux/9.5/CRB/x86_64/os/
+baseurl=http://repo.almalinux.org/almalinux/9.5/CRB/$ARCH/os/
 enabled=1
 gpgcheck=1
 gpgkey=http://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux
+metadata_expire=86400
+enabled_metadata=1
 
 [kubernetes]
 name=Kubernetes
@@ -30,4 +34,5 @@ enabled=1
 gpgcheck=1
 gpgkey=https://pkgs.k8s.io/core:/stable:/v$K8S_MAJOR_VERSION/rpm/repodata/repomd.xml.key
 exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
-
+metadata_expire=86400
+enabled_metadata=1

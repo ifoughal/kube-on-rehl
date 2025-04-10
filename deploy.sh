@@ -185,6 +185,7 @@ deploy_hostsfile () {
         log -f ${CURRENT_FUNC} "ERROR" "Failed to determine OS version."
         exit 1
     fi
+    export ARCH=$(arch)
     envsubst < ./repos/almalinux.repo | sudo tee /etc/yum.repos.d/almalinux.repo 1> /dev/null
     sudo chown root:root /etc/yum.repos.d/*
     sudo chmod 644 /etc/yum.repos.d/*
