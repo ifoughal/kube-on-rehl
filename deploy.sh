@@ -413,29 +413,6 @@ EOF
         """
         log -f ${CURRENT_FUNC} "Finished modifying hosts file for ${role} node ${hostname}"
         ##################################################################
-        log -f ${CURRENT_FUNC} "sending repos file to target $role node: ${hostname}"
-        set -euo pipefail
-        scp -q /etc/yum.repos.d/almalinux.repo ${hostname}:/tmp
-
-        if [ "$RESET_REPOS" == "true" ]; then
-            log -f ${CURRENT_FUNC} "Resetting repos to default for $role node: ${hostname}"
-            ssh -q ${hostname} <<< """
-                sudo rm -rf /etc/yum.repos.d/*
-                sudo mv /tmp/almalinux.repo /etc/yum.repos.d/
-                sudo chmod 644 /etc/yum.repos.d/*
-            """
-        else
-            ssh -q ${hostname} <<< """
-                sudo rm -rf /etc/yum.repos.d/*
-                sudo mv /tmp/almalinux.repo /etc/yum.repos.d/
-                sudo chmod 644 /etc/yum.repos.d/*
-            """
-        fi
-        log -f ${CURRENT_FUNC} "Finished modifying repos file for ${role} node ${hostname}"
-        set +e
-        set +u
-        set +o pipefail
-        ##################################################################
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     if [ $error_raised -eq 0 ]; then
         log -f ${CURRENT_FUNC} "Finished deploying hosts file"
@@ -529,7 +506,22 @@ prerequisites_requirements() {
             sudo timedatectl set-ntp true > /dev/null 2>&1
             sudo timedatectl set-timezone $TIMEZONE > /dev/null 2>&1
             sudo timedatectl status > /dev/null 2>&1
-
+        """
+        #####################################################################################
+        log -f ${CURRENT_FUNC} "Configuring repos for ${role} node ${hostname}"
+        configure_repos $hostname $role "/etc/yum.repos.d/almalinux.repo"
+        if [ $? -ne 0 ]; then
+            error_raised=1
+            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while configuring repos for node ${hostname}..."
+            continue  # continue to next node and skip this one
+        else
+            log -f ${CURRENT_FUNC} "repos configured successfully for ${role} node ${hostname}"
+        fi
+        echo end of test
+        exit 0
+        #####################################################################################
+        log -f ${CURRENT_FUNC} "Adjusting NTP with chrony ${role} node ${hostname}"
+        ssh -q $hostname <<< """
             sudo dnf install -y chrony > /dev/null 2>&1
             sudo systemctl enable --now chronyd > /dev/null 2>&1
             sudo chronyc makestep > /dev/null 2>&1
@@ -544,16 +536,6 @@ prerequisites_requirements() {
             log -f ${CURRENT_FUNC} "NTP sync check passed for ${role} node ${hostname}"
         fi
         log -f ${CURRENT_FUNC} "Finished adjusting NTP for ${role} node ${hostname}"
-        #####################################################################################
-        log -f ${CURRENT_FUNC} "Configuring repos for ${role} node ${hostname}"
-        configure_repos $hostname "almalinux-baseos.repo"
-        if [ $? -ne 0 ]; then
-            error_raised=1
-            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while configuring repos for node ${hostname}..."
-            continue  # continue to next node and skip this one
-        else
-            log -f ${CURRENT_FUNC} "repos configured successfully for ${role} node ${hostname}"
-        fi
         #####################################################################################
         log -f ${CURRENT_FUNC} "Starting dnf optimisations for ${role} node ${hostname}"
         optimize_dnf $hostname "${VERBOSE}"

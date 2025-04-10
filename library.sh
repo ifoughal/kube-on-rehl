@@ -251,15 +251,36 @@ install_go () {
 
 
 configure_repos () {
-    local CURRENT_HOST=$1
-    local repo_file=$2
+    local current_host=$1
+    local current_role=$2
+    local repo_file=$3
+    ##################################################################
+    set -euo pipefail
+    ##################################################################
+    log -f ${CURRENT_FUNC} "sending repos file to target $current_role node: ${current_host}"
+    scp -q /etc/yum.repos.d/almalinux.repo ${current_host}:/tmp/
 
-
-    scp -q ./repos/$repo_file $CURRENT_HOST:/tmp/
-
-    log "INFO" "Configuring AlmaLinux 9 Repositories for node: ${CURRENT_HOST}"
-
-    ssh -q $CURRENT_HOST <<< """
+    if [ "$RESET_REPOS" == "true" ]; then
+        log -f ${CURRENT_FUNC} "Resetting repos to default for $current_role node: ${current_host}"
+        ssh -q ${current_host} <<< """
+            sudo rm -rf /etc/yum.repos.d/*
+            sudo mv /tmp/almalinux.repo /etc/yum.repos.d/
+            sudo chmod 644 /etc/yum.repos.d/*
+        """
+    else
+        ssh -q ${current_host} <<< """
+            sudo rm -rf /etc/yum.repos.d/*
+            sudo mv /tmp/almalinux.repo /etc/yum.repos.d/
+            sudo chmod 644 /etc/yum.repos.d/*
+        """
+    fi
+    log -f ${CURRENT_FUNC} "Finished modifying repos file for ${current_role} node ${current_host}"
+    set +e
+    set +u
+    set +o pipefail
+    ##################################################################
+    log "INFO" "Configuring AlmaLinux 9 Repositories for node: ${current_host}"
+    ssh -q $current_host <<< """
         set -euo pipefail # Exit on error
 
         log -f ${CURRENT_FUNC} \"Updating almalinux repos list\"
@@ -292,10 +313,10 @@ configure_repos () {
         sudo dnf -y update  ${VERBOSE}
     """
     if [ $? -ne 0 ]; then
-        log -f ${CURRENT_FUNC} "ERROR" "Failed to configure AlmaLinux 9 Repositories for node: ${CURRENT_HOST}"
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to configure AlmaLinux 9 Repositories for $current_role node ${current_host}"
         return 1
     else
-        log -f ${CURRENT_FUNC} "INFO" "Successfully configured AlmaLinux 9 Repositories for node: ${CURRENT_HOST}"
+        log -f ${CURRENT_FUNC} "INFO" "Successfully configured AlmaLinux 9 Repositories for $current_role node ${current_host}"
         return 0
     fi
 
