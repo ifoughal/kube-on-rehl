@@ -1,7 +1,7 @@
 [baseos]
-name=AlmaLinux $releasever - BaseOS
-mirrorlist=https://mirrors.almalinux.org/mirrorlist/$releasever/baseos
-# baseurl=https://repo.almalinux.org/almalinux/$releasever/BaseOS/$basearch/os/
+name=AlmaLinux $OS_VERSION - BaseOS
+mirrorlist=https://mirrors.almalinux.org/mirrorlist/$OS_VERSION/baseos
+# baseurl=https://repo.almalinux.org/almalinux/$OS_VERSION/BaseOS/$basearch/os/
 enabled=1
 gpgcheck=1
 countme=1
@@ -10,8 +10,8 @@ metadata_expire=86400
 enabled_metadata=1
 
 [almalinux-appstream]
-name=AlmaLinux $releasever AppStream
-baseurl=https://repo.almalinux.org/almalinux/$releasever/AppStream/aarch64/os/
+name=AlmaLinux $OS_VERSION AppStream
+baseurl=https://repo.almalinux.org/almalinux/$OS_VERSION/AppStream/aarch64/os/
 enabled=1
 gpgcheck=1
 gpgkey=https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux
