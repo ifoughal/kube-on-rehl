@@ -22,3 +22,12 @@ baseurl=http://repo.almalinux.org/almalinux/9.5/CRB/x86_64/os/
 enabled=1
 gpgcheck=1
 gpgkey=http://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux
+
+[kubernetes]
+name=Kubernetes
+baseurl=https://pkgs.k8s.io/core:/stable:/v$K8S_MAJOR_VERSION/rpm/
+enabled=1
+gpgcheck=1
+gpgkey=https://pkgs.k8s.io/core:/stable:/v$K8S_MAJOR_VERSION/rpm/repodata/repomd.xml.key
+exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
+
