@@ -258,22 +258,25 @@ configure_repos () {
     set -euo pipefail
     ##################################################################
     log -f ${CURRENT_FUNC} "sending repos file to target $current_role node: ${current_host}"
-    scp -q /etc/yum.repos.d/almalinux.repo ${current_host}:/tmp/
-
+    scp -q ${repo_file} ${current_host}:/tmp/
+    ##################################################################
     if [ "$RESET_REPOS" == "true" ]; then
-        log -f ${CURRENT_FUNC} "Resetting repos to default for $current_role node: ${current_host}"
+        log -f ${CURRENT_FUNC} "Resetting DNF repos to default for $current_role node: ${current_host}"
         ssh -q ${current_host} <<< """
             sudo rm -rf /etc/yum.repos.d/*
             sudo mv /tmp/almalinux.repo /etc/yum.repos.d/
             sudo chmod 644 /etc/yum.repos.d/*
+            sudo chown root:root /etc/yum.repos.d/*
         """
     else
+        log -f ${CURRENT_FUNC} "Modifying DNF repos for $current_role node: ${current_host}"
         ssh -q ${current_host} <<< """
-            sudo rm -rf /etc/yum.repos.d/*
             sudo mv /tmp/almalinux.repo /etc/yum.repos.d/
             sudo chmod 644 /etc/yum.repos.d/*
+            sudo chown root:root /etc/yum.repos.d/*
         """
     fi
+    ##################################################################
     log -f ${CURRENT_FUNC} "Finished modifying repos file for ${current_role} node ${current_host}"
     set +e
     set +u
@@ -282,10 +285,6 @@ configure_repos () {
     log "INFO" "Configuring AlmaLinux 9 Repositories for node: ${current_host}"
     ssh -q $current_host <<< """
         set -euo pipefail # Exit on error
-
-        log -f ${CURRENT_FUNC} \"Updating almalinux repos list\"
-        sudo mv /tmp/$repo_file /etc/yum.repos.d/$repo_file
-        sudo chown root:root /etc/yum.repos.d/$repo_file
 
         log -f ${CURRENT_FUNC} \"Fetching and importing AlmaLinux GPG keys...\"
         sudo curl -s -o /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux-9

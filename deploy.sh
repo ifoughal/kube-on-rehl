@@ -186,6 +186,7 @@ deploy_hostsfile () {
         exit 1
     fi
     envsubst < ./repos/almalinux.repo | sudo tee /etc/yum.repos.d/almalinux.repo 1> /dev/null
+    sudo chown root:root /etc/yum.repos.d/*
     sudo chmod 644 /etc/yum.repos.d/*
     ####################################################################
     log -f ${CURRENT_FUNC} "installing required packages to deploy the cluster"
