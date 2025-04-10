@@ -115,7 +115,7 @@ cephClusterSpec:
 
   # enable log collector, daemons will log on files and rotate
   logCollector:
-    enabled: true
+    enabled: false
     periodicity: daily # one of: hourly, daily, weekly, monthly
     maxLogSize: 500M # SUFFIX may be 'M' or 'G'. Must be at least 1M.
 
