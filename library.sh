@@ -258,12 +258,13 @@ configure_repos () {
     set -euo pipefail
     ##################################################################
     log -f ${CURRENT_FUNC} "sending repos file to target $current_role node: ${current_host}"
-    scp -q ${repo_file} ${current_host}:/tmp/
+    scp -q $repo_file ${current_host}:/tmp/almalinux.repo
     ##################################################################
     if [ "$RESET_REPOS" == "true" ]; then
         log -f ${CURRENT_FUNC} "Resetting DNF repos to default for $current_role node: ${current_host}"
         ssh -q ${current_host} <<< """
             sudo rm -rf /etc/yum.repos.d/*
+            sudo mkdir -p /etc/yum.repos.d/
             sudo mv /tmp/almalinux.repo /etc/yum.repos.d/
             sudo chmod 644 /etc/yum.repos.d/*
             sudo chown root:root /etc/yum.repos.d/*
@@ -282,7 +283,7 @@ configure_repos () {
     set +u
     set +o pipefail
     ##################################################################
-    log "INFO" "Configuring AlmaLinux 9 Repositories for node: ${current_host}"
+    log -f ${CURRENT_FUNC} "Configuring AlmaLinux 9 Repositories for node: ${current_host}"
     ssh -q $current_host <<< """
         set -euo pipefail # Exit on error
 

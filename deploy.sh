@@ -71,7 +71,7 @@ while [[ $# -gt 0 ]]; do
             RESET_CLUSTER_ARG=1
             shift
             ;;
-        --strist-hostkeys)
+        -s|--strist-hostkeys)
             STRICT_HOSTKEYS=1
             shift
             ;;
@@ -193,7 +193,7 @@ deploy_hostsfile () {
     log -f ${CURRENT_FUNC} "installing required packages to deploy the cluster"
     eval "sudo dnf update -y ${VERBOSE}"
     eval "sudo dnf upgrade -y  ${VERBOSE}"
-    eval "sudo dnf install -y sshpass python3-pip yum-utils bash-completion git wget bind-utils net-tools ${VERBOSE}"
+    eval "sudo dnf install -y sshpass python3-pip yum-utils bash-completion git wget bind-utils net-tools lsof ${VERBOSE}"
     eval "sudo pip install yq > /dev/null 2>&1"
     log -f ${CURRENT_FUNC} "Finished installing required packages to deploy the cluster"
    ##################################################################
@@ -393,11 +393,21 @@ EOF
             CURRENT_HOSTNAME=$(eval hostname)
         """
         log -f ${CURRENT_FUNC} "Finished setting hostname for '$role node': ${hostname}"
+        #####################################################################################
+        log -f ${CURRENT_FUNC} "Configuring repos for ${role} node ${hostname}"
+        configure_repos $hostname $role "/etc/yum.repos.d/almalinux.repo"
+        if [ $? -ne 0 ]; then
+            error_raised=1
+            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while configuring repos for node ${hostname}..."
+            continue  # continue to next node and skip this one
+        else
+            log -f ${CURRENT_FUNC} "repos configured successfully for ${role} node ${hostname}"
+        fi
         ################################################################
         log -f ${CURRENT_FUNC} "installing tools for '$role node': ${hostname}"
         ssh -q ${hostname} <<< """
             sudo dnf update -y  ${VERBOSE}
-            sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools ${VERBOSE}
+            sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools lsof ${VERBOSE}
             sudo pip install yq >/dev/null 2>&1
         """
         log -f ${CURRENT_FUNC} "Finished installing tools node: ${hostname}"
@@ -486,21 +496,34 @@ reset_cluster () {
         ssh -q ${hostname} <<< """
             sudo swapoff -a
 
-
             output=\$(sudo kubeadm reset -f 2>&1 )
             if [ \$? -ne 0 ]; then
                 log -f ${CURRENT_FUNC} 'ERROR' \"Error occurred while resetting k8s node ${hostname}...\n\$(printf \"%s\n\" \"\$output\")\"
                 exit 1
+            elif echo \"\$output\" | grep -qi 'failed\|error'; then
+                log -f ${CURRENT_FUNC} 'ERROR' \"Error occurred while resetting k8s node ${hostname}...\n\$(printf \"%s\n\" \"\$output\")\"
+                exit 1
             fi
             echo output: \$output
-            sudo rm -rf \$HOME/.kube/* \
-                /root/.kube/* \
-                /etc/cni/net.d/* \
-                /etc/kubernetes/* \
-                /var/lib/etcd/* \
-                /var/lib/cni/* \
-                /var/lib/kubelet/* \
-                /var/run/kubernetes/*
+
+            for id in \$(sudo crictl pods -q 2>&1); do
+                sudo crictl stopp \"\$id\" > /dev/null 2>&1
+                sudo crictl rmp \"\$id\" > /dev/null 2>&1
+            done
+
+            sudo crictl rm -fa > /dev/null 2>&1 # remove all containers
+            sudo crictl rmp -a > /dev/null 2>&1  # remove all pods
+            sudo crictl rmi -a > /dev/null 2>&1  # remove all images
+
+            sudo rm -rf \
+                \$HOME/.kube \
+                /root/.kube \
+                /etc/cni/net.d \
+                /etc/kubernetes \
+                /var/lib/etcd \
+                /var/lib/cni \
+                /var/lib/kubelet \
+                /var/run/kubernetes
             sudo systemctl daemon-reload
             sudo iptables -F
             sudo iptables -t nat -F
@@ -517,20 +540,30 @@ reset_cluster () {
             ssh -q ${hostname} <<< """
                 sudo swapoff -a
 
-                sudo rm -rf \$HOME/.kube/* \
-                    /root/.kube/* \
-                    /etc/cni/net.d/* \
-                    /etc/kubernetes/* \
-                    /var/lib/etcd/* \
-                    /var/lib/cni/* \
-                    /var/lib/kubelet/* \
-                    /var/run/kubernetes/*
+                for id in \$(sudo crictl pods -q 2>&1); do
+                    sudo crictl stopp \"\$id\" > /dev/null 2>&1
+                    sudo crictl rmp \"\$id\" > /dev/null 2>&1
+                done
+                sudo crictl rm -fa > /dev/null 2>&1 # remove all containers
+                sudo crictl rmp -a > /dev/null 2>&1  # remove all pods
+                sudo crictl rmi -a > /dev/null 2>&1  # remove all images
+
+                sudo rm -rf \
+                    \$HOME/.kube \
+                    /root/.kube \
+                    /etc/cni/net.d \
+                    /etc/kubernetes \
+                    /var/lib/etcd \
+                    /var/lib/cni \
+                    /var/lib/kubelet \
+                    /var/run/kubernetes
                 sudo systemctl daemon-reload
                 sudo iptables -F
                 sudo iptables -t nat -F
                 sudo iptables -t mangle -F
                 sudo iptables -X
             """
+            exit 1
             continue  # continue to next node and skip this one
         fi
         log -f ${CURRENT_FUNC} "Finished resetting k8s ${role} node node: ${hostname}"
@@ -577,16 +610,6 @@ prerequisites_requirements() {
             sudo timedatectl set-timezone $TIMEZONE > /dev/null 2>&1
             sudo timedatectl status > /dev/null 2>&1
         """
-        #####################################################################################
-        log -f ${CURRENT_FUNC} "Configuring repos for ${role} node ${hostname}"
-        configure_repos $hostname $role "/etc/yum.repos.d/almalinux.repo"
-        if [ $? -ne 0 ]; then
-            error_raised=1
-            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while configuring repos for node ${hostname}..."
-            continue  # continue to next node and skip this one
-        else
-            log -f ${CURRENT_FUNC} "repos configured successfully for ${role} node ${hostname}"
-        fi
         #####################################################################################
         log -f ${CURRENT_FUNC} "Adjusting NTP with chrony ${role} node ${hostname}"
         ssh -q $hostname <<< """
@@ -669,7 +692,7 @@ EOF
             log -f ${CURRENT_FUNC} "Finished setting password for user '${SUDO_USERNAME}' for ${role} node ${hostname}"
         fi
         #####################################################################################
-        log -f ${CURRENT_FUNC}"Started checking if the kernel is recent enough for ${role} node ${hostname}"
+        log -f ${CURRENT_FUNC} "Started checking if the kernel is recent enough for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             log -f kernel-version \"checking if the kernel is recent enough...\" ${VERBOSE}
             kernel_version=\$(uname -r)
@@ -2453,17 +2476,17 @@ install_kafka() {
 }
 
 
-# #################################################################
-# if [ "$PREREQUISITES" = true ]; then
-#     if ! deploy_hostsfile; then
-#         log -f "main" "ERROR" "An error occured while updating the hosts files."
-#         exit 1
-#     fi
-# fi
 #################################################################
-if [ $RESET_CLUSTER_ARG -eq 1 ]; then
-    reset_cluster
+if [ "$PREREQUISITES" = true ]; then
+    if ! deploy_hostsfile; then
+        log -f "main" "ERROR" "An error occured while updating the hosts files."
+        exit 1
+    fi
 fi
+# #################################################################
+# if [ $RESET_CLUSTER_ARG -eq 1 ]; then
+#     reset_cluster
+# fi
 #################################################################
 if [ "$PREREQUISITES" == "true" ]; then
     #################################################################
