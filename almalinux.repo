@@ -1,0 +1,27 @@
+[baseos]
+name=AlmaLinux 9 - BaseOS
+mirrorlist=https://mirrors.almalinux.org/mirrorlist/9/baseos
+enabled=1
+gpgcheck=1
+gpgkey=https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux
+
+[appstream]
+name=AlmaLinux 9 - AppStream
+mirrorlist=https://mirrors.almalinux.org/mirrorlist/9/appstream
+enabled=1
+gpgcheck=1
+gpgkey=https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux
+
+[crb]
+name=AlmaLinux 9 - CRB
+mirrorlist=https://mirrors.almalinux.org/mirrorlist/9/crb
+enabled=1
+gpgcheck=1
+gpgkey=https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux
+
+[extras]
+name=AlmaLinux 9 - Extras
+mirrorlist=https://mirrors.almalinux.org/mirrorlist/9/extras
+enabled=1
+gpgcheck=1
+gpgkey=https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux

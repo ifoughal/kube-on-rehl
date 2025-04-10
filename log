@@ -1,0 +1,78 @@
+#!/bin/bash
+
+# Define color codes
+COLOR_GREEN="\033[0;32m" # Green
+COLOR_RED="\033[0;31m"
+COLOR_RESET="\033[0m"    # reset to default
+COLOR_YELLOW="\033[0;33m"
+color_blue="\033[0;34m"
+color_magenta="\033[0;35m"
+COLOR_CYAN="\033[0;36m"
+
+CURRENT_DATE="date"
+
+# Validate log_level
+valid_log_levels=("DEBUG" "INFO" "WARNING" "ERROR")
+
+# Parse arguments
+# override_function="$0"
+silent=0
+
+# log_level="INFO"
+
+while [[ "$1" =~ ^- && ! "$1" == "--" ]]; do case $1 in
+  -f|--override-function )
+    shift
+    function=$1
+    ;;
+  -s|--silent )
+    shift
+    silent=1
+    ;;
+  -l|--level )
+    shift
+    log_level=$1
+    ;;
+  * )
+    message="$@"
+    shift
+    ;;
+esac; shift; done
+if [[ "$1" == '--' ]]; then shift; fi
+
+if [ -z "$function" ]; then
+	function="$0"
+fi
+
+
+if [ -z "$log_level" ]; then
+  log_level=$1
+	# Ensure that log leve is valid.
+	if [[ " ${valid_log_levels[@]} " =~ " ${log_level} " ]]; then
+		shift
+	else
+		log_level="INFO"
+	fi
+fi
+
+
+message="$@"
+datetime=$(date +"%Y-%m-%d %H:%M:%S,%3N")
+
+log_message="$datetime - ${log_level} - ${function} - ${message}"
+
+# Choose color based on log type
+case "$log_level" in
+    DEBUG) color="$COLOR_CYAN" ;;
+    INFO) color="$COLOR_GREEN" ;;
+    WARNING) color="$COLOR_YELLOW" ;;
+    ERROR) color="$COLOR_RED" ;;
+    *) color="$COLOR_RESET" ;;
+esac
+
+# Print log message with color and append to log file
+if [ "$silent" -eq 1 ]; then
+    echo -e "${color}${log_message}${COLOR_RESET}" | sudo tee -a /var/log/cluster_deployment.log 1>/dev/null
+else
+  echo -e "${color}${log_message}${COLOR_RESET}" | sudo tee -a /var/log/cluster_deployment.log
+fi

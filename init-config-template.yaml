@@ -1,0 +1,19 @@
+kind: ClusterConfiguration
+apiVersion: kubeadm.k8s.io/v1beta4
+certificatesDir: /etc/kubernetes/pki
+clusterName: ${CLUSTER_NAME}
+controlPlaneEndpoint: ${CONTROL_PLANE_HOST}:${CONTROLPLANE_API_PORT}
+etcd:
+  local:
+    dataDir: /var/lib/etcd
+imageRepository: ${KUBE_IMAGE_REPO}
+kubernetesVersion: v${K8S_MINOR_VERSION}
+networking:
+  dnsDomain: ${CLUSTER_DNS_DOMAINS}
+  serviceSubnet: ${CLUSTER_SERVICES_SUBNET}
+# CILIUM REPLACEMENT
+proxy:
+  disabled: true
+# controllerManager: {}
+# dns: {}
+# encryptionAlgorithm: RSA-2048

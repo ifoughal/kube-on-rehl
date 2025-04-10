@@ -1,0 +1,44 @@
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: longhorn-http
+  namespace: longhorn-system
+spec:
+  parentRefs:
+  - name: shared-https-gateway
+    namespace: kube-system
+    sectionName: http
+  hostnames:
+  - "longhorn-ui.pfs.pack"
+  - "longhorn.pfs.pack"
+  rules:
+  - filters:
+    - type: RequestRedirect
+      requestRedirect:
+        scheme: https
+        statusCode: 301
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: longhorn-https-redirect
+  namespace: longhorn-system
+  labels:
+    gateway: shared-https-gateway
+spec:
+  parentRefs:
+  - name: shared-https-gateway
+    namespace: kube-system
+    sectionName: https
+  hostnames:
+  - "longhorn-ui.pfs.pack"
+  - "longhorn.pfs.pack"
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: "/"
+    backendRefs:
+    - name: longhorn-frontend
+      port: 80
