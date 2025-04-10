@@ -174,11 +174,25 @@ deploy_hostsfile () {
     # Path to the YAML file
     # Extract the 'nodes' array from the YAML and process it with jq
     # yq '.nodes["control_plane_nodes"]' "$INVENTORY" | jq -r '.[] | "\(.ip) \(.hostname)"' | while read -r line; do
+    ##################################################################
+    log -f ${CURRENT_FUNC} "configuring almalinux repos."
+    if [ "$RESET_REPOS" == "true" ]; then
+        log -f ${CURRENT_FUNC} "Resetting repos to default."
+        sudo rm -rf /etc/yum.repos.d/*
+    fi
+    export OS_VERSION=$(grep '^VERSION_ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
+    if [ -z "$OS_VERSION" ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to determine OS version."
+        exit 1
+    fi
+    envsubst < ./repos/almalinux.repo | sudo tee /etc/yum.repos.d/almalinux.repo 1> /dev/null
+    sudo chmod 644 /etc/yum.repos.d/*
+    ####################################################################
     log -f ${CURRENT_FUNC} "installing required packages to deploy the cluster"
     eval "sudo dnf update -y ${VERBOSE}"
     eval "sudo dnf upgrade -y  ${VERBOSE}"
     eval "sudo dnf install -y sshpass python3-pip yum-utils bash-completion git wget bind-utils net-tools ${VERBOSE}"
-    eval "sudo pip install yq  >/dev/null 2>&1"
+    eval "sudo pip install yq > /dev/null 2>&1"
     log -f ${CURRENT_FUNC} "Finished installing required packages to deploy the cluster"
    ##################################################################
     # Convert YAML to JSON using yq
@@ -398,7 +412,30 @@ EOF
             sudo cp /tmp/hosts ${HOSTSFILE_PATH}
         """
         log -f ${CURRENT_FUNC} "Finished modifying hosts file for ${role} node ${hostname}"
-       ##################################################################
+        ##################################################################
+        log -f ${CURRENT_FUNC} "sending repos file to target $role node: ${hostname}"
+        set -euo pipefail
+        scp -q /etc/yum.repos.d/almalinux.repo ${hostname}:/tmp
+
+        if [ "$RESET_REPOS" == "true" ]; then
+            log -f ${CURRENT_FUNC} "Resetting repos to default for $role node: ${hostname}"
+            ssh -q ${hostname} <<< """
+                sudo rm -rf /etc/yum.repos.d/*
+                sudo mv /tmp/almalinux.repo /etc/yum.repos.d/
+                sudo chmod 644 /etc/yum.repos.d/*
+            """
+        else
+            ssh -q ${hostname} <<< """
+                sudo rm -rf /etc/yum.repos.d/*
+                sudo mv /tmp/almalinux.repo /etc/yum.repos.d/
+                sudo chmod 644 /etc/yum.repos.d/*
+            """
+        fi
+        log -f ${CURRENT_FUNC} "Finished modifying repos file for ${role} node ${hostname}"
+        set +e
+        set +u
+        set +o pipefail
+        ##################################################################
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     if [ $error_raised -eq 0 ]; then
         log -f ${CURRENT_FUNC} "Finished deploying hosts file"
@@ -478,9 +515,6 @@ prerequisites_requirements() {
         local ip=$(echo "$node" | jq -r '.ip')
         local role=$(echo "$node" | jq -r '.role')
 
-        if [ ! $hostname == "worker-node-2" ]; then
-            continue
-        fi
         #####################################################################################
         log -f ${CURRENT_FUNC} "Deploying logger function for ${role} node ${hostname}"
         scp -q ./log $hostname:/tmp/
@@ -741,14 +775,23 @@ EOF
         ############################################################################
         log -f ${CURRENT_FUNC} "Installing containerD for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
+            set -euo pipefail # Exit on error
             sudo dnf install -y yum-utils ${VERBOSE}
             sudo dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo  ${VERBOSE}
             sudo dnf install containerd.io -y ${VERBOSE}
         """
+        # Check if the SSH command failed
+        if [ $? -ne 0 ]; then
+            error_raised=1
+            log -f ${CURRENT_FUNC} "ERROR" "Error occured while installing containerD for ${role} node ${hostname}"
+            continue # continue to next node...
+        fi
         log -f ${CURRENT_FUNC} "Finished installing containerD for ${role} node ${hostname}"
         ############################################################################
         log -f ${CURRENT_FUNC} "Enabling containerD NRI with systemD and cgroups for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
+            set -euo pipefail # Exit on error
+
             CONFIG_FILE='/etc/containerd/config.toml'
 
             # Pause version mismatch:
@@ -780,7 +823,7 @@ EOF
             sudo chown -R root:root /etc/nri /opt/nri
 
             log -f ${CURRENT_FUNC} 'Starting and enabling containerD' ${VERBOSE}
-            sudo systemctl enable containerd
+            sudo systemctl enable --now containerd > /dev/null 2>&1
             sudo systemctl daemon-reload
             sudo systemctl restart containerd
 
@@ -855,43 +898,49 @@ install_kubetools () {
     fi
    ##################################################################
     # Update Kubernetes repository to the latest minor version
-    K8S_REPO_FILE="/etc/yum.repos.d/kubernetes.repo"
-    K8S_REPO_CONTENT="""
-[kubernetes]
-name=Kubernetes
-baseurl=https://pkgs.k8s.io/core:/stable:/v$K8S_MAJOR_VERSION/rpm/
-enabled=1
-gpgcheck=1
-gpgkey=https://pkgs.k8s.io/core:/stable:/v$K8S_MAJOR_VERSION/rpm/repodata/repomd.xml.key
-exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
-"""
+#     K8S_REPO_FILE="/etc/yum.repos.d/kubernetes.repo"
+#     K8S_REPO_CONTENT="""
+# [kubernetes]
+# name=Kubernetes
+# baseurl=https://pkgs.k8s.io/core:/stable:/v$K8S_MAJOR_VERSION/rpm/
+# enabled=1
+# gpgcheck=1
+# gpgkey=https://pkgs.k8s.io/core:/stable:/v$K8S_MAJOR_VERSION/rpm/repodata/repomd.xml.key
+# exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
+# """
     while read -r node; do
         ##################################################################
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
         local role=$(echo "$node" | jq -r '.role')
         ##################################################################
-        log -f ${CURRENT_FUNC} "sending k8s repo version: ${K8S_MAJOR_VERSION} to target node: ${hostname}"
-        ssh -q ${hostname} <<< """
-            echo '$K8S_REPO_CONTENT' | sudo tee $K8S_REPO_FILE > /dev/null
-        """
-        ##################################################################
-        log -f ${CURRENT_FUNC} "updating repos on target node: ${hostname}"
-        ssh -q ${hostname} <<< "
-            sudo dnf update -y ${VERBOSE}
-        "
+        # log -f ${CURRENT_FUNC} "sending k8s repo version: ${K8S_MAJOR_VERSION} to target node: ${hostname}"
+        # ssh -q ${hostname} <<< """
+        #     echo '$K8S_REPO_CONTENT' | sudo tee $K8S_REPO_FILE > /dev/null
+        # """
+        # ##################################################################
+        # log -f ${CURRENT_FUNC} "updating repos on target node: ${hostname}"
+        # ssh -q ${hostname} <<< "
+        #     sudo dnf update -y ${VERBOSE}
+        # "
         ##################################################################
         log -f ${CURRENT_FUNC} "Removing prior installed versions for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
-            sudo dnf remove -y kubelet kubeadm kubectl --disableexcludes=kubernetes ${VERBOSE}
+            sudo dnf remove -y kubelet kubeadm kubectl --disableexcludes=kubernetes > /dev/null 2>&1
             sudo rm -rf /etc/kubernetes
         """
         ##################################################################
         log -f ${CURRENT_FUNC} "installing k8s tools for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
+            set -euo pipefail  # Exit on error
             sudo dnf install -y kubelet-${K8S_MINOR_VERSION} kubeadm-${K8S_MINOR_VERSION} kubectl-${K8S_MINOR_VERSION} --disableexcludes=kubernetes ${VERBOSE}
             sudo systemctl enable --now kubelet > /dev/null 2>&1
         """
+        if [ $? -ne 0 ]; then
+            error_raised=1
+            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while installing k8s tools for node ${hostname}..."
+            continue  # continue to next node and skip this one
+        fi
         ##################################################################
         log -f ${CURRENT_FUNC} "Adding Kubeadm bash completion"
         add_bashcompletion ${hostname} kubeadm $VERBOSE
@@ -899,7 +948,12 @@ exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
         ##################################################################
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
    ##################################################################
-    log -f ${CURRENT_FUNC} "Kubernetes prerequisites setup completed successfully."
+   if [ $error_raised -eq 0 ]; then
+       log -f ${CURRENT_FUNC} "Finished installing kubernetes tools"
+    else
+         log -f ${CURRENT_FUNC} "ERROR" "Some errors occured during the kubernetes tools installation"
+         return 1
+    fi
    ##################################################################
 }
 
@@ -2311,6 +2365,7 @@ if [ "$PREREQUISITES" = true ]; then
     #################################################################
     if ! install_kubetools; then
         log -f "main" "ERROR" "Failed to install kuberenetes required tools for cluster deployment."
+        exit 1
     fi
 else
     log "deploy.sh" "INFO" "Cluster prerequisites have been skipped"
