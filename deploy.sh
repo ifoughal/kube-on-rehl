@@ -563,7 +563,6 @@ reset_cluster () {
                 sudo iptables -t mangle -F
                 sudo iptables -X
             """
-            exit 1
             continue  # continue to next node and skip this one
         fi
         log -f ${CURRENT_FUNC} "Finished resetting k8s ${role} node node: ${hostname}"
@@ -952,7 +951,7 @@ install_kubetools () {
     ##################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
     ##################################################################
-    error_raised=0
+    local error_raised=0
     log -f ${CURRENT_FUNC} "WARNING" "cilium must be reinstalled as kubelet will be reinstalled"
     eval "sudo cilium uninstall > /dev/null 2>&1" || true
     ##################################################################
@@ -970,6 +969,7 @@ install_kubetools () {
         log -f ${CURRENT_FUNC} "ERROR" "K8S_MAJOR_VERSION and/or K8S_MINOR_VERSION have not been set on .env file"
         return 2
     fi
+    echo error_raised: $error_raised
     ##################################################################
     while read -r node; do
         ##################################################################
@@ -979,12 +979,12 @@ install_kubetools () {
         ##################################################################
         log -f ${CURRENT_FUNC} "Removing prior installed versions for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
-            sudo dnf remove -y kubelet kubeadm kubectl --disableexcludes=kubernetes > /dev/null 2>&1
+            sudo dnf remove -y kubelet kubeadm kubectl --disableexcludes=kubernetes ${VERBOSE}
             sudo rm -rf /etc/kubernetes
         """
         ##################################################################
         log -f ${CURRENT_FUNC} "installing k8s tools for ${role} node ${hostname}"
-        ssh -q ${hostname} <<< """
+        ssh -q ${hostname} bash -s <<< """
             set -euo pipefail  # Exit on error
             sudo dnf install -y kubelet-${K8S_MINOR_VERSION} kubeadm-${K8S_MINOR_VERSION} kubectl-${K8S_MINOR_VERSION} --disableexcludes=kubernetes ${VERBOSE}
             sudo systemctl enable --now kubelet > /dev/null 2>&1
@@ -2476,6 +2476,7 @@ install_kafka() {
 }
 
 
+
 #################################################################
 if [ "$PREREQUISITES" = true ]; then
     if ! deploy_hostsfile; then
@@ -2483,10 +2484,10 @@ if [ "$PREREQUISITES" = true ]; then
         exit 1
     fi
 fi
-# #################################################################
-# if [ $RESET_CLUSTER_ARG -eq 1 ]; then
-#     reset_cluster
-# fi
+#################################################################
+if [ $RESET_CLUSTER_ARG -eq 1 ]; then
+    reset_cluster
+fi
 #################################################################
 if [ "$PREREQUISITES" == "true" ]; then
     #################################################################

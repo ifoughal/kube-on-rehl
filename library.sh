@@ -292,6 +292,8 @@ configure_repos () {
         sudo rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux ${VERBOSE}
 
         log -f ${CURRENT_FUNC} \"Cleaning up DNF cache and updating system...\"
+        sudo rm -f /var/lib/rpm/__db*
+        sudo rpm --rebuilddb ${VERBOSE}
         sudo dnf clean all  ${VERBOSE}
         sudo dnf makecache  ${VERBOSE}
         sudo dnf -y update  ${VERBOSE}
