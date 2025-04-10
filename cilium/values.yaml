@@ -453,3 +453,27 @@ hostFirewall:
   # -- Enables the enforcement of host policies in the eBPF datapath.
   enabled: false
 
+#######################################################################
+# REF: # https://gateway-api.sigs.k8s.io/geps/gep-1897/?h=connect+connection
+# REF: https://docs.cilium.io/en/latest/security/tls-visibility/
+# tls:
+#   # -- Configure if the Cilium Agent will only look in `tls.secretsNamespace` for
+#   #    CiliumNetworkPolicy relevant Secrets.
+#   #    If false, the Cilium Agent will be granted READ (GET/LIST/WATCH) access
+#   #    to _all_ secrets in the entire cluster. This is not recommended and is
+#   #    included for backwards compatibility.
+#   readSecretsOnlyFromSecretsNamespace: false
+#   # -- Configures where secrets used in CiliumNetworkPolicies will be looked for
+#   secretsNamespace:
+#     # -- Create secrets namespace for TLS Interception secrets.
+#     create: true
+#     # -- Name of TLS Interception secret namespace.
+#     name: cilium-secrets
+#   # -- Configures settings for synchronization of TLS Interception Secrets
+#   secretSync:
+#     # @schema
+#     # type: [null, boolean]
+#     # @schema
+#     # -- Enable synchronization of Secrets for TLS Interception. If disabled and
+#     # tls.readSecretsOnlyFromSecretsNamespace is set to 'false', then secrets will be read directly by the agent.
+#     enabled: true

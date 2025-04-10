@@ -10,8 +10,7 @@ spec:
     namespace: kube-system
     sectionName: http
   hostnames:
-  - "hubble-ui.pfs.pack"
-  - "hubble.pfs.pack"
+  - "hubble-gui.pfs.pack"
   rules:
   - filters:
     - type: RequestRedirect
@@ -32,8 +31,7 @@ spec:
     namespace: kube-system
     sectionName: https
   hostnames:
-  - "hubble-ui.pfs.pack"
-  - "hubble.pfs.pack"
+  - "hubble-gui.pfs.pack"
   rules:
   - matches:
     - path:
