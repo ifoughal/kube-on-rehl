@@ -260,7 +260,7 @@ configure_repos () {
     log "INFO" "Configuring AlmaLinux 9 Repositories for node: ${CURRENT_HOST}"
 
     ssh -q $CURRENT_HOST <<< """
-        set -e  # Exit on error
+        set -euo pipefail # Exit on error
 
         log -f ${CURRENT_FUNC} \"Updating almalinux repos list\"
         sudo mv /tmp/$repo_file /etc/yum.repos.d/$repo_file
@@ -276,7 +276,8 @@ configure_repos () {
         sudo dnf -y update  ${VERBOSE}
 
         log -f ${CURRENT_FUNC} \"Enabling EPEL & CRB repositories...\"
-        sudo dnf install -y epel-release  ${VERBOSE}
+        sudo dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm ${VERBOSE}
+
         sudo dnf config-manager --set-enabled crb  ${VERBOSE}
 
         log -f ${CURRENT_FUNC} \"${log_prefix} Adding RPM Fusion Free (OSS) repositories...\"
@@ -293,7 +294,12 @@ configure_repos () {
     if [ $? -ne 0 ]; then
         log -f ${CURRENT_FUNC} "ERROR" "Failed to configure AlmaLinux 9 Repositories for node: ${CURRENT_HOST}"
         return 1
+    else
+        log -f ${CURRENT_FUNC} "INFO" "Successfully configured AlmaLinux 9 Repositories for node: ${CURRENT_HOST}"
+        return 0
     fi
+
+
 }
 
 
