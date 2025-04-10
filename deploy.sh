@@ -479,12 +479,17 @@ reset_cluster () {
     CURRENT_FUNC=${FUNCNAME[0]}
     ##################################################################
     log -f ${CURRENT_FUNC} "Started reseting cluster"
-    # ##################################################################
-    # log -f ${CURRENT_FUNC} "Started uninstalling Cilium from cluster..."
-    # eval "sudo cilium uninstall > /dev/null 2>&1" || true
-    # sleep 15
-    # log -f ${CURRENT_FUNC} "Finished uninstalling Cilium from cluster..."
-    # ##################################################################
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Started uninstalling Cilium from cluster..."
+    eval "sudo cilium uninstall --timeout 30 > /dev/null 2>&1" || true
+
+    kubectl delete crds -l app.kubernetes.io/part-of=cilium
+    kubectl delete validatingwebhookconfigurations cilium-operator
+
+    kubectl -n kube-system delete deployment -l k8s-app=cilium-operator
+
+    log -f ${CURRENT_FUNC} "Finished uninstalling Cilium from cluster..."
+    ##################################################################
     error_raised=0
     while read -r node; do
         ##################################################################
@@ -495,6 +500,13 @@ reset_cluster () {
         log -f ${CURRENT_FUNC} "Started resetting k8s ${role} node node: ${hostname}"
         ssh -q ${hostname} <<< """
             sudo swapoff -a
+
+            cilium uninstall
+
+            cilium uninstall --wait
+            kubectl delete crds -l app.kubernetes.io/part-of=cilium
+            kubectl delete validatingwebhookconfigurations cilium-operator
+
 
             output=\$(sudo kubeadm reset -f 2>&1 )
             if [ \$? -ne 0 ]; then
@@ -1194,22 +1206,21 @@ install_cilium () {
             --set ipv4NativeRoutingCIDR=${CONTROLPLANE_SUBNET} \
             --set k8sServiceHost=auto \
             --values /tmp/values.yaml \
-            --set operator.replicas=1  \
-            --set hubble.relay.replicas=1  \
-            --set hubble.ui.replicas=1 \
+            --set operator.replicas=3  \
+            --set hubble.relay.replicas=3  \
+            --set hubble.ui.replicas=3 \
             --set maglev.hashSeed="${HASH_SEED}"  \
             --set encryption.enabled=false \
             --set encryption.nodeEncryption=false \
             --set encryption.type=wireguard \
             --set cleanBpfState=true \
-            --set cleanState=false \
-            ${VERBOSE} || true)
+            --set cleanState=true \
+            2>&1 || true)
 
         if echo \$OUTPUT | grep 'Error'; then
-            log -f \"${FUNCNAME[0]}\" 'ERROR' \$OUTPUT
+            log -f \"${CURRENT_FUNC}\" 'ERROR' \"Failed to deploy cilium \n\toutput:\n\t\$OUTPUT\"
             exit 1
         fi
-        echo \$OUTPUT
         #############################################################
         sleep 30
         log -f \"${FUNCNAME[0]}\" 'Removing default cilium ingress.'
@@ -1353,7 +1364,7 @@ restart_cilium() {
             if echo "\$CILIUM_STATUS" | grep -qi 'error'; then
                 log -f \"${CURRENT_FUNC}\" \"cilium status contains errors... restarting cilium. Try: \$current_retry\"
                 eval \"kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator > /dev/null 2>&1\" || true
-                sleep 60
+                sleep 180
             else
                 log -f \"${CURRENT_FUNC}\" 'Cilium is up and running'
                 break
