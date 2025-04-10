@@ -1,10 +1,10 @@
 debug:
   # -- Enable debug logging
-  enabled: false
+  enabled: true
 
 nodeinit:
   # -- Enable the node initialization DaemonSet
-  enabled: false
+  enabled: true
 
 # nodePort.enabled is not needed if this is set to true.
 kubeProxyReplacement: true
@@ -243,6 +243,8 @@ operator:
   enabled: true
   # dnsPolicy: "None"
   dnsPolicy: "Default"
+  debug:
+    enabled: true
   # We have  3 nodes
   # replicas: 2
 
