@@ -41,8 +41,11 @@ sudo timedatectl set-ntp true > /dev/null 2>&1
 sudo timedatectl set-timezone $TIMEZONE > /dev/null 2>&1
 sudo timedatectl status > /dev/null 2>&1
 ################################################################################################################################################################
+# TODO: MUST BE DONE IN THE CONTROLL PLANE!
+log -f "main" "WARNING" "TODO: MUST BE DONE IN THE CONTROLL PLANE!"
 CONTROLPLANE_ADDRESS=$(eval ip -o -4 addr show $CONTROLPLANE_INGRESS_INTER | awk '{print $4}' | cut -d/ -f1)  # 192.168.66.129
 CONTROLPLANE_SUBNET=$(echo $CONTROLPLANE_ADDRESS | awk -F. '{print $1"."$2"."$3".0/24"}')
+log -f "main" "WARNING" "EO TODO: MUST BE DONE IN THE CONTROLL PLANE!"
 ################################################################################################################################################################
 
 # set -e  # Enable immediate exit on error
@@ -483,10 +486,9 @@ reset_cluster () {
     log -f ${CURRENT_FUNC} "Started uninstalling Cilium from cluster..."
     eval "sudo cilium uninstall --timeout 30 > /dev/null 2>&1" || true
 
-    kubectl delete crds -l app.kubernetes.io/part-of=cilium
-    kubectl delete validatingwebhookconfigurations cilium-operator
-
-    kubectl -n kube-system delete deployment -l k8s-app=cilium-operator
+    kubectl delete crds -l app.kubernetes.io/part-of=cilium > /dev/null 2>&1
+    kubectl delete validatingwebhookconfigurations cilium-operator > /dev/null 2>&1
+    kubectl -n kube-system delete deployment -l k8s-app=cilium-operator > /dev/null 2>&1
 
     log -f ${CURRENT_FUNC} "Finished uninstalling Cilium from cluster..."
     ##################################################################
@@ -501,23 +503,24 @@ reset_cluster () {
         ssh -q ${hostname} <<< """
             sudo swapoff -a
 
-            cilium uninstall
+            log -f ${CURRENT_FUNC} \"Uninstalling Cilium from node ${hostname}\"
+            cilium uninstall --wait ${VERBOSE}
+            kubectl delete crds -l app.kubernetes.io/part-of=cilium ${VERBOSE}
+            kubectl delete validatingwebhookconfigurations cilium-operator ${VERBOSE}
 
-            cilium uninstall --wait
-            kubectl delete crds -l app.kubernetes.io/part-of=cilium
-            kubectl delete validatingwebhookconfigurations cilium-operator
-
-
-            output=\$(sudo kubeadm reset -f 2>&1 )
-            if [ \$? -ne 0 ]; then
-                log -f ${CURRENT_FUNC} 'ERROR' \"Error occurred while resetting k8s node ${hostname}...\n\$(printf \"%s\n\" \"\$output\")\"
-                exit 1
-            elif echo \"\$output\" | grep -qi 'failed\|error'; then
-                log -f ${CURRENT_FUNC} 'ERROR' \"Error occurred while resetting k8s node ${hostname}...\n\$(printf \"%s\n\" \"\$output\")\"
-                exit 1
+            log -f ${CURRENT_FUNC} \"Reseting kubeadm on node ${hostname}\"
+            if command -v kubeadm &> /dev/null; then
+                output=\$(sudo kubeadm reset -f 2>&1 )
+                if [ \$? -ne 0 ]; then
+                    log -f ${CURRENT_FUNC} 'WARNING' \"Error occurred while resetting k8s node ${hostname}...\n\$(printf \"%s\n\" \"\$output\")\"
+                elif echo \"\$output\" | grep -qi 'failed\|error'; then
+                    log -f ${CURRENT_FUNC} 'WARNING' \"Error occurred while resetting k8s node ${hostname}...\n\$(printf \"%s\n\" \"\$output\")\"
+                fi
+                echo output: \$output
             fi
-            echo output: \$output
 
+
+            log -f ${CURRENT_FUNC} \"Removing kubernetes hanging pods and containers\"
             for id in \$(sudo crictl pods -q 2>&1); do
                 sudo crictl stopp \"\$id\" > /dev/null 2>&1
                 sudo crictl rmp \"\$id\" > /dev/null 2>&1
@@ -527,21 +530,36 @@ reset_cluster () {
             sudo crictl rmp -a > /dev/null 2>&1  # remove all pods
             sudo crictl rmi -a > /dev/null 2>&1  # remove all images
 
+            log -f ${CURRENT_FUNC} \"removing cilium cgroupv2 mount and deleting cluster directories\"
+            sudo umount /var/run/cilium/cgroupv2 > /dev/null 2>&1
             sudo rm -rf \
                 \$HOME/.kube \
                 /root/.kube \
                 /etc/cni/net.d \
+                /opt/cni \
                 /etc/kubernetes \
                 /var/lib/etcd \
                 /var/lib/cni \
                 /var/lib/kubelet \
-                /var/run/kubernetes
+                /var/run/kubernetes \
+                /var/run/cilium \
+                /etc/containerd \
+                /var/run/nri \
+                /opt/nri \
+                /etc/nri \
+                /opt/containerd \
+                /run/containerd \
+                /var/lib/containerd
+            log -f ${CURRENT_FUNC} \"reloading systemd daemon and flushing iptables\"
             sudo systemctl daemon-reload
             sudo iptables -F
             sudo iptables -t nat -F
             sudo iptables -t mangle -F
             sudo iptables -X
         """
+        echo end of test
+        exit 1
+
         if [ $? -ne 0 ]; then
             error_raised=1
             log -f ${CURRENT_FUNC} "ERROR" "Error occurred while resetting k8s ${role} node ${hostname}..."
@@ -549,35 +567,54 @@ reset_cluster () {
             log -f ${CURRENT_FUNC} "Killing processes using kube ports on ${role} node ${hostname}..."
             kill_services_by_port "$hostname" 6443 2379 2380
 
-            ssh -q ${hostname} <<< """
-                sudo swapoff -a
+            # ssh -q ${hostname} <<< """
+            #     sudo swapoff -a
 
-                for id in \$(sudo crictl pods -q 2>&1); do
-                    sudo crictl stopp \"\$id\" > /dev/null 2>&1
-                    sudo crictl rmp \"\$id\" > /dev/null 2>&1
-                done
-                sudo crictl rm -fa > /dev/null 2>&1 # remove all containers
-                sudo crictl rmp -a > /dev/null 2>&1  # remove all pods
-                sudo crictl rmi -a > /dev/null 2>&1  # remove all images
+            #     for id in \$(sudo crictl pods -q 2>&1); do
+            #         sudo crictl stopp \"\$id\" > /dev/null 2>&1
+            #         sudo crictl rmp \"\$id\" > /dev/null 2>&1
+            #     done
+            #     sudo crictl rm -fa > /dev/null 2>&1 # remove all containers
+            #     sudo crictl rmp -a > /dev/null 2>&1  # remove all pods
+            #     sudo crictl rmi -a > /dev/null 2>&1  # remove all images
 
-                sudo rm -rf \
-                    \$HOME/.kube \
-                    /root/.kube \
-                    /etc/cni/net.d \
-                    /etc/kubernetes \
-                    /var/lib/etcd \
-                    /var/lib/cni \
-                    /var/lib/kubelet \
-                    /var/run/kubernetes
-                sudo systemctl daemon-reload
-                sudo iptables -F
-                sudo iptables -t nat -F
-                sudo iptables -t mangle -F
-                sudo iptables -X
-            """
-            continue  # continue to next node and skip this one
+            #     sudo rm -rf \
+            #         \$HOME/.kube \
+            #         /root/.kube \
+            #         /etc/cni/net.d \
+            #         /opt/cni \
+            #         /etc/kubernetes \
+            #         /var/lib/etcd \
+            #         /var/lib/cni \
+            #         /var/lib/kubelet \
+            #         /var/run/kubernetes \
+            #         /var/run/cilium \
+            #         /etc/containerd \
+            #         /var/run/nri \
+            #         /opt/nri \
+            #         /etc/nri \
+            #         /opt/containerd \
+            #         /run/containerd \
+            #         /var/lib/containerd
+
+
+
+            #     sudo systemctl daemon-reload
+            #     sudo iptables -F
+            #     sudo iptables -t nat -F
+            #     sudo iptables -t mangle -F
+            #     sudo iptables -X
+            # """
         fi
         log -f ${CURRENT_FUNC} "Finished resetting k8s ${role} node node: ${hostname}"
+        ##################################################################
+        log -f ${CURRENT_FUNC} "Removing prior installed versions of K8S for ${role} node ${hostname}"
+        ssh -q ${hostname} <<< """
+            sudo dnf remove -y kubelet kubeadm kubectl --disableexcludes=kubernetes ${VERBOSE}
+            sudo dnf remove -y containerd.io ${VERBOSE}
+
+        """
+        ##################################################################
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     ##################################################################
     if [ $error_raised -eq 0 ]; then
@@ -590,6 +627,7 @@ reset_cluster () {
 }
 
 
+# policycoreutils iproute  iptables
 prerequisites_requirements() {
     #########################################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
@@ -1206,21 +1244,22 @@ install_cilium () {
             --set ipv4NativeRoutingCIDR=${CONTROLPLANE_SUBNET} \
             --set k8sServiceHost=auto \
             --values /tmp/values.yaml \
-            --set operator.replicas=3  \
-            --set hubble.relay.replicas=3  \
-            --set hubble.ui.replicas=3 \
+            --set operator.replicas=1  \
+            --set hubble.relay.replicas=1  \
+            --set hubble.ui.replicas=1 \
             --set maglev.hashSeed="${HASH_SEED}"  \
             --set encryption.enabled=false \
             --set encryption.nodeEncryption=false \
             --set encryption.type=wireguard \
-            --set cleanBpfState=true \
-            --set cleanState=true \
+            --set cleanBpfState=false \
+            --set cleanState=false \
             2>&1 || true)
 
         if echo \$OUTPUT | grep 'Error'; then
             log -f \"${CURRENT_FUNC}\" 'ERROR' \"Failed to deploy cilium \n\toutput:\n\t\$OUTPUT\"
             exit 1
         fi
+        cilium install output=\$OUTPUT
         #############################################################
         sleep 30
         log -f \"${FUNCNAME[0]}\" 'Removing default cilium ingress.'
@@ -2494,10 +2533,13 @@ if [ "$PREREQUISITES" = true ]; then
         log -f "main" "ERROR" "An error occured while updating the hosts files."
         exit 1
     fi
+    #################################################################
 fi
 #################################################################
 if [ $RESET_CLUSTER_ARG -eq 1 ]; then
     reset_cluster
+    log "deploy.sh" "INFO" "Cluster reset completed."
+    exit 0
 fi
 #################################################################
 if [ "$PREREQUISITES" == "true" ]; then
@@ -2604,7 +2646,7 @@ fi
 log "deploy.sh" "INFO" "deployment finished"
 
 
-# ./deploy.sh --control-plane-hostname lorionstrm02vel --nodes-file hosts_file.yaml --with-prerequisites
+# ./deploy.sh -r -v --with-prerequisites
 
 
 
