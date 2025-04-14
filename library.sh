@@ -345,6 +345,26 @@ configure_repos () {
 }
 
 
+parse_inventory() {
+    ####################################################################
+    log -f "main" "Started loading inventory file: $INVENTORY"
+    CLUSTER_NODES=$(yq e -r -o=json '.hosts' "$INVENTORY")
+    log -f "main" "Finished loading inventory file: $INVENTORY"
+    ####################################################################
+    # TODO: MUST BE DONE IN THE CONTROLL PLANE!
+    # log -f "main" "WARNING" "TODO: MUST BE DONE IN THE CONTROLL PLANE!"
+    # CONTROLPLANE_ADDRESS=$(eval ip -o -4 addr show $CONTROLPLANE_INGRESS_INTER | awk '{print $4}' | cut -d/ -f1)  # 192.168.66.129
+    # CONTROLPLANE_SUBNET=$(echo $CONTROLPLANE_ADDRESS | awk -F. '{print $1"."$2"."$3".0/24"}')
+    # log -f "main" "WARNING" "EO TODO: MUST BE DONE IN THE CONTROLL PLANE!"
+    # #########################################################
+    CONTROLPLANE_INGRESS_CLUSTER_INTER=$(echo "$CLUSTER_NODES" | yq e -r '.[] | select(.role == "control-plane-leader") | .ingress.cluster_interface' -)
+    CONTROLPLANE_INGRESS_PUBLIC_INTER=$(echo "$CLUSTER_NODES" | yq e -r '.[] | select(.role == "control-plane-leader") | .ingress.public_interface' -)
+    CONTROL_PLANE_API_PORT=$(echo "$CLUSTER_NODES" | yq e -r '.[] | select(.role == "control-plane-leader") | .API_PORT' -)
+    CONTROL_PLANE_NODE=$(echo "$CLUSTER_NODES" | yq e -r '.[] | select(.role == "control-plane-leader") | .hostname' -)
+    #########################################################
+}
+
+
 add_bashcompletion () {
     # Parse the application name as a function argument
     local CURRENT_NODE="$1"
@@ -373,7 +393,7 @@ add_bashcompletion () {
 
 helm_chart_prerequisites () {
     ##################################################################
-    local CONTROL_PLANE_NODE=$1
+    local control_plane_host=$1
     local CHART_NAME=$2
     local CHART_REPO=$3
     local CHART_NS=$4
@@ -383,7 +403,7 @@ helm_chart_prerequisites () {
     local sleep_time=${8:-"15s"}
 
     ##################################################################
-    ssh -q ${CONTROL_PLANE_NODE} <<< """
+    ssh -q ${control_plane_host} <<< """
         set -euo pipefail
         log -f \"${CURRENT_FUNC}\" \"Adding '$CHART_NAME' repo to Helm\"
         helm repo add ${CHART_NAME} $CHART_REPO --force-update ${VERBOSE}
