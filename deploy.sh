@@ -1,67 +1,35 @@
 #!/bin/bash
-
+####################################################################
 LONGHORN_LOGS="./logs/longhorn.log"
 VAULT_LOGS=./logs/vault.log
 CILIUM_LOGS=./logs/cilium.log
 KUBEADMINIT_LOGS=./logs/kubeadm_init_errors.log
-
-################################################################################################################################################################
-mkdir -p ./logs
-################################################################################################################################################################
-sudo touch ${LONGHORN_LOGS}
-sudo chmod 666 ${LONGHORN_LOGS}
-
-sudo touch ${CILIUM_LOGS}
-sudo chmod 666 ${CILIUM_LOGS}
-
-
-sudo touch ${VAULT_LOGS}
-sudo chmod 666 ${VAULT_LOGS}
-
-sudo touch ${KUBEADMINIT_LOGS}
-sudo chmod 666 ${KUBEADMINIT_LOGS}
-################################################################################################################################################################
+####################################################################
 VERBOSE_LEVEL=0
-################################################################################################################################################################
+####################################################################
 # Initialize variables
-NODE_TYPE=""
 DRY_RUN=false
 PREREQUISITES=false
 INVENTORY=inventory.yaml
 HOSTSFILE_PATH="/etc/hosts"
-################################################################################################################################################################
-
+SUDO_PASSWORD=
+STRICT_HOSTKEYS=0
+RESET_CLUSTER_ARG=0*
+CLUSTER_NODES=
+####################################################################
 # Recommended kernel version
 recommended_rehl_version="4.18"
-################################################################################################################################################################
+####################################################################
+# Recommended kernel
 # reading .env file
 . .env
-################################################################################################################################################################
-sudo timedatectl set-ntp true > /dev/null 2>&1
-sudo timedatectl set-timezone $TIMEZONE > /dev/null 2>&1
-sudo timedatectl status > /dev/null 2>&1
-################################################################################################################################################################
-# TODO: MUST BE DONE IN THE CONTROLL PLANE!
-log -f "main" "WARNING" "TODO: MUST BE DONE IN THE CONTROLL PLANE!"
-CONTROLPLANE_ADDRESS=$(eval ip -o -4 addr show $CONTROLPLANE_INGRESS_INTER | awk '{print $4}' | cut -d/ -f1)  # 192.168.66.129
-CONTROLPLANE_SUBNET=$(echo $CONTROLPLANE_ADDRESS | awk -F. '{print $1"."$2"."$3".0/24"}')
-log -f "main" "WARNING" "EO TODO: MUST BE DONE IN THE CONTROLL PLANE!"
-################################################################################################################################################################
+####################################################################
+set -euo pipefail # Exit on error
 
-# set -e  # Enable immediate exit on error
-# set -o pipefail  # Fail if any piped command fails
-# set -euo pipefail
-
-STRICT_HOSTKEYS=0
-RESET_CLUSTER_ARG=0
-################################################################################################################################################################
+####################################################################
 # Parse command-line arguments manually (including --dry-run)
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        # -c|--control-plane-hostname)
-        #     CONTROLPLANE_HOSTNAME="$2"
-        #     shift 2
-        #     ;;
         -i|--inventory)
             INVENTORY="$2"
             shift 2
@@ -77,6 +45,10 @@ while [[ $# -gt 0 ]]; do
         -s|--strist-hostkeys)
             STRICT_HOSTKEYS=1
             shift
+            ;;
+        -p|--sudo-password)
+            SUDO_PASSWORD="$2"
+            shift 2
             ;;
         -v)
             VERBOSE_LEVEL=1
@@ -103,27 +75,51 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-#########################################################
+####################################################################
+log -f "main" "Generating askpass script for sudo commands on the deployer..."
+echo "echo ${SUDO_PASSWORD}" > ./askpass.sh
+chmod +x ./askpass.sh
+####################################################################
+mkdir -p ./logs
+####################################################################
+sudo -A touch ${LONGHORN_LOGS}
+sudo -A chmod 666 ${LONGHORN_LOGS}
+
+sudo -A touch ${CILIUM_LOGS}
+sudo -A chmod 666 ${CILIUM_LOGS}
+
+
+sudo -A touch ${VAULT_LOGS}
+sudo -A chmod 666 ${VAULT_LOGS}
+
+sudo -A touch ${KUBEADMINIT_LOGS}
+sudo -A chmod 666 ${KUBEADMINIT_LOGS}
+####################################################################
+
+sudo -A timedatectl set-ntp true > /dev/null 2>&1
+sudo -A timedatectl set-timezone $TIMEZONE > /dev/null 2>&1
+sudo -A timedatectl status > /dev/null 2>&1
+####################################################################
 # init log
-sudo cp ./log /usr/local/bin/log
-sudo chmod +x /usr/local/bin/log
-################################################################################################################################################################
+sudo -A cp ./log /usr/local/bin/log
+sudo -A chmod +x /usr/local/bin/log
+####################################################################
 # Validate that required arguments are provided
 if [ -z "$INVENTORY" ]; then
-    log "deploy.sh" "ERROR" "Missing required arguments."
-    log "deploy.sh" "ERROR" "$0 --inventory <INVENTORY>  [--dry-run]"
+    log -f "main" "ERROR" "Missing required arguments."
+    log -f "main" "ERROR" "$0 --inventory <INVENTORY>  [--dry-run]"
     exit 1
 fi
 
 # Ensure the YAML file exists
 if [ ! -f "$INVENTORY" ]; then
-    log "deploy.sh" "ERROR" "Error: inventory YAML file '$INVENTORY' not found."
+    log -f "main" "ERROR" "Error: inventory YAML file '$INVENTORY' not found."
     exit 1
 fi
-#########################################################
+####################################################################
 # import library function
 . library.sh
-#########################################################
+####################################################################
 # by default, all shell stdout commands info is suppressed
 alias debug_log="/usr/local/bin/log -s -l DEBUG"  # by default, silence debug logs for verbose 0 and 1
 
@@ -151,13 +147,10 @@ else
     fi
 fi
 
-#########################################################
-log -f "deploy.sh" "VERBOSE_LEVEL set to: $VERBOSE_LEVEL"
+####################################################################
+log -f "main" "VERBOSE_LEVEL set to: $VERBOSE_LEVEL"
+####################################################################
 
-log -f "deploy.sh" "Started loading inventory file: $INVENTORY"
-CLUSTER_NODES=$(yq .hosts "$INVENTORY")
-log -f "deploy.sh" "Finished loading inventory file: $INVENTORY"
-################################################################################################################################################################
 # ERROR CODES:
 #   1xxx: cilium errors
 #       1001: cilium status errors
@@ -165,15 +158,29 @@ log -f "deploy.sh" "Finished loading inventory file: $INVENTORY"
 ##################################################################
 debug_log=$(alias | grep -E "^alias debug_log=" | head -n 1)
 ##################################################################
+log -f "main" "Appending sudoers entry for $SUDO_GROUP..."
+if sudo -A grep -q "^%$SUDO_GROUP[[:space:]]\+ALL=(ALL)[[:space:]]\+NOPASSWD:ALL" /etc/sudoers.d/10_sudo_users_groups; then
+    log -f "main" "Visudo entry for $SUDO_GROUP is appended correctly."
+else
+    log -f "main" "Visudo entry for $SUDO_GROUP is not found, appending..."
+    sudo -A bash -c "echo %$SUDO_GROUP       ALL\=\(ALL\)       NOPASSWD\:ALL >> /etc/sudoers.d/10_sudo_users_groups"
+fi
+##################################################################
+if command -v yq; then
+    ####################################################################
+    log -f "main" "Started loading inventory file: $INVENTORY"
+    CLUSTER_NODES=$(yq e -o=json '.hosts' "$INVENTORY")
+    log -f "main" "Finished loading inventory file: $INVENTORY"
+    ####################################################################
+fi
+##################################################################
 
 
-deploy_hostsfile () {
+provision_deployer() {
     ##################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
     ##################################################################
-    hosts_updated=false
-    local error_raised=0
-    ##################################################################
+    set -euo pipefail # Exit on error
     # Path to the YAML file
     # Extract the 'nodes' array from the YAML and process it with jq
     # yq '.nodes["control_plane_nodes"]' "$INVENTORY" | jq -r '.[] | "\(.ip) \(.hostname)"' | while read -r line; do
@@ -188,18 +195,55 @@ deploy_hostsfile () {
         log -f ${CURRENT_FUNC} "ERROR" "Failed to determine OS version."
         exit 1
     fi
+
     export ARCH=$(arch)
     envsubst < ./repos/almalinux.repo | sudo tee /etc/yum.repos.d/almalinux.repo 1> /dev/null
     sudo chown root:root /etc/yum.repos.d/*
     sudo chmod 644 /etc/yum.repos.d/*
     ####################################################################
-    log -f ${CURRENT_FUNC} "installing required packages to deploy the cluster"
+    log -f ${CURRENT_FUNC} "configuring crypto policies for DNF SSL"
+    eval "sudo update-crypto-policies --set DEFAULT ${VERBOSE}"
+    ####################################################################
+    log -f ${CURRENT_FUNC} "updating dnf packages to latest version"
     eval "sudo dnf update -y ${VERBOSE}"
+    ####################################################################
+    log -f ${CURRENT_FUNC} "upgrading dnf to latest version"
     eval "sudo dnf upgrade -y  ${VERBOSE}"
+    ####################################################################
+    log -f ${CURRENT_FUNC} "installing required packages to deploy the cluster"
     eval "sudo dnf install -y sshpass python3-pip yum-utils bash-completion git wget bind-utils net-tools lsof ${VERBOSE}"
-    eval "sudo pip install yq > /dev/null 2>&1"
     log -f ${CURRENT_FUNC} "Finished installing required packages to deploy the cluster"
-   ##################################################################
+    ####################################################################
+    log -f ${CURRENT_FUNC} "Installing YQ for YAML parsing"
+    sudo wget https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -O /usr/local/bin/yq
+    sudo chmod +x /usr/local/bin/yq
+
+    # eval "sudo pip install yq > /dev/null 2>&1"
+    ####################################################################
+    log -f ${CURRENT_FUNC} "Started loading inventory file: $INVENTORY"
+    CLUSTER_NODES=$(yq e -o=json '.hosts' "$INVENTORY")
+    log -f ${CURRENT_FUNC} "Finished loading inventory file: $INVENTORY"
+    ####################################################################
+    # TODO: MUST BE DONE IN THE CONTROLL PLANE!
+    # log -f "main" "WARNING" "TODO: MUST BE DONE IN THE CONTROLL PLANE!"
+    # CONTROLPLANE_ADDRESS=$(eval ip -o -4 addr show $CONTROLPLANE_INGRESS_INTER | awk '{print $4}' | cut -d/ -f1)  # 192.168.66.129
+    # CONTROLPLANE_SUBNET=$(echo $CONTROLPLANE_ADDRESS | awk -F. '{print $1"."$2"."$3".0/24"}')
+    # log -f "main" "WARNING" "EO TODO: MUST BE DONE IN THE CONTROLL PLANE!"
+    # #########################################################
+    CONTROLPLANE_INGRESS_CLUSTER_INTER=$(echo "$CLUSTER_NODES" | yq e -o=json '.[] | select(.role == "control-plane-leader") | .ingress.cluster_interface' -)
+    CONTROLPLANE_INGRESS_PUBLIC_INTER=$(echo "$CLUSTER_NODES" | yq e '.[] | select(.role == "control-plane-leader") | .ingress.public_interface' -)
+    CONTROL_PLANE_API_PORT=$(echo "$CLUSTER_NODES" | yq e -o=json '.[] | select(.role == "control-plane-leader") | .API_PORT' -)
+    #########################################################
+}
+
+
+deploy_hostsfile () {
+    ##################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ##################################################################
+    hosts_updated=false
+    local error_raised=0
+    ##################################################################
     # Convert YAML to JSON using yq
     if ! command_exists yq; then
         log -f ${CURRENT_FUNC} "ERROR" "Error: 'yq' command not found. Please install yq to parse YAML files or run prerequisites..."
@@ -210,7 +254,7 @@ deploy_hostsfile () {
         log -f ${CURRENT_FUNC} "ERROR" "'jq' command not found. Please install jq to parse JSON files or run prerequisites..."
         exit 1
     fi
-
+    ##################################################################
     hosts_updated=false
     ##################################################################
     local CONFIG_FILE="$HOME/.ssh/config"
@@ -327,14 +371,25 @@ EOF
                 continue
             fi
         fi
+
         #####################################################################################
-        log -f ${CURRENT_FUNC} "Exporting ssh-key to $role node ${hostname}..."
-        if ! sshpass -p "$password" ssh-copy-id -f -p "$port" "${user}@${ip}" >/dev/null 2>&1; then
+        # 1. Check if SSH key exists
+        if [[ ! -f "${SSH_KEY}" || ! -f "${SSH_KEY}.pub" ]]; then
+            log -f $CURRENT_FUNC "Generating 🔑 SSH key for $role node ${hostname}..."
+            ssh-keygen -t rsa -b 4096 -f "$SSH_KEY" -N "" -C "$USER@$CLUSTER_NAME"
+        else
+            log -f $CURRENT_FUNC "✅ SSH key already exists: ${SSH_KEY}"
+        fi
+
+        #####################################################################################
+        log -f ${CURRENT_FUNC} "Exporting ssh-key to $role node ${hostname} using IP..."
+        if ! sshpass -p "$password" ssh-copy-id -f -p "$port" -i "${SSH_KEY}.pub" "${user}@${ip}" >/dev/null 2>&1; then
             log -f $CURRENT_FUNC "ERROR" "Failed to copy ssh id for $hostname."
             error_raised=1
             continue
         fi
-        if ! sshpass -p "$password" ssh-copy-id -f "$hostname" >/dev/null 2>&1; then
+        log -f ${CURRENT_FUNC} "Exporting ssh-key to $role node ${hostname} using hostname..."
+        if ! sshpass -p "$password" ssh-copy-id -f -i "${SSH_KEY}.pub" "$hostname" >/dev/null 2>&1; then
             log -f $CURRENT_FUNC "ERROR" "Failed to copy ssh id for $hostname."
             error_raised=1
             continue
@@ -530,6 +585,13 @@ reset_cluster () {
             sudo crictl rmp -a > /dev/null 2>&1  # remove all pods
             sudo crictl rmi -a > /dev/null 2>&1  # remove all images
 
+            log -f ${CURRENT_FUNC} \"Stopping containerd\"
+            sudo systemctl stop containerd > /dev/null 2>&1
+
+            log -f ${CURRENT_FUNC} \"Stopping kubelet\"
+            sudo systemctl stop kubelet > /dev/null 2>&1
+
+
             log -f ${CURRENT_FUNC} \"removing cilium cgroupv2 mount and deleting cluster directories\"
             sudo umount /var/run/cilium/cgroupv2 > /dev/null 2>&1
             sudo rm -rf \
@@ -538,7 +600,6 @@ reset_cluster () {
                 /etc/cni/net.d \
                 /opt/cni \
                 /etc/kubernetes \
-                /var/lib/etcd \
                 /var/lib/cni \
                 /var/lib/kubelet \
                 /var/run/kubernetes \
@@ -557,6 +618,8 @@ reset_cluster () {
             sudo iptables -t mangle -F
             sudo iptables -X
         """
+                # /var/lib/etcd \
+
         echo end of test
         exit 1
 
@@ -1226,6 +1289,7 @@ install_cilium () {
     ##################################################################
     log -f ${CURRENT_FUNC} "Started installing cilium"
     #############################################################
+    # > TODO HERE
     log -f ${CURRENT_FUNC} "Cilium native routing subnet is: ${CONTROLPLANE_SUBNET}"
     HASH_SEED=$(head -c12 /dev/urandom | base64 -w0)
     log -f ${CURRENT_FUNC} "Cilium maglev hashseed is: ${HASH_SEED}"
@@ -1315,7 +1379,7 @@ join_cluster () {
             ssh -q ${hostname} <<< """
                 eval sudo ${JOIN_COMMAND_WORKER} >/dev/null 2>&1 || true
             """
-        elif [ $role == "control-plane" ]; then
+        elif [ $role == "control-plane-replica" ]; then
             ssh -q ${hostname} <<< """
                 eval sudo ${JOIN_COMMAND_CONTROLPLANE} >/dev/null 2>&1 || true
             """
@@ -2529,16 +2593,27 @@ install_kafka() {
 
 #################################################################
 if [ "$PREREQUISITES" = true ]; then
+    # #################################################################
+    # if ! provision_deployer; then
+    #     log -f "main" "ERROR" "An error occurred while provisioning the deployer node."
+    #     exit 1
+    # fi
+    # log -f "main" "Deployer node provisioned successfully."
+    #################################################################
     if ! deploy_hostsfile; then
         log -f "main" "ERROR" "An error occured while updating the hosts files."
         exit 1
     fi
+    log -f "main" "Hosts files updated successfully."
     #################################################################
 fi
+
+echo end of test
+exit 1
 #################################################################
 if [ $RESET_CLUSTER_ARG -eq 1 ]; then
     reset_cluster
-    log "deploy.sh" "INFO" "Cluster reset completed."
+    log -f "main" "Cluster reset completed."
     exit 0
 fi
 #################################################################
@@ -2554,7 +2629,7 @@ if [ "$PREREQUISITES" == "true" ]; then
         exit 1
     fi
 else
-    log "deploy.sh" "INFO" "Cluster prerequisites have been skipped"
+    log -f "main" "Cluster prerequisites have been skipped"
 fi
 
 #################################################################
@@ -2643,10 +2718,10 @@ fi
 #     exit 1
 # fi
 ##################################################################
-log "deploy.sh" "INFO" "deployment finished"
+log -f "main" "deployment finished"
 
 
-# ./deploy.sh -r -v --with-prerequisites
+# ./main -r -v --with-prerequisites
 
 
 
