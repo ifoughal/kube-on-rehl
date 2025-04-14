@@ -339,6 +339,33 @@ EOF
             printf "%s" "$SSH_BLOCK" >> "$CONFIG_FILE"
         fi
         #####################################################################################
+        # Append the entry to the file (e.g., /etc/hosts)
+        # Normalize spaces in the input line (collapse multiple spaces/tabs into one)
+        local line="$ip         $hostname"
+        local normalized_line=$(echo "$line" | sed 's/[[:space:]]\+/ /g')
+
+        # Check if the normalized line already exists in the target file by parsing each line
+        local exists=false
+        while IFS= read -r target_line; do
+            # Normalize spaces in the target file line
+            normalized_target_line=$(echo "$target_line" | sed 's/[[:space:]]\+/ /g')
+
+            # Compare the normalized lines
+            if [[ "$normalized_line" == "$normalized_target_line" ]]; then
+                local exists=true
+                break
+            fi
+        done < "$HOSTSFILE_PATH"
+
+        # Append the line to the target file if it doesn't exist
+        if [ "$exists" = "false" ]; then
+            echo "$line" | sudo tee -a "$HOSTSFILE_PATH" > /dev/null
+            debug_log -f ${CURRENT_FUNC} "Host added to hosts file: $line"
+            hosts_updated=true
+        else
+            debug_log -f ${CURRENT_FUNC} "Host already exists: $line"
+        fi
+        #####################################################################################
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     if [ "$hosts_updated" == true ]; then
         log -f ${CURRENT_FUNC} "SSH config file updated successfully. Relaunch terminal to apply changes."
@@ -346,7 +373,6 @@ EOF
     else
         log -f ${CURRENT_FUNC} "No changes made to SSH config file."
     fi
-
     #####################################################################################
     while read -r node; do
         #####################################################################################
@@ -359,19 +385,23 @@ EOF
         #####################################################################################
         # export keys to nodes:
         if [ $STRICT_HOSTKEYS -eq 0 ]; then
-            log -f ${CURRENT_FUNC} "Adding SSH fingerprint of $role node ${hostname} to known_hosts file..."
+            # Remove any existing entry for the host
+            ssh-keygen -R "[$ip]:$port" &>/dev/null
+            ssh-keygen -R "[$hostname]" &>/dev/null
+
+            log -f $CURRENT_FUNC "Adding SSH fingerprint for $hostname..."
             if ! ssh-keyscan -H "$hostname" >> ~/.ssh/known_hosts 2>/dev/null; then
                 log -f $CURRENT_FUNC "ERROR" "Failed to add SSH fingerprint for $hostname."
                 error_raised=1
                 continue
             fi
+            log -f $CURRENT_FUNC "Adding SSH fingerprint for $ip:$port..."
             if ! ssh-keyscan -p $port $ip >> ~/.ssh/known_hosts 2>/dev/null; then
                 log -f $CURRENT_FUNC "ERROR" "Failed to add SSH fingerprint for $hostname."
                 error_raised=1
                 continue
             fi
         fi
-
         #####################################################################################
         # 1. Check if SSH key exists
         if [[ ! -f "${SSH_KEY}" || ! -f "${SSH_KEY}.pub" ]]; then
@@ -380,7 +410,6 @@ EOF
         else
             log -f $CURRENT_FUNC "✅ SSH key already exists: ${SSH_KEY}"
         fi
-
         #####################################################################################
         log -f ${CURRENT_FUNC} "Exporting ssh-key to $role node ${hostname} using IP..."
         if ! sshpass -p "$password" ssh-copy-id -f -p "$port" -i "${SSH_KEY}.pub" "${user}@${ip}" >/dev/null 2>&1; then
@@ -418,32 +447,6 @@ EOF
             sudo chown \$(id -u):\$(id -g) ${TARGET_CONFIG_FILE}
         """
         log -f ${CURRENT_FUNC} "Finished updating SSH config file for ${role} node ${hostname}"
-        #####################################################################################
-        # Append the entry to the file (e.g., /etc/hosts)
-        # Normalize spaces in the input line (collapse multiple spaces/tabs into one)
-        local line="$ip         $hostname"
-        local normalized_line=$(echo "$line" | sed 's/[[:space:]]\+/ /g')
-
-        # Check if the normalized line already exists in the target file by parsing each line
-        local exists=false
-        while IFS= read -r target_line; do
-            # Normalize spaces in the target file line
-            normalized_target_line=$(echo "$target_line" | sed 's/[[:space:]]\+/ /g')
-
-            # Compare the normalized lines
-            if [[ "$normalized_line" == "$normalized_target_line" ]]; then
-                local exists=true
-                break
-            fi
-        done < "$HOSTSFILE_PATH"
-
-        # Append the line to the target file if it doesn't exist
-        if [ "$exists" = "false" ]; then
-            echo "$line" | sudo tee -a "$HOSTSFILE_PATH" > /dev/null
-            debug_log -f ${CURRENT_FUNC} "Host added to hosts file: $line"
-        else
-            debug_log -f ${CURRENT_FUNC} "Host already exists: $line"
-        fi
         ################################################################
         log -f ${CURRENT_FUNC} "Setting hostname for '$role node': ${hostname}"
         ssh -q ${hostname} <<< """
@@ -466,9 +469,16 @@ EOF
         ssh -q ${hostname} <<< """
             sudo dnf update -y  ${VERBOSE}
             sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools lsof ${VERBOSE}
-            sudo pip install yq >/dev/null 2>&1
         """
         log -f ${CURRENT_FUNC} "Finished installing tools node: ${hostname}"
+        ################################################################
+        log -f ${CURRENT_FUNC} "installing yq on '$role node': ${hostname}"
+        scp -q /usr/local/bin/yq ${hostname}:/tmp
+        ssh -q ${hostname} <<< """
+            sudo mv /tmp/yq /usr/local/bin/yq
+            sudo chmod +x /usr/local/bin/yq
+        """
+        log -f ${CURRENT_FUNC} "Finished installing yq on '$role node': ${hostname}"
         ##################################################################
         log -f ${CURRENT_FUNC} "sending hosts file to target $role node: ${hostname}"
         scp -q $HOSTSFILE_PATH ${hostname}:/tmp
@@ -2588,7 +2598,6 @@ install_kafka() {
     ##################################################################
     log -f ${CURRENT_FUNC} "Finished deploying kafka on the cluster."
 }
-
 
 
 #################################################################
