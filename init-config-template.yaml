@@ -2,7 +2,7 @@ kind: ClusterConfiguration
 apiVersion: kubeadm.k8s.io/v1beta4
 certificatesDir: /etc/kubernetes/pki
 clusterName: ${CLUSTER_NAME}
-controlPlaneEndpoint: ${CONTROL_PLANE_HOST}:${CONTROLPLANE_API_PORT}
+controlPlaneEndpoint: ${CONTROL_PLANE_NODE}:${CONTROL_PLANE_API_PORT}
 etcd:
   local:
     dataDir: /var/lib/etcd
