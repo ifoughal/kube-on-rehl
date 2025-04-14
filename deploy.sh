@@ -24,7 +24,7 @@ recommended_rehl_version="4.18"
 # reading .env file
 . .env
 ####################################################################
-set -euo pipefail # Exit on error
+# set -euo pipefail # Exit on error
 
 ####################################################################
 # Parse command-line arguments manually (including --dry-run)
@@ -180,7 +180,7 @@ provision_deployer() {
     ##################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
     ##################################################################
-    set -euo pipefail # Exit on error
+    # set -euo pipefail # Exit on error
     # Path to the YAML file
     # Extract the 'nodes' array from the YAML and process it with jq
     # yq '.nodes["control_plane_nodes"]' "$INVENTORY" | jq -r '.[] | "\(.ip) \(.hostname)"' | while read -r line; do
@@ -383,6 +383,35 @@ EOF
         local user=$(echo "$node" | jq -r '.user')
         local password=$(echo "$node" | jq -r '.password')
         #####################################################################################
+        log -f ${CURRENT_FUNC} "Started configuring HTTP/HTTPS Proxy for ${role} node ${hostname}"
+        ssh -q ${hostname} <<< """
+            echo '''
+                export http_proxy=\"$HTTP_PROXY\"
+                export HTTP_PROXY=\"$HTTP_PROXY\"
+
+                export https_proxy=\"$HTTPS_PROXY\"
+                export HTTPS_PROXY=\"$HTTPS_PROXY\"
+
+                export no_proxy=\"$no_proxy\"
+                export NO_PROXY=\"$no_proxy\"
+            ''' | sudo tee /etc/profile.d/proxy.sh > /dev/null
+
+            echo '''
+                export http_proxy=\"$HTTP_PROXY\"
+                export HTTP_PROXY=\"$HTTP_PROXY\"
+
+                export https_proxy=\"$HTTPS_PROXY\"
+                export HTTPS_PROXY=\"$HTTPS_PROXY\"
+
+                export no_proxy=\"$no_proxy\"
+                export NO_PROXY=\"$no_proxy\"
+            ''' | sudo tee /etc/environment > /dev/null
+
+            sudo sed -i 's/^[[:space:]]\+//' /etc/profile.d/proxy.sh
+            sudo sed -i 's/^[[:space:]]\+//' /etc/environment
+
+        """
+        ####################################################################################
         # export keys to nodes:
         if [ $STRICT_HOSTKEYS -eq 0 ]; then
             # Remove any existing entry for the host
@@ -441,6 +470,66 @@ EOF
             return 1
         fi
         #####################################################################################
+        log -f ${CURRENT_FUNC} "Started gid and uid visudo configuration for ${role} node ${hostname}"
+
+        local log_prefix=$(date +"\033[0;32m%Y-%m-%d %H:%M:%S,%3N ")
+        ssh -q ${hostname} <<< """
+            bash -c '''
+                if echo '$CLUSTER_SUDO_PASSWORD' | sudo -S grep -q \"^%$SUDO_GROUP[[:space:]]\\+ALL=(ALL)[[:space:]]\\+NOPASSWD:ALL\" /etc/sudoers.d/10_sudo_users_groups; then
+                    echo -e \"$log_prefix - INFO - ${FUNCNAME[0]} - Visudo entry for $SUDO_GROUP is appended correctly.\" ${VERBOSE}
+                else
+                    echo -e \"$log_prefix - INFO - ${FUNCNAME[0]} - Visudo entry for $SUDO_GROUP is not found, appending...\" ${VERBOSE}
+                    echo '$CLUSTER_SUDO_PASSWORD' | sudo -S bash -c \"\"\"echo %$SUDO_GROUP       ALL\=\\\(ALL\\\)       NOPASSWD\:ALL >> /etc/sudoers.d/10_sudo_users_groups \"\"\"
+                fi
+            '''
+        """
+        log -f ${CURRENT_FUNC} "Finished gid and uid visudo configuration for ${role} node ${hostname}"
+        #####################################################################################
+        log -f ${CURRENT_FUNC} "Check if the groups exists with the specified GIDs for ${role} node ${hostname}"
+        local log_prefix=$(date +"\033[0;32m%Y-%m-%d %H:%M:%S,%3N")
+        ssh -q ${hostname} <<< """
+            if getent group $SUDO_GROUP | grep -q "${SUDO_GROUP}:"; then
+                echo -e \"$log_prefix - INFO - ${FUNCNAME[0]} - '${SUDO_GROUP}' Group exists.\" ${VERBOSE}
+            else
+                echo -e \"$log_prefix - INFO - ${FUNCNAME[0]} - '${SUDO_GROUP}' Group does not exist, creating...\"  ${VERBOSE}
+                echo "$SUDO_PASSWORD" | sudo -S groupadd ${SUDO_GROUP} 1> /dev/null
+            fi
+        """
+        log -f ${CURRENT_FUNC} "Finished checking the sudoer groups with the specified GIDs for ${role} node ${hostname}"
+        #####################################################################################
+        log -f ${CURRENT_FUNC} "Check if the user '${SUDO_USERNAME}' exists for ${role} node ${hostname}"
+        local log_prefix=$(date +"\033[0;32m%Y-%m-%d %H:%M:%S,%3N")
+        ssh -q ${hostname} <<< """
+            if id "$SUDO_USERNAME" &>/dev/null; then
+                echo -e \"$log_prefix - INFO - ${FUNCNAME[0]} - User $SUDO_USERNAME exists.\" ${VERBOSE}
+                echo "$SUDO_PASSWORD" | sudo -S  bash -c \"\"\"usermod -aG wheel,$SUDO_GROUP -s /bin/bash -m -d /home/$SUDO_USERNAME "$SUDO_USERNAME" \"\"\"
+            else
+                echo -e \"$log_prefix - INFO - ${FUNCNAME[0]} - User $SUDO_USERNAME does not exist.\" ${VERBOSE}
+                echo "$SUDO_PASSWORD" | sudo -S bash -c \"\"\"useradd -m -s /bin/bash -G wheel,$SUDO_GROUP "$SUDO_USERNAME" \"\"\"
+            fi
+        """
+        # Check if the SSH command failed
+        if [ $? -ne 0 ]; then
+            error_raised=1
+            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while configuring user on node ${hostname}..."
+            continue  # continue to next node and skip this one
+        fi
+        log -f ${CURRENT_FUNC} "Finished check if the user '${SUDO_USERNAME}' exists for ${role} node ${hostname}"
+        #####################################################################################
+        if [ ! -z $SUDO_NEW_PASSWORD ]; then
+            log -f ${CURRENT_FUNC} "setting password for user '${SUDO_USERNAME}' for ${role} node ${hostname}"
+            ssh -q ${hostname} << EOF
+echo "$SUDO_PASSWORD" | sudo -S bash -c "echo $SUDO_USERNAME:$SUDO_NEW_PASSWORD | chpasswd"
+EOF
+            # Check if the SSH command failed
+            if [ $? -ne 0 ]; then
+                error_raised=1
+                log -f ${CURRENT_FUNC} "ERROR" "Error occurred while setting new sudo password for node ${hostname}."
+                continue  # continue to next node and skip this one
+            fi
+            log -f ${CURRENT_FUNC} "Finished setting password for user '${SUDO_USERNAME}' for ${role} node ${hostname}"
+        fi
+        #####################################################################################
         log -f ${CURRENT_FUNC} "Applying new SSH config for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             sudo cp /tmp/config ${TARGET_CONFIG_FILE}
@@ -455,6 +544,21 @@ EOF
         """
         log -f ${CURRENT_FUNC} "Finished setting hostname for '$role node': ${hostname}"
         #####################################################################################
+        log -f ${CURRENT_FUNC} "Deploying logger function for ${role} node ${hostname}"
+        scp -q ./log $hostname:/tmp/
+        ssh -q $hostname <<< """
+            sudo mv /tmp/log /usr/local/bin/log
+            sudo chmod +x /usr/local/bin/log
+        """
+        log -f ${CURRENT_FUNC} "Finished deploying logger function for ${role} node ${hostname}"
+        #####################################################################################
+        log -f ${CURRENT_FUNC} "Configuring NTP for ${role} node ${hostname}"
+        ssh -q $hostname <<< """
+            sudo timedatectl set-ntp true > /dev/null 2>&1
+            sudo timedatectl set-timezone $TIMEZONE > /dev/null 2>&1
+            sudo timedatectl status > /dev/null 2>&1
+        """
+        #####################################################################################
         log -f ${CURRENT_FUNC} "Configuring repos for ${role} node ${hostname}"
         configure_repos $hostname $role "/etc/yum.repos.d/almalinux.repo"
         if [ $? -ne 0 ]; then
@@ -464,7 +568,28 @@ EOF
         else
             log -f ${CURRENT_FUNC} "repos configured successfully for ${role} node ${hostname}"
         fi
-        ################################################################
+        ####################################################################################
+        log -f ${CURRENT_FUNC} "Adjusting NTP with chrony ${role} node ${hostname}"
+        ssh -q $hostname <<< """
+            sudo dnf install -y chrony > /dev/null 2>&1
+            sudo systemctl enable --now chronyd > /dev/null 2>&1
+            sudo chronyc makestep > /dev/null 2>&1
+        """
+        ####################################################################################
+        log -f ${CURRENT_FUNC} "Checking NTP sync for ${role} node ${hostname}"
+
+        check_ntp_sync $hostname
+        rc=$?
+        log -f ${CURRENT_FUNC} "check_ntp_sync returned $rc"
+
+        if [ $rc -ne 0 ]; then
+            error_raised=1
+            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while checking NTP sync for node ${hostname}..."
+            continue  # continue to next node and skip this one
+        fi
+        log -f ${CURRENT_FUNC} "NTP sync check passed for ${role} node ${hostname}"
+        log -f ${CURRENT_FUNC} "Finished NTP sync for ${role} node ${hostname}"
+        ###############################################################
         log -f ${CURRENT_FUNC} "installing tools for '$role node': ${hostname}"
         ssh -q ${hostname} <<< """
             sudo dnf update -y  ${VERBOSE}
@@ -716,103 +841,10 @@ prerequisites_requirements() {
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
         local role=$(echo "$node" | jq -r '.role')
-
-        #####################################################################################
-        log -f ${CURRENT_FUNC} "Deploying logger function for ${role} node ${hostname}"
-        scp -q ./log $hostname:/tmp/
-        ssh -q $hostname <<< """
-            sudo mv /tmp/log /usr/local/bin/log
-            sudo chmod +x /usr/local/bin/log
-        """
-        log -f ${CURRENT_FUNC} "Finished deploying logger function for ${role} node ${hostname}"
-        #####################################################################################
-        log -f ${CURRENT_FUNC} "Adjusting NTP for ${role} node ${hostname}"
-        ssh -q $hostname <<< """
-            sudo timedatectl set-ntp true > /dev/null 2>&1
-            sudo timedatectl set-timezone $TIMEZONE > /dev/null 2>&1
-            sudo timedatectl status > /dev/null 2>&1
-        """
-        #####################################################################################
-        log -f ${CURRENT_FUNC} "Adjusting NTP with chrony ${role} node ${hostname}"
-        ssh -q $hostname <<< """
-            sudo dnf install -y chrony > /dev/null 2>&1
-            sudo systemctl enable --now chronyd > /dev/null 2>&1
-            sudo chronyc makestep > /dev/null 2>&1
-        """
-        #####################################################################################
-        check_ntp_sync $hostname
-        if [ $? -ne 0 ]; then
-            error_raised=1
-            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while checking NTP sync for node ${hostname}..."
-            continue  # continue to next node and skip this one
-        else
-            log -f ${CURRENT_FUNC} "NTP sync check passed for ${role} node ${hostname}"
-        fi
-        log -f ${CURRENT_FUNC} "Finished adjusting NTP for ${role} node ${hostname}"
         #####################################################################################
         log -f ${CURRENT_FUNC} "Starting dnf optimisations for ${role} node ${hostname}"
         optimize_dnf $hostname "${VERBOSE}"
         log -f ${CURRENT_FUNC} "Finished dnf optimisations for ${role} node ${hostname}"
-        #####################################################################################
-        log -f ${CURRENT_FUNC} "Started gid and uid visudo configuration for ${role} node ${hostname}"
-
-        local log_prefix=$(date +"\033[0;32m%Y-%m-%d %H:%M:%S,%3N ")
-        ssh -q ${hostname} <<< """
-            bash -c '''
-                if echo '$SUDO_PASSWORD' | sudo -S grep -q \"^%$SUDO_GROUP[[:space:]]\\+ALL=(ALL)[[:space:]]\\+NOPASSWD:ALL\" /etc/sudoers.d/10_sudo_users_groups; then
-                    echo -e \"$log_prefix - INFO - ${FUNCNAME[0]} - Visudo entry for $SUDO_GROUP is appended correctly.\" ${VERBOSE}
-                else
-                    echo -e \"$log_prefix - INFO - ${FUNCNAME[0]} - Visudo entry for $SUDO_GROUP is not found, appending...\" ${VERBOSE}
-                    echo '$SUDO_PASSWORD' | sudo -S bash -c \"\"\"echo %$SUDO_GROUP       ALL\=\\\(ALL\\\)       NOPASSWD\:ALL >> /etc/sudoers.d/10_sudo_users_groups \"\"\"
-                fi
-            '''
-        """
-        log -f ${CURRENT_FUNC} "Finished gid and uid visudo configuration for ${role} node ${hostname}"
-        #####################################################################################
-        log -f ${CURRENT_FUNC} "Check if the groups exists with the specified GIDs for ${role} node ${hostname}"
-        local log_prefix=$(date +"\033[0;32m%Y-%m-%d %H:%M:%S,%3N")
-        ssh -q ${hostname} <<< """
-            if getent group $SUDO_GROUP | grep -q "${SUDO_GROUP}:"; then
-                echo -e \"$log_prefix - INFO - ${FUNCNAME[0]} - '${SUDO_GROUP}' Group exists.\" ${VERBOSE}
-            else
-                echo -e \"$log_prefix - INFO - ${FUNCNAME[0]} - '${SUDO_GROUP}' Group does not exist, creating...\"  ${VERBOSE}
-                echo "$SUDO_PASSWORD" | sudo -S groupadd ${SUDO_GROUP} 1> /dev/null
-            fi
-        """
-        log -f ${CURRENT_FUNC} "Finished checking the sudoer groups with the specified GIDs for ${role} node ${hostname}"
-        #####################################################################################
-        log -f ${CURRENT_FUNC} "Check if the user '${SUDO_USERNAME}' exists for ${role} node ${hostname}"
-        local log_prefix=$(date +"\033[0;32m%Y-%m-%d %H:%M:%S,%3N")
-        ssh -q ${hostname} <<< """
-            if id "$SUDO_USERNAME" &>/dev/null; then
-                echo -e \"$log_prefix - INFO - ${FUNCNAME[0]} - User $SUDO_USERNAME exists.\" ${VERBOSE}
-                echo "$SUDO_PASSWORD" | sudo -S  bash -c \"\"\"usermod -aG wheel,$SUDO_GROUP -s /bin/bash -m -d /home/$SUDO_USERNAME "$SUDO_USERNAME" \"\"\"
-            else
-                echo -e \"$log_prefix - INFO - ${FUNCNAME[0]} - User $SUDO_USERNAME does not exist.\" ${VERBOSE}
-                echo "$SUDO_PASSWORD" | sudo -S bash -c \"\"\"useradd -m -s /bin/bash -G wheel,$SUDO_GROUP "$SUDO_USERNAME" \"\"\"
-            fi
-        """
-        # Check if the SSH command failed
-        if [ $? -ne 0 ]; then
-            error_raised=1
-            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while configuring user on node ${hostname}..."
-            continue  # continue to next node and skip this one
-        fi
-        log -f ${CURRENT_FUNC} "Finished check if the user '${SUDO_USERNAME}' exists for ${role} node ${hostname}"
-        #####################################################################################
-        if [ ! -z $SUDO_NEW_PASSWORD ]; then
-            log -f ${CURRENT_FUNC} "setting password for user '${SUDO_USERNAME}' for ${role} node ${hostname}"
-            ssh -q ${hostname} << EOF
-echo "$SUDO_PASSWORD" | sudo -S bash -c "echo $SUDO_USERNAME:$SUDO_NEW_PASSWORD | chpasswd"
-EOF
-            # Check if the SSH command failed
-            if [ $? -ne 0 ]; then
-                error_raised=1
-                log -f ${CURRENT_FUNC} "ERROR" "Error occurred while setting new sudo password for node ${hostname}."
-                continue  # continue to next node and skip this one
-            fi
-            log -f ${CURRENT_FUNC} "Finished setting password for user '${SUDO_USERNAME}' for ${role} node ${hostname}"
-        fi
         #####################################################################################
         log -f ${CURRENT_FUNC} "Started checking if the kernel is recent enough for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """

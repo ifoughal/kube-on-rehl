@@ -144,16 +144,31 @@ update_path() {
 
 check_ntp_sync () {
     local CURRENT_NODE=$1
-    local NTP_SERVER=$2
 
     local_time=$(date +%s)  # Get the timestamp of the local system in seconds since epoch
+    log -f ${CURRENT_FUNC} "Local time: $(date -d @$local_time)"
 
-    # Check the target system's time (via SSH)
-    remote_time=$(ssh -q $CURRENT_NODE "date +%s")  # Get the timestamp of the remote system in seconds since epoch
+    # Get remote time and validate it's not empty or invalid
+    # Get the timestamp of the remote system in seconds since epoch
+    # remote_time=$(ssh -q "$CURRENT_NODE" 'echo 123') || true
+
+    local remote_time=$(ssh -q $CURRENT_NODE <<< "date +%s || true")
+    ssh_status=$?
+    if [ $ssh_status -ne 0 ] || [[ -z "$remote_time" || ! "$remote_time" =~ ^[0-9]+$ ]]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to get remote time from $CURRENT_NODE via SSH."
+        return 1
+    fi
+
+    if [[ -z "$remote_time" || ! "$remote_time" =~ ^[0-9]+$ ]]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to get remote time from $CURRENT_NODE via SSH."
+        return 1
+    fi
+    log -f ${CURRENT_FUNC} "Remote time on $CURRENT_NODE is: $remote_time"
+
 
     # Calculate the difference in time between local and remote system
     time_diff=$((local_time - remote_time))
-
+    log -f ${CURRENT_FUNC} "Time difference between local and remote system: $time_diff seconds."
     # You can define an acceptable threshold for time difference, for example, 5 seconds
     threshold=5
 
@@ -161,10 +176,10 @@ check_ntp_sync () {
     if ((time_diff > threshold || time_diff < -threshold)); then
         log -f ${CURRENT_FUNC} "Time on $CURRENT_NODE is not in sync with the local system. Difference: $time_diff seconds."
         return 1
-    else
-        log -f ${CURRENT_FUNC} "Time on $CURRENT_NODE is in sync with the local system."
-        return 0
     fi
+
+    log -f ${CURRENT_FUNC} "Time on $CURRENT_NODE is in sync with the local system."
+    return 0
 }
 
 
@@ -287,6 +302,10 @@ configure_repos () {
     ssh -q $current_host <<< """
         set -euo pipefail # Exit on error
 
+        ####################################################################
+        log -f ${CURRENT_FUNC} \"configuring crypto policies for DNF SSL\"
+        eval \"sudo update-crypto-policies --set DEFAULT ${VERBOSE}\"
+
         log -f ${CURRENT_FUNC} \"Fetching and importing AlmaLinux GPG keys...\"
         sudo curl -s -o /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux-9
         sudo rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux ${VERBOSE}
@@ -303,10 +322,10 @@ configure_repos () {
 
         sudo dnf config-manager --set-enabled crb  ${VERBOSE}
 
-        log -f ${CURRENT_FUNC} \"${log_prefix} Adding RPM Fusion Free (OSS) repositories...\"
+        log -f ${CURRENT_FUNC} \"Adding RPM Fusion Free (OSS) repositories...\"
         sudo dnf install -y https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm  ${VERBOSE}
 
-        log -f ${CURRENT_FUNC} \"${log_prefix} Adding RPM Fusion Non-Free (proprietary) repositories...\"
+        log -f ${CURRENT_FUNC} \"Adding RPM Fusion Non-Free (proprietary) repositories...\"
         sudo dnf install -y https://mirrors.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-9.noarch.rpm  ${VERBOSE}
 
         log -f ${CURRENT_FUNC} \"Cleaning up DNF cache and updating system...\"
