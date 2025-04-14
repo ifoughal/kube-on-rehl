@@ -632,24 +632,6 @@ reset_storage() {
 }
 
 
-kill_services_by_port() {
-    local current_host=$1
-    shift
-    local ports=("$@")
-
-    # Check if the port is provided
-    if [ -z "$ports" ]; then
-        echo "No ports specified."
-        return 1
-    fi
-
-    for port in $ports; do
-        debug_log -f ${CURRENT_FUNC} "Killing processes using port $port on $current_host..."
-        ssh -q "$current_host" "sudo lsof -t -i :$port | xargs -r sudo kill -9"
-    done
-}
-
-
 reset_cluster () {
     ##################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
@@ -677,9 +659,15 @@ reset_cluster () {
             sudo swapoff -a
 
             log -f ${CURRENT_FUNC} \"Uninstalling Cilium from node ${hostname}\"
-            cilium uninstall --wait ${VERBOSE}
-            kubectl delete crds -l app.kubernetes.io/part-of=cilium ${VERBOSE}
-            kubectl delete validatingwebhookconfigurations cilium-operator ${VERBOSE}
+
+            if command -v cilium &> /dev/null; then
+                cilium uninstall --wait ${VERBOSE}
+            fi
+
+            if command -v kubectl &> /dev/null; then
+                kubectl delete crds -l app.kubernetes.io/part-of=cilium ${VERBOSE}
+                kubectl delete validatingwebhookconfigurations cilium-operator ${VERBOSE}
+            fi
 
             log -f ${CURRENT_FUNC} \"Reseting kubeadm on node ${hostname}\"
             if command -v kubeadm &> /dev/null; then
@@ -692,23 +680,23 @@ reset_cluster () {
                 echo output: \$output
             fi
 
-
             log -f ${CURRENT_FUNC} \"Removing kubernetes hanging pods and containers\"
             for id in \$(sudo crictl pods -q 2>&1); do
                 sudo crictl stopp \"\$id\" > /dev/null 2>&1
                 sudo crictl rmp \"\$id\" > /dev/null 2>&1
             done
 
-            sudo crictl rm -fa > /dev/null 2>&1 # remove all containers
-            sudo crictl rmp -a > /dev/null 2>&1  # remove all pods
-            sudo crictl rmi -a > /dev/null 2>&1  # remove all images
+            if command -v kubectl &> /dev/null; then
+                sudo crictl rm -fa > /dev/null 2>&1 # remove all containers
+                sudo crictl rmp -a > /dev/null 2>&1  # remove all pods
+                sudo crictl rmi -a > /dev/null 2>&1  # remove all images
+            fi
 
             log -f ${CURRENT_FUNC} \"Stopping containerd\"
             sudo systemctl stop containerd > /dev/null 2>&1
 
             log -f ${CURRENT_FUNC} \"Stopping kubelet\"
             sudo systemctl stop kubelet > /dev/null 2>&1
-
 
             log -f ${CURRENT_FUNC} \"removing cilium cgroupv2 mount and deleting cluster directories\"
             sudo umount /var/run/cilium/cgroupv2 > /dev/null 2>&1
@@ -736,66 +724,18 @@ reset_cluster () {
             sudo iptables -t mangle -F
             sudo iptables -X
         """
-                # /var/lib/etcd \
-
-        echo end of test
-        exit 1
-
-        if [ $? -ne 0 ]; then
-            error_raised=1
-            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while resetting k8s ${role} node ${hostname}..."
-
-            log -f ${CURRENT_FUNC} "Killing processes using kube ports on ${role} node ${hostname}..."
-            kill_services_by_port "$hostname" 6443 2379 2380
-
-            # ssh -q ${hostname} <<< """
-            #     sudo swapoff -a
-
-            #     for id in \$(sudo crictl pods -q 2>&1); do
-            #         sudo crictl stopp \"\$id\" > /dev/null 2>&1
-            #         sudo crictl rmp \"\$id\" > /dev/null 2>&1
-            #     done
-            #     sudo crictl rm -fa > /dev/null 2>&1 # remove all containers
-            #     sudo crictl rmp -a > /dev/null 2>&1  # remove all pods
-            #     sudo crictl rmi -a > /dev/null 2>&1  # remove all images
-
-            #     sudo rm -rf \
-            #         \$HOME/.kube \
-            #         /root/.kube \
-            #         /etc/cni/net.d \
-            #         /opt/cni \
-            #         /etc/kubernetes \
-            #         /var/lib/etcd \
-            #         /var/lib/cni \
-            #         /var/lib/kubelet \
-            #         /var/run/kubernetes \
-            #         /var/run/cilium \
-            #         /etc/containerd \
-            #         /var/run/nri \
-            #         /opt/nri \
-            #         /etc/nri \
-            #         /opt/containerd \
-            #         /run/containerd \
-            #         /var/lib/containerd
-
-
-
-            #     sudo systemctl daemon-reload
-            #     sudo iptables -F
-            #     sudo iptables -t nat -F
-            #     sudo iptables -t mangle -F
-            #     sudo iptables -X
-            # """
-        fi
+        ##################################################################
+        kill_services_by_port "$hostname" 6443 2379 2380
+        ##################################################################
         log -f ${CURRENT_FUNC} "Finished resetting k8s ${role} node node: ${hostname}"
         ##################################################################
         log -f ${CURRENT_FUNC} "Removing prior installed versions of K8S for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
-            sudo dnf remove -y kubelet kubeadm kubectl --disableexcludes=kubernetes ${VERBOSE}
-            sudo dnf remove -y containerd.io ${VERBOSE}
-
+            sudo dnf remove -y kubelet kubeadm kubectl --disableexcludes=kubernetes > /dev/null 2>&1
+            sudo dnf remove -y containerd.io > /dev/null 2>&1
         """
         ##################################################################
+        log -f ${CURRENT_FUNC} "Finished resetting ${role} node ${hostname}"
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     ##################################################################
     if [ "$error_raised" -eq 0 ]; then
@@ -954,6 +894,10 @@ prerequisites_requirements() {
         ################################################################*
 #         # TODO
 #         # update_firewall $hostname
+        log -f ${CURRENT_FUNC} "WARNING" "WORKAROUND: Stopping firewalld for ${role} node ${hostname}"
+        ssh -q ${hostname} <<< """
+            sudo systemctl stop firewalld.service
+        """
         ############################################################################
         log -f ${CURRENT_FUNC} "Configuring bridge network for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
@@ -1180,6 +1124,7 @@ install_cluster () {
             log -f \"${CURRENT_FUNC}\" 'ERROR' \"\$KUBEADM_INIT_OUTPUT\"
             exit 1
         fi
+        echo \$KUBEADM_INIT_OUTPUT
         ####################################################################
         set -e  # Exit on error
         ####################################################################
@@ -2633,11 +2578,10 @@ install_kafka() {
 # fi
 
 # #################################################################
-# if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
-#     reset_cluster
-#     log -f "main" "Cluster reset completed."
-#     exit 0
-# fi
+if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
+    reset_cluster
+    log -f "main" "Cluster reset completed."
+fi
 #################################################################
 if [ "$PREREQUISITES" == "true" ]; then
     #################################################################
@@ -2658,6 +2602,9 @@ if ! install_cluster; then
     log -f main "ERROR" "An error occurred while deploying the cluster"
     exit 1
 fi
+
+echo end of test
+exit 1
 #################################################################
 if ! install_gateway_CRDS; then
     log -f main "ERROR" "An error occurred while deploying gateway CRDS"

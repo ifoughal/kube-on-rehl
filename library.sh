@@ -345,6 +345,26 @@ configure_repos () {
 }
 
 
+kill_services_by_port() {
+    local current_host=$1
+    shift
+    local ports=("$@")
+
+    # Check if the port is provided
+    if [ -z "$ports" ]; then
+        echo "No ports specified."
+        return 1
+    fi
+
+    for port in $ports; do
+        log -f ${CURRENT_FUNC} "Killing processes using port $port on $current_host..."
+        ssh -q "$current_host" <<< """
+            sudo lsof -t -i :$port | xargs -r sudo kill -9
+        """
+    done
+}
+
+
 parse_inventory() {
     ####################################################################
     log -f "main" "Started loading inventory file: $INVENTORY"
