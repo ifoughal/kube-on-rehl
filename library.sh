@@ -345,6 +345,69 @@ configure_repos () {
 }
 
 
+install_kubetools () {
+    ##################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ##################################################################
+    local error_raised=0
+    log -f ${CURRENT_FUNC} "WARNING" "cilium must be reinstalled as kubelet will be reinstalled"
+    eval "sudo cilium uninstall > /dev/null 2>&1" || true
+    ##################################################################
+    # Fetch Latest version from kube release....
+    if [ "$(echo "$FETCH_LATEST_KUBE" | tr '[:upper:]' '[:lower:]')" = "true" ]; then
+        log -f ${CURRENT_FUNC} "Fetching latest kuberentes version from stable-1..."
+        # Fetch the latest stable full version (e.g., v1.32.2)
+        K8S_MINOR_VERSION=$(curl -L -s https://dl.k8s.io/release/stable-1.txt)
+       ##################################################################
+        # Extract only the major.minor version (e.g., 1.32)
+        K8S_MAJOR_VERSION=$(echo $K8S_MINOR_VERSION | cut -d'.' -f1,2)
+    fi
+    # ensure that the vars are set either from latest version or .env
+    if [ -z "$K8S_MAJOR_VERSION" ] || [ -z $K8S_MINOR_VERSION ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "K8S_MAJOR_VERSION and/or K8S_MINOR_VERSION have not been set on .env file"
+        return 2
+    fi
+    ##################################################################
+    while read -r node; do
+        ##################################################################
+        local hostname=$(echo "$node" | jq -r '.hostname')
+        local ip=$(echo "$node" | jq -r '.ip')
+        local role=$(echo "$node" | jq -r '.role')
+        ##################################################################
+        log -f ${CURRENT_FUNC} "Removing prior installed versions for ${role} node ${hostname}"
+        ssh -q ${hostname} <<< """
+            sudo dnf remove -y kubelet kubeadm kubectl --disableexcludes=kubernetes > /dev/null 2>&1
+            sudo rm -rf /etc/kubernetes
+        """
+        ##################################################################
+        log -f ${CURRENT_FUNC} "installing k8s tools for ${role} node ${hostname}"
+        ssh -q ${hostname} bash -s <<< """
+            set -euo pipefail  # Exit on error
+            sudo dnf install -y kubelet-${K8S_MINOR_VERSION} kubeadm-${K8S_MINOR_VERSION} kubectl-${K8S_MINOR_VERSION} --disableexcludes=kubernetes ${VERBOSE}
+            sudo systemctl enable --now kubelet > /dev/null 2>&1
+        """
+        if [ $? -ne 0 ]; then
+            error_raised=1
+            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while installing k8s tools for node ${hostname}..."
+            continue  # continue to next node and skip this one
+        fi
+        ##################################################################
+        log -f ${CURRENT_FUNC} "Adding Kubeadm bash completion"
+        add_bashcompletion ${hostname} kubeadm $VERBOSE
+        add_bashcompletion ${hostname} kubectl $VERBOSE
+        ##################################################################
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
+    ##################################################################
+    if [ "$error_raised" -eq 0 ]; then
+       log -f ${CURRENT_FUNC} "Finished installing kubernetes tools"
+    else
+         log -f ${CURRENT_FUNC} "ERROR" "Some errors occured during the kubernetes tools installation"
+         return 1
+    fi
+    ##################################################################
+}
+
+
 kill_services_by_port() {
     local current_host=$1
     shift
