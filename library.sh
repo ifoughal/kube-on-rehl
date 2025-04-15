@@ -298,7 +298,7 @@ configure_repos () {
     set +u
     set +o pipefail
     ##################################################################
-    log -f ${CURRENT_FUNC} "Configuring AlmaLinux 9 Repositories for node: ${current_host}"
+    log -f ${CURRENT_FUNC} "Configuring AlmaLinux 9 Repositories for ${NODE_ROLE} node ${current_host}"
     ssh -q $current_host <<< """
         set -euo pipefail # Exit on error
 
@@ -538,71 +538,148 @@ install_helm () {
 }
 
 
-configure_containerD () {
+install_containerd () {
     #############################################################################
     # configure proxy:
     local CURRENT_NODE=$1
-    local PAUSE_VERSION=$2
-    local SUDO_GROUP=$3
-    local HTTP_PROXY=$4
-    local HTTPS_PROXY=$5
-    local NO_PROXY=$6
-
-    #############################################################################
-    if [ -z $HTTP_PROXY ]; then
-        log -f ${CURRENT_FUNC} 'HTTP_PROXY is not set, skipping proxy configuration for containerD'
-        ssh -q $CURRENT_NODE <<< """
-            sudo mkdir -p /etc/systemd/system/containerd.service.d
-            sudo rm -rf /etc/systemd/system/containerd.service.d/http-proxy.conf
-        """
-    else
-        log -f ${CURRENT_FUNC} 'Configuring HTTP_PROXY for containerD'
-        ssh -q $CURRENT_NODE <<< """
-            sudo mkdir -p /etc/systemd/system/containerd.service.d
-            if [ -z \"$HTTP_PROXY\" ]; then
-                log -f ${CURRENT_FUNC} 'HTTP_PROXY is not set, skipping proxy configuration for containerD'
-            else
-                log -f ${CURRENT_FUNC} 'Configuring HTTP_PROXY for containerD'
-                cat <<EOF | sudo tee /etc/systemd/system/containerd.service.d/http-proxy.conf  > /dev/null
-[Service]
-    Environment=\"HTTP_PROXY=$HTTP_PROXY\"
-    Environment=\"HTTPS_PROXY=$HTTPS_PROXY\"
-    Environment=\"NO_PROXY=$NO_PROXY\"
-EOF
-            fi
-        """
+    local NODE_ROLE=$2
+    local PAUSE_VERSION=$3
+    local SUDO_GROUP=$4
+    local HTTP_PROXY=$5
+    local HTTPS_PROXY=$6
+    local NO_PROXY=$7
+    ############################################################################
+    log -f ${CURRENT_FUNC} "Installing containerD for ${NODE_ROLE} node ${CURRENT_NODE}"
+    ssh -q ${CURRENT_NODE} <<< """
+        set -euo pipefail # Exit on error
+        sudo dnf install -y yum-utils ${VERBOSE}
+        sudo dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo  ${VERBOSE}
+        sudo dnf install containerd.io -y ${VERBOSE}
+    """
+    # Check if the SSH command failed
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Error occured while installing containerD for ${NODE_ROLE} node ${CURRENT_NODE}"
+        return 1 # continue to next node...
     fi
-    #############################################################################
-    ssh -q $CURRENT_NODE <<< """
-        log -f ${CURRENT_FUNC} 'Starting and enabling containerD for node: $CURRENT_NODE' ${VERBOSE}
-        sudo systemctl enable containerd
+    log -f ${CURRENT_FUNC} "Finished installing containerD for ${NODE_ROLE} node ${CURRENT_NODE}"
+    ############################################################################
+    log -f ${CURRENT_FUNC} "Enabling containerD NRI with systemD and cgroups for ${NODE_ROLE} node ${CURRENT_NODE}"
+    ssh -q ${CURRENT_NODE} <<< """
+        set -euo pipefail # Exit on error
+
+        CONFIG_FILE='/etc/containerd/config.toml'
+
+        # Pause version mismatch:
+        log -f ${CURRENT_FUNC} 'Resetting containerD config to default on ${NODE_ROLE} node ${CURRENT_NODE}'
+        containerd config default | sudo tee \$CONFIG_FILE >/dev/null
+
+        log -f ${CURRENT_FUNC} 'Backing up the original config file on ${NODE_ROLE} node ${CURRENT_NODE}'
+        sudo cp -f -n \$CONFIG_FILE \${CONFIG_FILE}.bak
+
+        log -f ${CURRENT_FUNC} 'Configuring containerD for our cluster on ${NODE_ROLE} node ${CURRENT_NODE}'
+        sudo sed -i '/\[plugins\\.\"io\\.containerd\\.nri\\.v1\\.nri\"\]/,/^\[/{
+            s/disable = true/disable = false/;
+            s/disable_connections = true/disable_connections = false/;
+            s|plugin_config_path = ".*"|plugin_config_path = \"/etc/nri/conf.d\"|;
+            s|plugin_path = ".*"|plugin_path = \"/opt/nri/plugins\"|;
+            s|plugin_registration_timeout = ".*"|plugin_registration_timeout = \"15s\"|;
+            s|plugin_request_timeout = ".*"|plugin_request_timeout = \"12s\"|;
+            s|socket_path = ".*"|socket_path = \"/var/run/nri/nri.sock\"|;
+        }' "\$CONFIG_FILE"
+
+
+        sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' \$CONFIG_FILE
+        # sudo sed -i 's|sandbox_image = \"registry.k8s.io/pause:\"|sandbox_image = \"registry.k8s.io/pause:$PAUSE_VERSION\"|' \$CONFIG_FILE
+        sudo sed -i 's|sandbox_image = \\\"registry.k8s.io/pause:[^\"]*\\\"|sandbox_image = \\\"registry.k8s.io/pause:$PAUSE_VERSION\\\"|' "\$CONFIG_FILE"
+
+        # sudo sed -i 's|root = \"/var/lib/containerd\"|root = \"/mnt/longhorn-1/var/lib/containerd\"|' \$CONFIG_FILE
+
+        sudo mkdir -p /etc/nri/conf.d /opt/nri/plugins
+        sudo chown -R root:root /etc/nri /opt/nri
+
+        log -f ${CURRENT_FUNC} 'Starting and enabling containerD on ${NODE_ROLE} node ${CURRENT_NODE}'
+        sudo systemctl enable --now containerd > /dev/null 2>&1
         sudo systemctl daemon-reload
         sudo systemctl restart containerd
 
         sleep 10
         # Check if the containerd service is active
         if systemctl is-active --quiet containerd.service; then
-            log -f ${CURRENT_FUNC} 'ContainerD configuration updated successfully for node: $CURRENT_NODE' ${VERBOSE}
+            log -f ${CURRENT_FUNC} 'ContainerD configuration updated successfully on ${NODE_ROLE} node ${CURRENT_NODE}'
         else
-            log -f ${CURRENT_FUNC} 'ERROR' 'ContainerD configuration failed, containerd service is not running for node: $CURRENT_NODE...'
+            log -f ${CURRENT_FUNC} 'ERROR' 'ContainerD configuration failed, containerd service is not running...'
+            exit 1
+        fi
+    """
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Error occurred while enabling containerD NRI with systemD and cgroups for ${role} node ${CURRENT_NODE}"
+        return 1  # continue to next node and skip this one
+    fi
+    log -f ${CURRENT_FUNC} "ContainerD NRI with systemD and cgroups enabled successfully for ${role} node ${CURRENT_NODE}"
+    #############################################################################
+    if [ -z "$HTTP_PROXY" ]; then
+        log -f ${CURRENT_FUNC} 'HTTP_PROXY is not set, skipping proxy configuration for containerD'
+        ssh -q $CURRENT_NODE <<< """
+            sudo mkdir -p /etc/systemd/system/containerd.service.d
+            sudo rm -rf /etc/systemd/system/containerd.service.d/http-proxy.conf
+        """
+    else
+        ssh -q $CURRENT_NODE <<< """
+            set -euo pipefail # Exit on error
+            sudo mkdir -p /etc/systemd/system/containerd.service.d
+            if [ -z \"$HTTP_PROXY\" ]; then
+                log -f ${CURRENT_FUNC} 'HTTP_PROXY is not set, skipping proxy configuration for containerD on ${NODE_ROLE} node $CURRENT_NODE'
+            else
+                log -f ${CURRENT_FUNC} 'Configuring HTTP_PROXY for containerD on ${NODE_ROLE} node $CURRENT_NODE'
+                cat <<EOF | sudo tee /etc/systemd/system/containerd.service.d/http-proxy.conf  > /dev/null
+[Service]
+    Environment=\"HTTP_PROXY=$HTTP_PROXY\"
+    Environment=\"HTTPS_PROXY=$HTTPS_PROXY\"
+    Environment=\"NO_PROXY=$NO_PROXY\"
+EOF
+            log -f ${CURRENT_FUNC} 'Finished configuring HTTP_PROXY for containerD on ${NODE_ROLE} node $CURRENT_NODE'
+
+            fi
+        """
+        if [ $? -ne 0 ]; then
+            log -f ${CURRENT_FUNC} 'ERROR' "Failed to configure HTTP_PROXY for containerD on ${NODE_ROLE} node $CURRENT_NODE"
+            return 1
+        fi
+    fi
+
+    #############################################################################
+    ssh "$CURRENT_NODE" <<< """
+        set -euo pipefail # Exit on error
+
+        log -f ${CURRENT_FUNC} 'Starting and enabling containerD for ${NODE_ROLE} node $CURRENT_NODE'
+        sudo systemctl enable containerd
+        sudo systemctl daemon-reload
+        sudo systemctl restart containerd
+        sleep 10
+        # Check if the containerd service is active
+        if systemctl is-active --quiet containerd.service; then
+            log -f ${CURRENT_FUNC} 'ContainerD configuration updated successfully for ${NODE_ROLE} node $CURRENT_NODE'
+        else
+            log -f ${CURRENT_FUNC} 'ERROR' 'ContainerD configuration failed, containerd service is not running for ${NODE_ROLE} node $CURRENT_NODE...'
             exit 1
         fi
 
         # ensure changes have been applied
         if sudo containerd config dump | grep -q 'SystemdCgroup = true'; then
-            log -f ${CURRENT_FUNC} 'Cgroups configured accordingly for containerD for node: $CURRENT_NODE'
+            log -f ${CURRENT_FUNC} 'Cgroups configured accordingly for containerD for ${NODE_ROLE} node $CURRENT_NODE'
         else
-            log -f ${CURRENT_FUNC} 'ERROR' 'Failed to configure Cgroups configured for containerD for node: $CURRENT_NODE'
+            log -f ${CURRENT_FUNC} 'ERROR' 'Failed to configure Cgroups configured for containerD for ${NODE_ROLE} node $CURRENT_NODE'
             exit 1
         fi
 
         if sudo containerd config dump | grep -q 'sandbox_image = \"registry.k8s.io/pause:${PAUSE_VERSION}\"'; then
-            log -f ${CURRENT_FUNC} \"sandbox_image is set accordingly to pause version ${PAUSE_VERSION} for node: $CURRENT_NODE\"
+            log -f ${CURRENT_FUNC} \"sandbox_image is set accordingly to pause version ${PAUSE_VERSION} for ${NODE_ROLE} node $CURRENT_NODE\"
         else
-            log -f ${CURRENT_FUNC} 'ERROR' \"Failed to set sandbox_image to pause version ${PAUSE_VERSION} for node: $CURRENT_NODE\"
+            log -f ${CURRENT_FUNC} 'ERROR' \"Failed to set sandbox_image to pause version ${PAUSE_VERSION} for ${NODE_ROLE} node $CURRENT_NODE\"
             exit 1
         fi
         #############################################################################
+        log -f ${CURRENT_FUNC} 'Configuring containerD socket permissions for ${NODE_ROLE} node $CURRENT_NODE for sudo group wheel,${SUDO_GROUP}'
         sudo setfacl -m g:${SUDO_GROUP}:rw /var/run/containerd/containerd.sock
         sudo setfacl -m g:wheel:rw /var/run/containerd/containerd.sock
     """

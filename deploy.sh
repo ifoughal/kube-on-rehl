@@ -927,77 +927,6 @@ prerequisites_requirements() {
             sudo sysctl --system ${VERBOSE}
         """
         log -f ${CURRENT_FUNC} "Finished configuring bridge network for ${role} node ${hostname}"
-        ############################################################################
-        log -f ${CURRENT_FUNC} "Installing containerD for ${role} node ${hostname}"
-        ssh -q ${hostname} <<< """
-            set -euo pipefail # Exit on error
-            sudo dnf install -y yum-utils ${VERBOSE}
-            sudo dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo  ${VERBOSE}
-            sudo dnf install containerd.io -y ${VERBOSE}
-        """
-        # Check if the SSH command failed
-        if [ $? -ne 0 ]; then
-            error_raised=1
-            log -f ${CURRENT_FUNC} "ERROR" "Error occured while installing containerD for ${role} node ${hostname}"
-            continue # continue to next node...
-        fi
-        log -f ${CURRENT_FUNC} "Finished installing containerD for ${role} node ${hostname}"
-        ############################################################################
-        log -f ${CURRENT_FUNC} "Enabling containerD NRI with systemD and cgroups for ${role} node ${hostname}"
-        ssh -q ${hostname} <<< """
-            set -euo pipefail # Exit on error
-
-            CONFIG_FILE='/etc/containerd/config.toml'
-
-            # Pause version mismatch:
-            log -f ${CURRENT_FUNC} 'Resetting containerD config to default.' ${VERBOSE}
-            containerd config default | sudo tee \$CONFIG_FILE >/dev/null
-
-            log -f ${CURRENT_FUNC} 'Backing up the original config file' ${VERBOSE}
-            sudo cp -f -n \$CONFIG_FILE \${CONFIG_FILE}.bak
-
-            log -f ${CURRENT_FUNC} 'Configuring containerD for our cluster' ${VERBOSE}
-            sudo sed -i '/\[plugins\\.\"io\\.containerd\\.nri\\.v1\\.nri\"\]/,/^\[/{
-                s/disable = true/disable = false/;
-                s/disable_connections = true/disable_connections = false/;
-                s|plugin_config_path = ".*"|plugin_config_path = \"/etc/nri/conf.d\"|;
-                s|plugin_path = ".*"|plugin_path = \"/opt/nri/plugins\"|;
-                s|plugin_registration_timeout = ".*"|plugin_registration_timeout = \"15s\"|;
-                s|plugin_request_timeout = ".*"|plugin_request_timeout = \"12s\"|;
-                s|socket_path = ".*"|socket_path = \"/var/run/nri/nri.sock\"|;
-            }' "\$CONFIG_FILE"
-
-
-            sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' \$CONFIG_FILE
-            # sudo sed -i 's|sandbox_image = \"registry.k8s.io/pause:\"|sandbox_image = \"registry.k8s.io/pause:$PAUSE_VERSION\"|' \$CONFIG_FILE
-            sudo sed -i 's|sandbox_image = \\\"registry.k8s.io/pause:[^\"]*\\\"|sandbox_image = \\\"registry.k8s.io/pause:$PAUSE_VERSION\\\"|' "\$CONFIG_FILE"
-
-            # sudo sed -i 's|root = \"/var/lib/containerd\"|root = \"/mnt/longhorn-1/var/lib/containerd\"|' \$CONFIG_FILE
-
-            sudo mkdir -p /etc/nri/conf.d /opt/nri/plugins
-            sudo chown -R root:root /etc/nri /opt/nri
-
-            log -f ${CURRENT_FUNC} 'Starting and enabling containerD' ${VERBOSE}
-            sudo systemctl enable --now containerd > /dev/null 2>&1
-            sudo systemctl daemon-reload
-            sudo systemctl restart containerd
-
-            sleep 10
-            # Check if the containerd service is active
-            if systemctl is-active --quiet containerd.service; then
-                log -f ${CURRENT_FUNC} 'ContainerD configuration updated successfully.' ${VERBOSE}
-            else
-                log -f ${CURRENT_FUNC} 'ERROR' 'ContainerD configuration failed, containerd service is not running...'
-                exit 1
-            fi
-        """
-        if [ $? -ne 0 ]; then
-            error_raised=1
-            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while enabling containerD NRI with systemD and cgroups for ${role} node ${hostname}"
-            continue  # continue to next node and skip this one
-        else
-            log -f ${CURRENT_FUNC} "ContainerD NRI with systemD and cgroups enabled successfully for ${role} node ${hostname}"
-        fi
         #############################################################################
         log -f ${CURRENT_FUNC} "Installing GO on node: $hostname"
         install_go $hostname $GO_VERSION $TINYGO_VERSION
@@ -1009,14 +938,14 @@ prerequisites_requirements() {
         log -f ${CURRENT_FUNC} "Finished installing Helm on node: $hostname"
         #############################################################################
         log -f ${CURRENT_FUNC} "Configuring containerd for ${role} node ${hostname}"
-        configure_containerD $hostname $PAUSE_VERSION $SUDO_GROUP "$HTTP_PROXY" "$HTTPS_PROXY" "$NO_PROXY"
-        if [ $? -ne 0 ]; then
+        if ! install_containerd "$hostname" "$role" "$PAUSE_VERSION" "$SUDO_GROUP" "$HTTP_PROXY" "$HTTPS_PROXY" "$NO_PROXY"; then
             error_raised=1
             log -f ${CURRENT_FUNC} "ERROR" "Error occurred while configuring containerd for ${role} node ${hostname}"
             continue  # continue to next node and skip this one
-        else
-            log -f ${CURRENT_FUNC} "Containerd configured successfully for ${role} node ${hostname}"
         fi
+        log -f ${CURRENT_FUNC} "Containerd installed and configured successfully for ${role} node ${hostname}"
+        echo end of test
+        exit 1
         #############################################################################
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     #############################################################################
@@ -1031,14 +960,40 @@ prerequisites_requirements() {
 
 
 install_cluster () {
-    ##################################################################
+    #############################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
-    ##################################################################
+    #############################################################################
+    # TODO: loop through the hosts to install contaienrD:
+    # TEST and refactor it...
+    while read -r node; do
+        local hostname=$(echo "$node" | jq -r '.hostname')
+        local ip=$(echo "$node" | jq -r '.ip')
+        local role=$(echo "$node" | jq -r '.role')
+        log -f ${CURRENT_FUNC} "Configuring containerd for ${role} node ${hostname}"
+        if ! install_containerd $hostname $role $PAUSE_VERSION $SUDO_GROUP "$HTTP_PROXY" "$HTTPS_PROXY" "$NO_PROXY"; then
+            error_raised=1
+            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while installing and configuring containerd for ${role} node ${hostname}"
+            continue
+        fi
+        log -f ${CURRENT_FUNC} "Containerd installed and configured successfully for ${role} node ${hostname}"
+
+        echo end of test
+        exit 1
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
+
+    echo end of test
+    exit 1
+    #############################################################################
     if ! install_kubetools; then
         log -f "main" "ERROR" "Failed to install kuberenetes required tools for cluster deployment."
+        error_raised=1
+    fi
+    #############################################################################
+    if [ "$error_raised" -eq 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Some errors occured during the installation of kubernetes required tools for cluster deployment."
         return 1
     fi
-    ##################################################################
+    #############################################################################
     log -f ${CURRENT_FUNC} "Generating kubeadm init config file"
     envsubst < init-config-template.yaml > init-config.yaml
     ####################################################################
