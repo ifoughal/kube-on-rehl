@@ -944,8 +944,6 @@ prerequisites_requirements() {
             continue  # continue to next node and skip this one
         fi
         log -f ${CURRENT_FUNC} "Containerd installed and configured successfully for ${role} node ${hostname}"
-        echo end of test
-        exit 1
         #############################################################################
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     #############################################################################
@@ -976,20 +974,14 @@ install_cluster () {
             continue
         fi
         log -f ${CURRENT_FUNC} "Containerd installed and configured successfully for ${role} node ${hostname}"
-
-        echo end of test
-        exit 1
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
-
-    echo end of test
-    exit 1
     #############################################################################
     if ! install_kubetools; then
         log -f "main" "ERROR" "Failed to install kuberenetes required tools for cluster deployment."
         error_raised=1
     fi
     #############################################################################
-    if [ "$error_raised" -eq 0 ]; then
+    if [ ! "$error_raised" -eq 0 ]; then
         log -f ${CURRENT_FUNC} "ERROR" "Some errors occured during the installation of kubernetes required tools for cluster deployment."
         return 1
     fi
@@ -1099,15 +1091,16 @@ install_cilium_prerequisites () {
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
         local role=$(echo "$node" | jq -r '.role')
+        local ingress_cluster_interface=$(echo "$node" | jq -r '.ingress.cluster_interface')
+        local ingress_public_interface=$(echo "$node" | jq -r '.ingress.public_interface')
         ##################################################################
         # free_space $hostname
         ##################################################################
-        log -f ${CURRENT_FUNC} "setting public interface: ${PUBLIC_INGRESS_INTER} rp_filter to 1"
-        log -f ${CURRENT_FUNC} "setting cluster interface: ${CONTROLPLANE_INGRESS_INTER} rp_filter to 2"
+        log -f ${CURRENT_FUNC} "setting public interface: ${ingress_public_interface} rp_filter to 1"
+        log -f ${CURRENT_FUNC} "setting cluster interface: ${ingress_cluster_interface} rp_filter to 2"
         ssh -q ${hostname} <<< """
-            # set -e
-            sudo sysctl -w net.ipv4.conf.$CONTROLPLANE_INGRESS_INTER.rp_filter=2 ${VERBOSE}
-            sudo sysctl -w net.ipv4.conf.${PUBLIC_INGRESS_INTER}.rp_filter=1 ${VERBOSE}
+            sudo sysctl -w net.ipv4.conf.$ingress_cluster_interface.rp_filter=2 ${VERBOSE}
+            sudo sysctl -w net.ipv4.conf.${ingress_public_interface}.rp_filter=1 ${VERBOSE}
 
             sudo sysctl --system ${VERBOSE}
         """
@@ -1868,8 +1861,8 @@ install_longhorn_prerequisites() {
     log -f ${CURRENT_FUNC} 'Started checking the longhorn preflight pre installation'
     ssh -q ${CONTROL_PLANE_NODE} <<< """
         export KUBERNETES_SERVICE_HOST=$CONTROL_PLANE_NODE
-        export KUBERNETES_SERVICE_PORT=$CONTROLPLANE_API_PORT
-        export KUBERNETES_MASTER=https://$CONTROL_PLANE_NODE:$CONTROLPLANE_API_PORT
+        export KUBERNETES_SERVICE_PORT=$CONTROL_PLANE_API_PORT
+        export KUBERNETES_MASTER=https://$CONTROL_PLANE_NODE:$CONTROL_PLANE_API_PORT
 
         OUTPUT=\$(longhornctl check preflight global-options --kube-config=\$HOME/.kube/config 2>&1)
 
@@ -2495,9 +2488,6 @@ if ! install_cluster; then
     log -f main "ERROR" "An error occurred while deploying the cluster"
     exit 1
 fi
-
-echo end of test
-exit 1
 #################################################################
 if ! install_gateway_CRDS; then
     log -f main "ERROR" "An error occurred while deploying gateway CRDS"

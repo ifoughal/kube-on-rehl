@@ -401,8 +401,8 @@ install_kubetools () {
     if [ "$error_raised" -eq 0 ]; then
        log -f ${CURRENT_FUNC} "Finished installing kubernetes tools"
     else
-         log -f ${CURRENT_FUNC} "ERROR" "Some errors occured during the kubernetes tools installation"
-         return 1
+        log -f ${CURRENT_FUNC} "ERROR" "Some errors occured during the kubernetes tools installation"
+        return 1
     fi
     ##################################################################
 }
@@ -740,8 +740,8 @@ update_firewall() {
 
         # # Kubectl API Server
 
-        # sudo firewall-cmd --zone=public --add-port=${CONTROLPLANE_API_PORT}/tcp --permanent
-        # sudo firewall-cmd --zone=k8s --add-port=${CONTROLPLANE_API_PORT}/tcp --permanent
+        # sudo firewall-cmd --zone=public --add-port=${CONTROL_PLANE_API_PORT}/tcp --permanent
+        # sudo firewall-cmd --zone=k8s --add-port=${CONTROL_PLANE_API_PORT}/tcp --permanent
 
         # # Kubelet health and communication
         # sudo firewall-cmd --zone=k8s --add-port=10248/tcp --permanent
