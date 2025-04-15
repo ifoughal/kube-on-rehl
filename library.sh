@@ -648,7 +648,7 @@ EOF
     fi
 
     #############################################################################
-    ssh "$CURRENT_NODE" <<< """
+    ssh -q "$CURRENT_NODE" <<< """
         set -euo pipefail # Exit on error
 
         log -f ${CURRENT_FUNC} 'Starting and enabling containerD for ${NODE_ROLE} node $CURRENT_NODE'
