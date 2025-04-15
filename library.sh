@@ -433,13 +433,7 @@ parse_inventory() {
     log -f "main" "Started loading inventory file: $INVENTORY"
     CLUSTER_NODES=$(yq e -r -o=json '.hosts' "$INVENTORY")
     log -f "main" "Finished loading inventory file: $INVENTORY"
-    ####################################################################
-    # TODO: MUST BE DONE IN THE CONTROLL PLANE!
-    # log -f "main" "WARNING" "TODO: MUST BE DONE IN THE CONTROLL PLANE!"
-    # CONTROLPLANE_ADDRESS=$(eval ip -o -4 addr show $CONTROLPLANE_INGRESS_INTER | awk '{print $4}' | cut -d/ -f1)  # 192.168.66.129
-    # CONTROLPLANE_SUBNET=$(echo $CONTROLPLANE_ADDRESS | awk -F. '{print $1"."$2"."$3".0/24"}')
-    # log -f "main" "WARNING" "EO TODO: MUST BE DONE IN THE CONTROLL PLANE!"
-    # #########################################################
+    #########################################################
     export CONTROLPLANE_INGRESS_CLUSTER_INTER=$(echo "$CLUSTER_NODES" | yq e -r '.[] | select(.role == "control-plane-leader") | .ingress.cluster_interface' -)
     export CONTROLPLANE_INGRESS_PUBLIC_INTER=$(echo "$CLUSTER_NODES" | yq e -r '.[] | select(.role == "control-plane-leader") | .ingress.public_interface' -)
     export CONTROL_PLANE_API_PORT=$(echo "$CLUSTER_NODES" | yq e -r '.[] | select(.role == "control-plane-leader") | .API_PORT' -)

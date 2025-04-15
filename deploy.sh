@@ -576,7 +576,7 @@ EOF
         log -f ${CURRENT_FUNC} "installing tools for '$role node': ${hostname}"
         ssh -q ${hostname} <<< """
             sudo dnf update -y  ${VERBOSE}
-            sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools lsof ${VERBOSE}
+            sudo dnf install -y python3-pip yum-utils bash-completion git wget bind-utils net-tools ipcalc lsof ${VERBOSE}
         """
         log -f ${CURRENT_FUNC} "Finished installing tools node: ${hostname}"
         ################################################################
@@ -1076,15 +1076,12 @@ install_cilium_prerequisites () {
     CURRENT_FUNC=${FUNCNAME[0]}
     log -f ${CURRENT_FUNC} "INFO" "Started installing cilium prerequisites"
    ##################################################################
-    log -f ${CURRENT_FUNC} "INFO" "cilium must be reinstalled as kubelet will be reinstalled"
     ssh -q $CONTROL_PLANE_NODE <<< """
-        eval \"sudo cilium uninstall > /dev/null 2>&1\" || true
-        log -f \"${CURRENT_FUNC}\" 'Ensuring that kube-proxy is not installed'
-        eval \"kubectl -n kube-system delete ds kube-proxy > /dev/null 2>&1\" || true
+        eval 'sudo cilium uninstall > /dev/null 2>&1' || true
+        log -f '${CURRENT_FUNC}' 'Ensuring that kube-proxy is not installed'
+        eval 'kubectl -n kube-system delete ds kube-proxy > /dev/null 2>&1' || true
         # Delete the configmap as well to avoid kube-proxy being reinstalled during a Kubeadm upgrade (works only for K8s 1.19 and newer)
-        eval \"kubectl -n kube-system delete cm kube-proxy > /dev/null 2>&1\" || true
-        log -f \"${CURRENT_FUNC}\" 'waiting 30seconds for cilium to be uninstalled'
-        sleep 30
+        eval 'kubectl -n kube-system delete cm kube-proxy > /dev/null 2>&1' || true
     """
     ##################################################################
     while read -r node; do
@@ -1096,8 +1093,8 @@ install_cilium_prerequisites () {
         ##################################################################
         # free_space $hostname
         ##################################################################
-        log -f ${CURRENT_FUNC} "setting public interface: ${ingress_public_interface} rp_filter to 1"
-        log -f ${CURRENT_FUNC} "setting cluster interface: ${ingress_cluster_interface} rp_filter to 2"
+        log -f ${CURRENT_FUNC} "setting public interface: ${ingress_public_interface} rp_filter to 1 on $role node ${hostname}"
+        log -f ${CURRENT_FUNC} "setting cluster interface: ${ingress_cluster_interface} rp_filter to 2 on $role node ${hostname}"
         ssh -q ${hostname} <<< """
             sudo sysctl -w net.ipv4.conf.$ingress_cluster_interface.rp_filter=2 ${VERBOSE}
             sudo sysctl -w net.ipv4.conf.${ingress_public_interface}.rp_filter=1 ${VERBOSE}
@@ -1107,7 +1104,7 @@ install_cilium_prerequisites () {
         ##################################################################
         CILIUM_CLI_VERSION=$(curl --silent https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
 
-        log -f ${CURRENT_FUNC} "installing cilium cli version: $CILIUM_CLI_VERSION"
+        log -f ${CURRENT_FUNC} "installing cilium cli version: $CILIUM_CLI_VERSION on $role node ${hostname}"
         ssh -q ${hostname} <<< """
             # set -e
             cd /tmp
@@ -1122,7 +1119,7 @@ install_cilium_prerequisites () {
             rm cilium-linux-*
         """
         add_bashcompletion ${hostname}  cilium $VERBOSE
-        log -f ${CURRENT_FUNC} "Finished installing cilium cli"
+        log -f ${CURRENT_FUNC} "Finished installing cilium cli on $role node ${hostname}"
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     ##################################################################
     # # cleaning up cilium and maglev tables
@@ -1139,6 +1136,39 @@ install_cilium () {
     ##################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
     #############################################################
+    local control_plane_address=$(ssh -q ${CONTROL_PLANE_NODE} <<< """
+        ip -o -4 addr show $CONTROLPLANE_INGRESS_CLUSTER_INTER | awk '{print \$4}' | cut -d/ -f1
+    """)
+
+    local control_plane_subnet=$(ssh -q "${CONTROL_PLANE_NODE}" """
+        # Use 'ip' to show the IPv4 address and CIDR of the given interface
+
+        ip -o -f inet addr show ${CONTROLPLANE_INGRESS_CLUSTER_INTER} | awk '{print \$4}' | while read cidr; do
+            # Split the CIDR into IP and prefix (e.g., 10.66.65.11 and 24)
+            IFS=/ read ip prefix <<< \"\$cidr\"
+            # Split the IP address into its 4 octets
+            IFS=. read -r o1 o2 o3 o4 <<< \"\$ip\"
+
+            # Generate the subnet mask as a 32-bit integer, then mask out unused bits
+            mask=\$(( 0xFFFFFFFF << (32 - prefix) & 0xFFFFFFFF ))
+
+            # Extract each octet of the subnet mask
+            m1=\$(( (mask >> 24) & 0xFF ))
+            m2=\$(( (mask >> 16) & 0xFF ))
+            m3=\$(( (mask >> 8) & 0xFF ))
+            m4=\$(( mask & 0xFF ))
+
+            # Calculate the network address by bitwise ANDing IP and subnet mask
+            n1=\$(( o1 & m1 ))
+            n2=\$(( o2 & m2 ))
+            n3=\$(( o3 & m3 ))
+            n4=\$(( o4 & m4 ))
+
+            # Output the resulting network address in CIDR notation
+            echo \"\$n1.\$n2.\$n3.\$n4/\$prefix\"
+        done
+    """)
+    #############################################################
     log -f ${CURRENT_FUNC} "Started cilium helm chart prerequisites"
     helm_chart_prerequisites ${CONTROL_PLANE_NODE} "cilium" "https://helm.cilium.io" "$CILIUM_NS" "false" "false"
     if [ $? -ne 0 ]; then
@@ -1149,10 +1179,10 @@ install_cilium () {
     ##################################################################
     log -f ${CURRENT_FUNC} "Started installing cilium"
     #############################################################
-    # > TODO HERE
-    log -f ${CURRENT_FUNC} "Cilium native routing subnet is: ${CONTROLPLANE_SUBNET}"
-    HASH_SEED=$(head -c12 /dev/urandom | base64 -w0)
-    log -f ${CURRENT_FUNC} "Cilium maglev hashseed is: ${HASH_SEED}"
+
+    log -f ${CURRENT_FUNC} "Cilium native routing subnet is: ${control_plane_subnet}"
+    local hash_seed=$(head -c12 /dev/urandom | base64 -w0)
+    log -f ${CURRENT_FUNC} "Cilium maglev hashseed is: ${hash_seed}"
     #############################################################
     log -f ${CURRENT_FUNC} "sending cilium values to control plane node: ${CONTROL_PLANE_NODE}"
     scp -q ./cilium/values.yaml ${CONTROL_PLANE_NODE}:/tmp/
@@ -1165,13 +1195,13 @@ install_cilium () {
         # set -e
         #############################################################
         OUTPUT=\$(cilium install --version $CILIUM_VERSION \
-            --set ipv4NativeRoutingCIDR=${CONTROLPLANE_SUBNET} \
+            --set ipv4NativeRoutingCIDR=${control_plane_subnet} \
             --set k8sServiceHost=auto \
             --values /tmp/values.yaml \
             --set operator.replicas=1  \
             --set hubble.relay.replicas=1  \
             --set hubble.ui.replicas=1 \
-            --set maglev.hashSeed="${HASH_SEED}"  \
+            --set maglev.hashSeed="${hash_seed}"  \
             --set encryption.enabled=false \
             --set encryption.nodeEncryption=false \
             --set encryption.type=wireguard \
@@ -1183,7 +1213,6 @@ install_cilium () {
             log -f \"${CURRENT_FUNC}\" 'ERROR' \"Failed to deploy cilium \n\toutput:\n\t\$OUTPUT\"
             exit 1
         fi
-        cilium install output=\$OUTPUT
         #############################################################
         sleep 30
         log -f \"${FUNCNAME[0]}\" 'Removing default cilium ingress.'
@@ -2468,41 +2497,46 @@ install_kafka() {
 # fi
 
 # #################################################################
-if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
-    reset_cluster
-    log -f "main" "Cluster reset completed."
-fi
-#################################################################
-if [ "$PREREQUISITES" == "true" ]; then
-    #################################################################
-    if ! prerequisites_requirements; then
-        log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
-        exit 1
-    fi
-    #################################################################
-else
-    log -f "main" "Cluster prerequisites have been skipped"
-fi
-#################################################################
-if ! install_cluster; then
-    log -f main "ERROR" "An error occurred while deploying the cluster"
-    exit 1
-fi
-#################################################################
-if ! install_gateway_CRDS; then
-    log -f main "ERROR" "An error occurred while deploying gateway CRDS"
-    exit 1
-fi
-#################################################################
-if ! install_cilium_prerequisites; then
-    log -f main "ERROR" "An error occurred while installing cilium prerequisites"
-    exit 1
-fi
+# if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
+#     reset_cluster
+#     log -f "main" "Cluster reset completed."
+# fi
+# #################################################################
+# if [ "$PREREQUISITES" == "true" ]; then
+#     #################################################################
+#     if ! prerequisites_requirements; then
+#         log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
+#         exit 1
+#     fi
+#     #################################################################
+# else
+#     log -f "main" "Cluster prerequisites have been skipped"
+# fi
+# #################################################################
+# if ! install_cluster; then
+#     log -f main "ERROR" "An error occurred while deploying the cluster"
+#     exit 1
+# fi
+# #################################################################
+# if ! install_gateway_CRDS; then
+#     log -f main "ERROR" "An error occurred while deploying gateway CRDS"
+#     exit 1
+# fi
+# #################################################################
+# if ! install_cilium_prerequisites; then
+#     log -f main "ERROR" "An error occurred while installing cilium prerequisites"
+#     exit 1
+# fi
+
 #################################################################
 if ! install_cilium; then
     log -f main "ERROR" "An error occurred while installing cilium"
     exit 1
 fi
+
+
+echo end of test
+exit 1
 #################################################################
 join_cluster
 #################################################################
