@@ -447,10 +447,8 @@ EOF
         # scp -q $CONFIG_FILE ${hostname}:/tmp
         output=$(scp -q "$CONFIG_FILE" "${hostname}:/tmp" 2>&1)
         if [ $? -ne 0 ]; then
-            echo output: $output
             error_raised=1
-            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while sending SSH config file to node ${hostname}..."
-            exit 1
+            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while sending SSH config file to node ${hostname}...\n\toutput: $output"
             continue  # continue to next node and skip this one
         fi
         # Check if the output contains the SSH key scan prompt
@@ -685,7 +683,6 @@ reset_cluster () {
                 elif echo \"\$output\" | grep -qi 'failed\|error'; then
                     log -f ${CURRENT_FUNC} 'WARNING' \"Error occurred while resetting k8s node ${hostname}...\n\$(printf \"%s\n\" \"\$output\")\"
                 fi
-                echo output: \$output
             fi
 
             log -f ${CURRENT_FUNC} \"Removing kubernetes hanging pods and containers\"
@@ -954,6 +951,37 @@ prerequisites_requirements() {
         fi
         log -f ${CURRENT_FUNC} "Containerd installed and configured successfully for ${role} node ${hostname}"
         #############################################################################
+        # Define the GRUB configuration file location
+        GRUB_CONFIG_FILE="/etc/default/grub"
+        log -f ${CURRENT_FUNC} "Checking if ipv6 is enabled in the GRUB configuration for ${role} node ${hostname}"
+        ssh -q ${hostname} <<< """
+            set -euo pipefail
+            # Check if ipv6.disable=1 exists in the GRUB configuration
+            if grep -q 'ipv6.disable=1' '$GRUB_CONFIG_FILE'; then
+                # Remove ipv6.disable=1 from the GRUB configuration
+                sudo sed -i 's/ipv6.disable=1//g' '$GRUB_CONFIG_FILE'
+                log -f $CURRENT_FUNC 'IPv6 disabled flag removed from GRUB configuration on ${role} node ${hostname}'
+
+                # Update GRUB to apply the changes
+                if sudo test -f '/boot/grub2/grub.cfg'; then
+                    sudo grub2-mkconfig -o /boot/grub2/grub.cfg
+                elif sudo test -f '/boot/efi/EFI/centos/grub.cfg'; then
+                    sudo grub2-mkconfig -o /boot/efi/EFI/centos/grub.cfg
+                fi
+                exit 210
+            fi
+        """
+        local exist_status=$?
+        if [ $exist_status -ne 0 ]; then
+            if [ $exist_status -eq 210 ]; then
+                log -f  ${CURRENT_FUNC} 'WARNING' "Manually rebooting $role node $hostname to apply changes is required prior to proceeding...."
+            else
+                error_raised=1
+                log -f ${CURRENT_FUNC} "ERROR" "Error occurred while checking GRUB configuration for $role node ${hostname}..."
+                continue  # continue to next node and skip this one
+            fi
+        fi
+        log -f ${CURRENT_FUNC} "Finished checkingipv6 GRUB configuration for ${role} node ${hostname}"
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     #############################################################################
     if [ "$error_raised" -eq 0 ]; then
@@ -1229,6 +1257,8 @@ install_cilium () {
                 --set maglev.hashSeed="${hash_seed}" \
                 --set crds.enabled=true \
                 --values /tmp/values.yaml \
+                --set cleanBpfState=true \
+                --set cleanState=true \
                 2>&1)
             if [ \$RETRY_COUNT -eq \$MAX_RETRIES ]; then
                 log -f $CURRENT_FUNC 'ERROR' 'Max retries reached. Cilium installation failed.'
@@ -1412,14 +1442,22 @@ restart_cilium() {
             if echo "\$CILIUM_STATUS" | grep -qi 'error'; then
                 log -f \"${CURRENT_FUNC}\" \"cilium status contains errors... restarting cilium. Try: \$current_retry\"
                 eval \"kubectl rollout restart -n $CILIUM_NS ds/cilium ds/cilium-envoy deployment/cilium-operator > /dev/null 2>&1\" || true
-                sleep 45
+                sleep 60
             else
                 log -f \"${CURRENT_FUNC}\" 'Cilium is up and running'
                 break
             fi
         done
     """
-    return $?
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to restart cilium"
+        kubectl delete -n $CILIUM_NS daemonsets.apps cilium-node-init > /dev/null 2>&1 || true
+        return 1
+    else
+        log -f ${CURRENT_FUNC} "Finished restarting cilium"
+        kubectl delete -n $CILIUM_NS daemonsets.apps cilium-node-init > /dev/null 2>&1 || true
+        return 0
+    fi
     #################################################################
 }
 
@@ -2419,8 +2457,7 @@ install_rookceph_cluster() {
             --version $ROOKCEPH_VERSION \
             --set operatorNamespace=$ROOKCEPH_NS \
             -f /tmp/${chart_name}/values.yaml \
-            >/dev/null 2>&1 )
-        echo output: \$output
+            2>&1)
         if [ ! \$? -eq 0 ]; then
             log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install ${chart_name}:\n\t\$(printf \"%s\n\" \"\$output\")\"
             exit 1
@@ -2568,7 +2605,8 @@ if [ "$PREREQUISITES" == "true" ]; then
 else
     log -f "main" "Cluster prerequisites have been skipped"
 fi
-#################################################################
+
+################################################################
 if ! install_cluster; then
     log -f main "ERROR" "An error occurred while deploying the cluster"
     exit 1
@@ -2601,17 +2639,17 @@ if ! restart_cilium; then
     log -f "main" "ERROR" "Failed to start cilium service."
     exit 1
 fi
-# #################################################################
-# if [ "$PREREQUISITES" == "true" ]; then
-#     if ! install_certmanager_prerequisites; then
-#         log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
-#         exit 1
-#     fi
-# fi
-# if ! install_certmanager; then
-#     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
-#     exit 1
-# fi
+#################################################################
+if [ "$PREREQUISITES" == "true" ]; then
+    if ! install_certmanager_prerequisites; then
+        log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
+        exit 1
+    fi
+fi
+if ! install_certmanager; then
+    log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
+    exit 1
+fi
 
 ##################################################################
 if ! install_rookceph; then
