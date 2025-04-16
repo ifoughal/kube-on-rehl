@@ -169,11 +169,10 @@ else
     sudo -A bash -c "echo %$SUDO_GROUP       ALL\=\(ALL\)       NOPASSWD\:ALL >> /etc/sudoers.d/10_sudo_users_groups"
 fi
 ##################################################################
-if command -v yq; then
+if command -v yq &> /dev/null; then
     parse_inventory
 fi
 ##################################################################
-
 
 
 provision_deployer() {
@@ -215,8 +214,12 @@ provision_deployer() {
     log -f ${CURRENT_FUNC} "Finished installing required packages to deploy the cluster"
     ####################################################################
     log -f ${CURRENT_FUNC} "Installing YQ for YAML parsing"
-    sudo wget https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -O /usr/local/bin/yq
-    sudo chmod +x /usr/local/bin/yq
+    if command -v yq &> /dev/null; then
+        log -f ${CURRENT_FUNC} "YQ already installed, skipping installation."
+    else
+        sudo wget https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -O /usr/local/bin/yq
+        sudo chmod +x /usr/local/bin/yq
+    fi
     ####################################################################
     parse_inventory
     ####################################################################
@@ -720,7 +723,7 @@ reset_cluster () {
                 /opt/containerd \
                 /run/containerd \
                 /var/lib/containerd \
-                /var/lib/etcd/*
+                /var/lib/etcd
             log -f ${CURRENT_FUNC} \"reloading systemd daemon and flushing iptables\"
             sudo systemctl daemon-reload
             sudo iptables -F
@@ -967,6 +970,7 @@ install_cluster () {
     #############################################################################
     # TODO: loop through the hosts to install contaienrD:
     # TEST and refactor it...
+    error_raised=0
     while read -r node; do
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
@@ -1221,10 +1225,13 @@ install_cilium () {
                 --set hubble.relay.replicas=${REPLICAS} \
                 --set hubble.ui.replicas=${REPLICAS} \
                 --set maglev.hashSeed="${hash_seed}" \
-                --set cleanBpfState=true \
-                --set cleanState=true \
+                --set crds.enabled=true \
                 --values /tmp/values.yaml \
                 2>&1)
+            if [ \$RETRY_COUNT -eq \$MAX_RETRIES ]; then
+                log -f $CURRENT_FUNC 'ERROR' 'Max retries reached. Cilium installation failed.'
+                exit 1
+            fi
 
             if echo \$OUTPUT | grep -q 'it is being terminated'; then
                 # If the error is detected, retry the installation
@@ -1233,20 +1240,15 @@ install_cilium () {
                 sleep 30  # Sleep before retrying
             elif echo \$OUTPUT | grep -q 'Error'; then
                 # If there is any other error, log and exit
-                log -f $CURRENT_FUNC 'ERROR' \"Failed to deploy cilium \n\toutput:\n\t\$OUTPUT\"
-                exit 1
+                log -f $CURRENT_FUNC 'ERROR' \"Failed to deploy cilium, retrying... (\$((RETRY_COUNT+1))/\$MAX_RETRIES)\n\toutput:\n\t\$OUTPUT\"
+                ((RETRY_COUNT++))
+                sleep 30  # Sleep before retrying
             else
                 # Successful installation, break the loop
                 log -f $CURRENT_FUNC 'INFO' 'Cilium installed successfully.'
                 break
             fi
         done
-
-        if [ \$RETRY_COUNT -eq \$MAX_RETRIES ]; then
-            log -f $CURRENT_FUNC 'ERROR' 'Max retries reached. Cilium installation failed.'
-            exit 1
-        fi
-
         #############################################################
         sleep 30
         log -f $CURRENT_FUNC 'Removing default cilium ingress.'
@@ -1264,6 +1266,8 @@ install_cilium () {
     fi
     #############################################################
             # --set k8sServiceHost=auto \
+            #   --set cleanBpfState=true \
+            #     --set cleanState=true \
 }
 
 
@@ -2553,22 +2557,22 @@ install_kafka() {
 # else
 #     log -f "main" "Cluster prerequisites have been skipped"
 # fi
-# #################################################################
-# if ! install_cluster; then
-#     log -f main "ERROR" "An error occurred while deploying the cluster"
-#     exit 1
-# fi
-# #################################################################
-# if ! install_gateway_CRDS; then
-#     log -f main "ERROR" "An error occurred while deploying gateway CRDS"
-#     exit 1
-# fi
 #################################################################
-# if ! install_cilium_prerequisites; then
-#     log -f main "ERROR" "An error occurred while installing cilium prerequisites"
-#     exit 1
-# fi
+if ! install_cluster; then
+    log -f main "ERROR" "An error occurred while deploying the cluster"
+    exit 1
+fi
 #################################################################
+if ! install_gateway_CRDS; then
+    log -f main "ERROR" "An error occurred while deploying gateway CRDS"
+    exit 1
+fi
+################################################################
+if ! install_cilium_prerequisites; then
+    log -f main "ERROR" "An error occurred while installing cilium prerequisites"
+    exit 1
+fi
+################################################################
 if ! install_cilium; then
     log -f main "ERROR" "An error occurred while installing cilium"
     exit 1

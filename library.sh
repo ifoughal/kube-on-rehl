@@ -867,11 +867,51 @@ update_firewall() {
 }
 
 
+generate_ip_pool() {
+    set -euo pipefail
+
+    local ips_array=()
+    # Function to generate the IP pool for load balancer
+    # This function will create a temporary file with the IP blocks
+    # and then render the final output using awk
+    # Loop through each node and collect IPs
+    while read -r node; do
+        # Parse node information using jq
+        local hostname=$(echo "$node" | jq -r '.hostname')
+        local ip=$(echo "$node" | jq -r '.ip')
+        local role=$(echo "$node" | jq -r '.role')
+        # Add the IP to the array
+        ips_array+=("$ip")
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
 
 
+    local template_file="./cilium/loadbalancer-ip-pool.jinja"
+    local output_file="/tmp/loadbalancer-ip-pool.yaml"
 
+    # Create a temporary file to hold the IP blocks
+    local tmp_blocks=$(mktemp)
 
-########################################################################
+    for ip in "${ips_array[@]}"; do
+        echo "  - cidr: \"$ip/32\"" >> "$tmp_blocks"
+    done
+
+    # Render the final output by replacing the placeholders in the template using awk
+    awk -v cilium_ns="$CILIUM_NS" -v blocks="$(cat "$tmp_blocks")" '
+    {
+        if ($0 ~ /{{ cilium_ns }}/) {
+            gsub("{{ cilium_ns }}", cilium_ns)
+            print $0
+        } else if ($0 ~ /{{ ip_blocks }}/) {
+            print blocks
+        } else {
+            print $0
+        }
+    }
+    ' "$template_file" > "$output_file"
+
+    # Clean up
+    rm "$tmp_blocks"
+}
 
 
 # EXPERIMENTAL
