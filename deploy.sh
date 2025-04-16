@@ -645,11 +645,13 @@ reset_cluster () {
     log -f ${CURRENT_FUNC} "Started reseting cluster"
     ##################################################################
     log -f ${CURRENT_FUNC} "Started uninstalling Cilium from cluster..."
+    helm uninstall -n $CILIUM_NS cilium > /dev/null 2>&1 || true
+
     eval "sudo cilium uninstall --timeout 30 > /dev/null 2>&1" || true
 
     kubectl delete crds -l app.kubernetes.io/part-of=cilium > /dev/null 2>&1
     kubectl delete validatingwebhookconfigurations cilium-operator > /dev/null 2>&1
-    kubectl -n kube-system delete deployment -l k8s-app=cilium-operator > /dev/null 2>&1
+    kubectl -n $CILIUM_NS delete deployment -l k8s-app=cilium-operator > /dev/null 2>&1
 
     log -f ${CURRENT_FUNC} "Finished uninstalling Cilium from cluster..."
     ##################################################################
@@ -1182,6 +1184,7 @@ install_cilium () {
     """)
     #############################################################
     log -f ${CURRENT_FUNC} "Started cilium helm chart prerequisites"
+    cilium uninstall > /dev/null 2>&1 || true
     helm_chart_prerequisites ${CONTROL_PLANE_NODE} "cilium" "https://helm.cilium.io" "$CILIUM_NS" "false" "false"
     if [ $? -ne 0 ]; then
         log -f ${CURRENT_FUNC} "ERROR" "Failed to install cilium helm chart prerequisites"
@@ -1219,8 +1222,7 @@ install_cilium () {
         while [ \$RETRY_COUNT -lt \$MAX_RETRIES ]; do
             OUTPUT=\$(cilium install --version $CILIUM_VERSION \
                 --set ipv4NativeRoutingCIDR=${control_plane_subnet} \
-                --set k8sServiceHost=10.96.0.1 \
-                --set k8sServicePort=6443 \
+                --set k8sServiceHost=auto \
                 --set operator.replicas=${REPLICAS} \
                 --set hubble.relay.replicas=${REPLICAS} \
                 --set hubble.ui.replicas=${REPLICAS} \
@@ -1252,7 +1254,7 @@ install_cilium () {
         #############################################################
         sleep 30
         log -f $CURRENT_FUNC 'Removing default cilium ingress.'
-        kubectl delete svc -n kube-system cilium-ingress >/dev/null 2>&1 || true
+        kubectl delete svc -n $CILIUM_NS cilium-ingress >/dev/null 2>&1 || true
         #############################################################
         log -f $CURRENT_FUNC 'Apply LB IPAM on cluster'
         eval \"kubectl apply -f /tmp/loadbalancer-ip-pool.yaml ${VERBOSE}\"
@@ -1268,6 +1270,8 @@ install_cilium () {
             # --set k8sServiceHost=auto \
             #   --set cleanBpfState=true \
             #     --set cleanState=true \
+            # --set k8sServiceHost=10.96.0.1 \
+            #     --set k8sServicePort=6443 \
 }
 
 
@@ -1364,7 +1368,7 @@ install_gateway () {
         openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout \$KEY_FILE -out \$CERT_FILE -subj \"/CN=${CLUSTER_DNS_DOMAIN}\" > /dev/null 2>&1
         ##################################################################
         log -f \"${CURRENT_FUNC}\" 'deleting previous Gateway API TLS secret'
-        eval \"kubectl delete secret  ${GATEWAY_API_SECRET_NAME} --namespace=kube-system > /dev/null 2>&1\"
+        eval \"kubectl delete secret  ${GATEWAY_API_SECRET_NAME} --namespace=kube-system > /dev/null 2>&1 || true\"
         log -f \"${CURRENT_FUNC}\" 'Started creating Gateway API TLS secret'
         eval \"kubectl create secret tls ${GATEWAY_API_SECRET_NAME} --cert=\$CERT_FILE --key=\$KEY_FILE --namespace=kube-system  ${VERBOSE}\"
         log -f \"${CURRENT_FUNC}\" 'Finished deploying TLS cert for TLS-HTTPS Gateway API'
@@ -1374,10 +1378,17 @@ install_gateway () {
         log -f \"${CURRENT_FUNC}\" 'Finished deploying Gateway API'
         ##################################################################
         log -f \"${CURRENT_FUNC}\" 'restarting cilium.'
-        eval \"kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator ${VERBOSE}\" || true
+        eval \"kubectl rollout restart -n $CILIUM_NS ds/cilium ds/cilium-envoy deployment/cilium-operator ${VERBOSE}\" || true
     """
     #################################################################
-    return 0
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to deploy Gateway API"
+        return 1
+    else
+        log -f ${CURRENT_FUNC} "Finished deploying Gateway API"
+        return 0
+    fi
+    #################################################################
 }
 
 
@@ -1400,8 +1411,8 @@ restart_cilium() {
 
             if echo "\$CILIUM_STATUS" | grep -qi 'error'; then
                 log -f \"${CURRENT_FUNC}\" \"cilium status contains errors... restarting cilium. Try: \$current_retry\"
-                eval \"kubectl rollout restart -n kube-system ds/cilium ds/cilium-envoy deployment/cilium-operator > /dev/null 2>&1\" || true
-                sleep 180
+                eval \"kubectl rollout restart -n $CILIUM_NS ds/cilium ds/cilium-envoy deployment/cilium-operator > /dev/null 2>&1\" || true
+                sleep 45
             else
                 log -f \"${CURRENT_FUNC}\" 'Cilium is up and running'
                 break
@@ -2524,45 +2535,47 @@ install_kafka() {
 }
 
 
-# #################################################################
-# if [ "$PREREQUISITES" = true ]; then
-#     #################################################################
-#     if ! provision_deployer; then
-#         log -f "main" "ERROR" "An error occurred while provisioning the deployer node."
-#         exit 1
-#     fi
-#     log -f "main" "Deployer node provisioned successfully."
-#     #################################################################
-#     if ! deploy_hostsfile; then
-#         log -f "main" "ERROR" "An error occured while updating the hosts files."
-#         exit 1
-#     fi
-#     log -f "main" "Hosts files updated successfully."
-#     #################################################################
-# fi
+#################################################################
+if [ "$PREREQUISITES" = true ]; then
+    #################################################################
+    if ! provision_deployer; then
+        log -f "main" "ERROR" "An error occurred while provisioning the deployer node."
+        exit 1
+    fi
+    log -f "main" "Deployer node provisioned successfully."
+    #################################################################
+    if ! deploy_hostsfile; then
+        log -f "main" "ERROR" "An error occured while updating the hosts files."
+        exit 1
+    fi
+    log -f "main" "Hosts files updated successfully."
+    #################################################################
+fi
 
-# #################################################################
-# if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
-#     reset_cluster
-#     log -f "main" "Cluster reset completed."
-# fi
-# #################################################################
-# if [ "$PREREQUISITES" == "true" ]; then
-#     #################################################################
-#     if ! prerequisites_requirements; then
-#         log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
-#         exit 1
-#     fi
-#     #################################################################
-# else
-#     log -f "main" "Cluster prerequisites have been skipped"
-# fi
+#################################################################
+if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
+    reset_cluster
+    log -f "main" "Cluster reset completed."
+fi
+#################################################################
+if [ "$PREREQUISITES" == "true" ]; then
+    #################################################################
+    if ! prerequisites_requirements; then
+        log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
+        exit 1
+    fi
+    #################################################################
+else
+    log -f "main" "Cluster prerequisites have been skipped"
+fi
 #################################################################
 if ! install_cluster; then
     log -f main "ERROR" "An error occurred while deploying the cluster"
     exit 1
 fi
 #################################################################
+join_cluster
+################################################################
 if ! install_gateway_CRDS; then
     log -f main "ERROR" "An error occurred while deploying gateway CRDS"
     exit 1
@@ -2577,8 +2590,7 @@ if ! install_cilium; then
     log -f main "ERROR" "An error occurred while installing cilium"
     exit 1
 fi
-#################################################################
-join_cluster
+
 #################################################################
 if ! install_gateway; then
     log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
