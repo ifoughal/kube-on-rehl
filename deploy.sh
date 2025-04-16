@@ -16,6 +16,9 @@ SUDO_PASSWORD=
 STRICT_HOSTKEYS=0
 RESET_CLUSTER_ARG=0
 CLUSTER_NODES=
+
+set -u # fail on unset variables
+
 ####################################################################
 # Recommended kernel version
 recommended_rehl_version="4.18"
@@ -716,7 +719,8 @@ reset_cluster () {
                 /etc/nri \
                 /opt/containerd \
                 /run/containerd \
-                /var/lib/containerd
+                /var/lib/containerd \
+                /var/lib/etcd/*
             log -f ${CURRENT_FUNC} \"reloading systemd daemon and flushing iptables\"
             sudo systemctl daemon-reload
             sudo iptables -F
@@ -1102,11 +1106,14 @@ install_cilium_prerequisites () {
             sudo sysctl --system ${VERBOSE}
         """
         ##################################################################
-        CILIUM_CLI_VERSION=$(curl --silent https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
-
+        # CILIUM_CLI_VERSION=$(curl --silent https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
+        ##################################################################
         log -f ${CURRENT_FUNC} "installing cilium cli version: $CILIUM_CLI_VERSION on $role node ${hostname}"
         ssh -q ${hostname} <<< """
-            # set -e
+            if command -v cilium &> /dev/null; then
+                log -f \"${CURRENT_FUNC}\" 'cilium cli already installed, skipping installation.'
+                exit 0
+            fi
             cd /tmp
 
             CLI_ARCH=amd64
@@ -1133,6 +1140,7 @@ install_cilium_prerequisites () {
 
 
 install_cilium () {
+    set -u
     ##################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
     #############################################################
@@ -1187,38 +1195,64 @@ install_cilium () {
     log -f ${CURRENT_FUNC} "sending cilium values to control plane node: ${CONTROL_PLANE_NODE}"
     scp -q ./cilium/values.yaml ${CONTROL_PLANE_NODE}:/tmp/
     #############################################################
+    log -f ${CURRENT_FUNC} "Generating lb ip pool file"
+    generate_ip_pool
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to generate lb ip pool file"
+        return 1
+    fi
+    log -f ${CURRENT_FUNC} "Finished generating lb ip pool file"
+    #############################################################
     log -f ${CURRENT_FUNC} "sending lb ip pool to control plane node: ${CONTROL_PLANE_NODE}"
-    scp -q ./cilium/loadbalancer-ip-pool.yaml ${CONTROL_PLANE_NODE}:/tmp/
+    scp -q /tmp/loadbalancer-ip-pool.yaml ${CONTROL_PLANE_NODE}:/tmp/
     #############################################################
     log -f ${CURRENT_FUNC} "Installing cilium version: '${CILIUM_VERSION}' using cilium cli"
     ssh -q $CONTROL_PLANE_NODE <<< """
-        # set -e
         #############################################################
-        OUTPUT=\$(cilium install --version $CILIUM_VERSION \
-            --set ipv4NativeRoutingCIDR=${control_plane_subnet} \
-            --set k8sServiceHost=auto \
-            --values /tmp/values.yaml \
-            --set operator.replicas=1  \
-            --set hubble.relay.replicas=1  \
-            --set hubble.ui.replicas=1 \
-            --set maglev.hashSeed="${hash_seed}"  \
-            --set encryption.enabled=false \
-            --set encryption.nodeEncryption=false \
-            --set encryption.type=wireguard \
-            --set cleanBpfState=false \
-            --set cleanState=false \
-            2>&1 || true)
+        RETRY_COUNT=0
+        MAX_RETRIES=5  # Set the maximum number of retries
 
-        if echo \$OUTPUT | grep 'Error'; then
-            log -f \"${CURRENT_FUNC}\" 'ERROR' \"Failed to deploy cilium \n\toutput:\n\t\$OUTPUT\"
+        while [ \$RETRY_COUNT -lt \$MAX_RETRIES ]; do
+            OUTPUT=\$(cilium install --version $CILIUM_VERSION \
+                --set ipv4NativeRoutingCIDR=${control_plane_subnet} \
+                --set k8sServiceHost=10.96.0.1 \
+                --set k8sServicePort=6443 \
+                --set operator.replicas=${REPLICAS} \
+                --set hubble.relay.replicas=${REPLICAS} \
+                --set hubble.ui.replicas=${REPLICAS} \
+                --set maglev.hashSeed="${hash_seed}" \
+                --set cleanBpfState=true \
+                --set cleanState=true \
+                --values /tmp/values.yaml \
+                2>&1)
+
+            if echo \$OUTPUT | grep -q 'it is being terminated'; then
+                # If the error is detected, retry the installation
+                log -f $CURRENT_FUNC 'INFO' \"Cilium NS is being terminated, retrying... (\$((RETRY_COUNT+1))/\$MAX_RETRIES)\"
+                ((RETRY_COUNT++))
+                sleep 30  # Sleep before retrying
+            elif echo \$OUTPUT | grep -q 'Error'; then
+                # If there is any other error, log and exit
+                log -f $CURRENT_FUNC 'ERROR' \"Failed to deploy cilium \n\toutput:\n\t\$OUTPUT\"
+                exit 1
+            else
+                # Successful installation, break the loop
+                log -f $CURRENT_FUNC 'INFO' 'Cilium installed successfully.'
+                break
+            fi
+        done
+
+        if [ \$RETRY_COUNT -eq \$MAX_RETRIES ]; then
+            log -f $CURRENT_FUNC 'ERROR' 'Max retries reached. Cilium installation failed.'
             exit 1
         fi
+
         #############################################################
         sleep 30
-        log -f \"${FUNCNAME[0]}\" 'Removing default cilium ingress.'
+        log -f $CURRENT_FUNC 'Removing default cilium ingress.'
         kubectl delete svc -n kube-system cilium-ingress >/dev/null 2>&1 || true
         #############################################################
-        log -f \"${FUNCNAME[0]}\" 'Apply LB IPAM on cluster'
+        log -f $CURRENT_FUNC 'Apply LB IPAM on cluster'
         eval \"kubectl apply -f /tmp/loadbalancer-ip-pool.yaml ${VERBOSE}\"
         #############################################################
     """
@@ -1229,6 +1263,7 @@ install_cilium () {
         return 1
     fi
     #############################################################
+            # --set k8sServiceHost=auto \
 }
 
 
@@ -1247,6 +1282,11 @@ join_cluster () {
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
         local role=$(echo "$node" | jq -r '.role')
+
+        log -f ${CURRENT_FUNC} "WARNING" "WORKAROUND: Stopping firewalld for ${role} node ${hostname}"
+        ssh -q ${hostname} <<< """
+            sudo systemctl stop firewalld.service
+        """
 
         if [ $hostname == ${CONTROL_PLANE_NODE} ]; then
             log -f ${CURRENT_FUNC} "hostname: ${hostname} "
@@ -1309,6 +1349,7 @@ install_gateway () {
     CERTS_PATH=/etc/cilium/certs
     GATEWAY_API_SECRET_NAME=shared-tls
     ssh -q ${CONTROL_PLANE_NODE} <<< """
+        set -euo pipefail
         ##################################################################
         sudo mkdir -p $CERTS_PATH
         sudo chown -R \$USER:\$USER $CERTS_PATH
@@ -1544,7 +1585,7 @@ install_certmanager () {
     log -f "${CURRENT_FUNC}" "Started installing cert-manger on namespace: '${CERTMANAGER_NS}'"
     # TODO: --set http_proxy --set https_proxy --set no_proxy
     ssh -q ${CONTROL_PLANE_NODE} <<< """
-        output=\$(helm install cert-manager jetstack/cert-manager  \
+        output=\$(helm install cert-manager cert-manager/cert-manager  \
             --version ${CERTMANAGER_VERSION} \
             --namespace ${CERTMANAGER_NS} \
             --set namespace=${CERTMANAGER_NS} \
@@ -2245,7 +2286,7 @@ install_rancher () {
 }
 
 
-install_cephrook(){
+install_rookceph(){
     ###################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
     ###################################################################
@@ -2334,9 +2375,9 @@ install_cephrook(){
 # }
 
 
-install_cephrook_cluster(){
+install_rookceph_cluster() {
     ###################################################################
-    CURRENT_FUNC=${FUNCNAME[0]}
+    CURRENT_FUNC="${FUNCNAME[0]}"
     ###################################################################
     local chart_name="rook-ceph-cluster"
     local chart_url="https://charts.rook.io/release"
@@ -2360,8 +2401,8 @@ install_cephrook_cluster(){
         output=\$(helm install ${chart_name} ${chart_name}/${chart_name} \
             --namespace $ROOKCEPH_NS \
             --create-namespace \
-            --set operatorNamespace=$ROOKCEPH_NS \
             --version $ROOKCEPH_VERSION \
+            --set operatorNamespace=$ROOKCEPH_NS \
             -f /tmp/${chart_name}/values.yaml \
             >/dev/null 2>&1 )
         echo output: \$output
@@ -2522,21 +2563,16 @@ install_kafka() {
 #     log -f main "ERROR" "An error occurred while deploying gateway CRDS"
 #     exit 1
 # fi
-# #################################################################
+#################################################################
 # if ! install_cilium_prerequisites; then
 #     log -f main "ERROR" "An error occurred while installing cilium prerequisites"
 #     exit 1
 # fi
-
 #################################################################
 if ! install_cilium; then
     log -f main "ERROR" "An error occurred while installing cilium"
     exit 1
 fi
-
-
-echo end of test
-exit 1
 #################################################################
 join_cluster
 #################################################################
@@ -2549,17 +2585,42 @@ if ! restart_cilium; then
     log -f "main" "ERROR" "Failed to start cilium service."
     exit 1
 fi
-#################################################################
-if [ "$PREREQUISITES" == "true" ]; then
-    if ! install_certmanager_prerequisites; then
-        log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
-        exit 1
-    fi
-fi
-if ! install_certmanager; then
-    log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
+# #################################################################
+# if [ "$PREREQUISITES" == "true" ]; then
+#     if ! install_certmanager_prerequisites; then
+#         log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
+#         exit 1
+#     fi
+# fi
+# if ! install_certmanager; then
+#     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
+#     exit 1
+# fi
+
+##################################################################
+if ! install_rookceph; then
+    log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
     exit 1
 fi
+##################################################################
+if ! install_rookceph_cluster; then
+    log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
+    exit 1
+fi
+##################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ################################################################
 # TODO, status checks and tests
@@ -2576,16 +2637,6 @@ fi
 #     log -f "main" "ERROR" "Failed to install longhorn on the cluster"
 #     exit 1
 # fi
-##################################################################
-if ! install_cephrook; then
-    log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
-    exit 1
-fi
-##################################################################
-if ! install_cephrook_cluster; then
-    log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
-    exit 1
-fi
 # ##################################################################
 # # if ! install_consul; then
 # #     log -f "main" "ERROR" "Failed to install consul on the cluster"
