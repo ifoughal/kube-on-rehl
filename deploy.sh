@@ -1677,14 +1677,7 @@ install_certmanager () {
         return 1
     fi
 }
-            # --set clusterResourceNamespace=${CERTMANAGER_NS} \
-            # --set global.leaderElection.namespace=${CERTMANAGER_NS} \
-            # --set replicaCount=2 \
-            # --set podDisruptionBudget.enabled=true \
-            # --set webhook.replicaCount=2 \
-            # --set cainjector.replicaCount=2 \
-            # --set crds.enabled=true \
-            # --set crds.keep=true \
+
 
 install_longhorn_prerequisites() {
     ##################################################################
@@ -2647,29 +2640,28 @@ install_kafka() {
 #     log -f "main" "ERROR" "Failed to start cilium service."
 #     exit 1
 # fi
-################################################################
-if [ "$PREREQUISITES" == "true" ]; then
-    if ! install_certmanager_prerequisites; then
-        log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
-        exit 1
-    fi
-fi
-if ! install_certmanager; then
-    log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
+# ################################################################
+# if [ "$PREREQUISITES" == "true" ]; then
+#     if ! install_certmanager_prerequisites; then
+#         log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
+#         exit 1
+#     fi
+# fi
+# if ! install_certmanager; then
+#     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
+#     exit 1
+# fi
+##################################################################
+if ! install_rookceph; then
+    log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
     exit 1
 fi
-
-# ##################################################################
-# if ! install_rookceph; then
-#     log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
-#     exit 1
-# fi
-# ##################################################################
-# if ! install_rookceph_cluster; then
-#     log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
-#     exit 1
-# fi
-# ##################################################################
+##################################################################
+if ! install_rookceph_cluster; then
+    log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
+    exit 1
+fi
+##################################################################
 
 
 
