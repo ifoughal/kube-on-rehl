@@ -218,14 +218,22 @@ install_go () {
     ssh -q $CURRENT_NODE <<< """
         cd /tmp
 
-        # install Go
-        log -f ${CURRENT_FUNC} \"installing go version: ${GO_VERSION}\"
-        wget -q -nc https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz
-        sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
+        if command -v go >/dev/null 2>&1 && command -v tinygo >/dev/null 2>&1; then
+            log -f ${CURRENT_FUNC} \"Go and TinyGo are already installed\"
+            exit 0
+        fi
 
+        # install Go
+        if ! command -v go >/dev/null 2>&1; then
+            log -f ${CURRENT_FUNC} \"installing go version: ${GO_VERSION}\"
+            wget -q -nc https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz
+            sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
+        fi
         # install tinyGo
-        wget -q -nc https://github.com/tinygo-org/tinygo/releases/download/v${TINYGO_VERSION}/tinygo${TINYGO_VERSION}.linux-amd64.tar.gz
-        sudo tar -C /usr/local -xzf tinygo${TINYGO_VERSION}.linux-amd64.tar.gz
+        if ! command -v tinygo >/dev/null 2>&1; then
+            wget -q -nc https://github.com/tinygo-org/tinygo/releases/download/v${TINYGO_VERSION}/tinygo${TINYGO_VERSION}.linux-amd64.tar.gz
+            sudo tar -C /usr/local -xzf tinygo${TINYGO_VERSION}.linux-amd64.tar.gz
+        fi
 
         # Update path:
         files=(
@@ -914,6 +922,43 @@ generate_ip_pool() {
 }
 
 
+# Function to ensure that the unprivileged BPF setting is disabled
+enable_unprivileged_bpf() {
+    local hostname=$1
+
+    ssh -q ${hostname} <<< """
+        set -euo pipefail  # Exit on error
+        # Check the current status of kernel.unprivileged_bpf_disabled
+        current_value=\$(sysctl -n kernel.unprivileged_bpf_disabled)
+
+        # If the value is set to 1, proceed to modify the config
+        if [ \"\$current_value\" -eq '1' ]; then
+            log -f $CURRENT_FUNC \"Current value of kernel.unprivileged_bpf_disabled is \$current_value. Modifying the system configuration to enable unprivileged BPF...\"
+
+            echo 'GRUB_CMDLINE_LINUX=\"unprivileged_bpf_disabled=0\"' | sudo tee /etc/grub.d/20_cilium > /dev/null 2>&1
+
+            # Update GRUB config
+            log -f $CURRENT_FUNC 'Updating GRUB configuration...'
+            if [ -d \"/boot/efi/EFI\" ]; then
+                # For UEFI systems
+                sudo grub2-mkconfig -o /boot/efi/EFI/\$(basename \$(ls /boot/efi/EFI))/grub.cfg ${VERBOSE}
+            else
+                # For BIOS systems
+                sudo grub2-mkconfig -o /boot/grub2/grub.cfg ${VERBOSE}
+            fi
+
+            log -f $CURRENT_FUNC 'WARNING' 'Cilium installation will be skipped, as unprivileged BPF is not enabled. Please reboot the system to apply the changes.'
+            exit 200
+        else
+            log -f $CURRENT_FUNC \"The current value of kernel.unprivileged_bpf_disabled is already \$current_value. No action required.\"
+            exit 0
+        fi
+    """
+    return $?
+}
+
+
+
 # EXPERIMENTAL
 cilium_cleanup () {
     # echo "📌 Unmounting and remounting BPF filesystem..."
@@ -936,6 +981,7 @@ cilium_cleanup () {
     # sudo ipvsadm --clear
 
     # echo "✅ Cleanup completed!"
+    log -f TODO WARNING "this must be in a ssh session to control plane"
 
     echo "cleaning up cluster from previous cilium installs"
     kubectl delete crd $(kubectl get crd | grep cilium | awk '{print $1}')  >/dev/null 2>&1 || true

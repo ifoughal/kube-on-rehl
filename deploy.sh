@@ -642,17 +642,6 @@ reset_cluster () {
     ##################################################################
     log -f ${CURRENT_FUNC} "Started reseting cluster"
     ##################################################################
-    log -f ${CURRENT_FUNC} "Started uninstalling Cilium from cluster..."
-    helm uninstall -n $CILIUM_NS cilium > /dev/null 2>&1 || true
-
-    eval "sudo cilium uninstall --timeout 30 > /dev/null 2>&1" || true
-
-    kubectl delete crds -l app.kubernetes.io/part-of=cilium > /dev/null 2>&1
-    kubectl delete validatingwebhookconfigurations cilium-operator > /dev/null 2>&1
-    kubectl -n $CILIUM_NS delete deployment -l k8s-app=cilium-operator > /dev/null 2>&1
-
-    log -f ${CURRENT_FUNC} "Finished uninstalling Cilium from cluster..."
-    ##################################################################
     error_raised=0
     while read -r node; do
         ##################################################################
@@ -664,19 +653,21 @@ reset_cluster () {
         ssh -q ${hostname} <<< """
             sudo swapoff -a
 
-            log -f ${CURRENT_FUNC} \"Uninstalling Cilium from node ${hostname}\"
 
             if command -v cilium &> /dev/null; then
-                cilium uninstall --wait ${VERBOSE}
+                log -f ${CURRENT_FUNC} \"Uninstalling Cilium from node ${hostname}\"
+                cilium uninstall --wait --timeout 30s ${VERBOSE}
             fi
 
             if command -v kubectl &> /dev/null; then
+                log -f ${CURRENT_FUNC} \"Deleting Cilium resources from node ${hostname}\"
                 kubectl delete crds -l app.kubernetes.io/part-of=cilium ${VERBOSE}
                 kubectl delete validatingwebhookconfigurations cilium-operator ${VERBOSE}
+                kubectl -n $CILIUM_NS delete deployment -l k8s-app=cilium-operator > /dev/null 2>&1
             fi
 
-            log -f ${CURRENT_FUNC} \"Reseting kubeadm on node ${hostname}\"
             if command -v kubeadm &> /dev/null; then
+                log -f ${CURRENT_FUNC} \"Reseting kubeadm on node ${hostname}\"
                 output=\$(sudo kubeadm reset -f 2>&1 )
                 if [ \$? -ne 0 ]; then
                     log -f ${CURRENT_FUNC} 'WARNING' \"Error occurred while resetting k8s node ${hostname}...\n\$(printf \"%s\n\" \"\$output\")\"
@@ -706,6 +697,7 @@ reset_cluster () {
             log -f ${CURRENT_FUNC} \"removing cilium cgroupv2 mount and deleting cluster directories\"
             sudo umount /var/run/cilium/cgroupv2 > /dev/null 2>&1
             sudo rm -rf \
+                /var/lib/cilium \
                 \$HOME/.kube \
                 /root/.kube \
                 /etc/cni/net.d \
@@ -777,15 +769,15 @@ prerequisites_requirements() {
         #####################################################################################
         log -f ${CURRENT_FUNC} "Started checking if the kernel is recent enough for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
-            log -f kernel-version \"checking if the kernel is recent enough...\" ${VERBOSE}
+            log -f $CURRENT_FUNC \"checking if the kernel is recent enough...\" ${VERBOSE}
             kernel_version=\$(uname -r)
-            log -f kernel-version \"Kernel version: '\$kernel_version'\" ${VERBOSE}
+            log -f $CURRENT_FUNC \"Kernel version: '\$kernel_version'\" ${VERBOSE}
 
             # Compare kernel versions
             if [[ \$(printf '%s\n' \"$recommended_rehl_version\" \"\$kernel_version\" | sort -V | head -n1) == \"$recommended_rehl_version\" ]]; then
-                log -f kernel-version \"Kernel version is sufficient.\" ${VERBOSE}
+                log -f $CURRENT_FUNC \"Kernel version is sufficient.\" ${VERBOSE}
             else
-                log -f kernel-version \"ERROR\" \"${log_prefix_error} Kernel version is below the recommended version $recommended_rehl_version for ${role} node ${hostname}\"
+                log -f $CURRENT_FUNC \"ERROR\" \"Kernel version is below the recommended version $recommended_rehl_version for ${role} node ${hostname}\"
                 exit 1
             fi
         """
@@ -904,6 +896,20 @@ prerequisites_requirements() {
         ssh -q ${hostname} <<< """
             sudo systemctl stop firewalld.service
         """
+        ############################################################################
+        log -f ${CURRENT_FUNC} "Ensuring that unprivileged BPF is enabled on ${role} node ${hostname}"
+        enable_unprivileged_bpf "$hostname"
+        local status=$?
+        if [ $status -eq 0 ]; then
+            log -f ${CURRENT_FUNC} "Finished ensuring that unprivileged BPF is enabled on ${role} node ${hostname}"
+        elif [ $status -eq 200 ]; then
+            log -f ${CURRENT_FUNC} "eBPF unpriviledge mode has been enabled on ${role} node ${hostname}"
+            log -f ${CURRENT_FUNC} "Finished ensuring that unprivileged BPF is enabled on ${role} node ${hostname}"
+        else
+            error_raised=1
+            log -f ${CURRENT_FUNC} "ERROR" "Error occurred while ensuring that unprivileged BPF is enabled on ${role} node ${hostname}"
+            continue # continue to next node...
+        fi
         ############################################################################
         log -f ${CURRENT_FUNC} "Configuring bridge network for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
@@ -1163,12 +1169,6 @@ install_cilium_prerequisites () {
         log -f ${CURRENT_FUNC} "Finished installing cilium cli on $role node ${hostname}"
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     ##################################################################
-    # # cleaning up cilium and maglev tables
-    # # EXPERIMENTAL ONLY AND STILL UNDER TESTING....
-    # # echo "Started cleanup completed!"
-    # # cilium_cleanup
-    # # echo "Cilium cleanup completed!"
-    # ##################################################################
     log -f ${CURRENT_FUNC} "INFO" "Finished installing cilium prerequisites"
 }
 
@@ -1212,17 +1212,26 @@ install_cilium () {
     """)
     #############################################################
     log -f ${CURRENT_FUNC} "Started cilium helm chart prerequisites"
-    cilium uninstall > /dev/null 2>&1 || true
+    ssh -q $CONTROL_PLANE_NODE <<< """
+        cilium uninstall --namespace $CILIUM_NS > /dev/null 2>&1 || true
+        helm uninstall --namespace $CILIUM_NS cilium > /dev/null 2>&1 || true
+    """
     helm_chart_prerequisites ${CONTROL_PLANE_NODE} "cilium" "https://helm.cilium.io" "$CILIUM_NS" "false" "false"
     if [ $? -ne 0 ]; then
         log -f ${CURRENT_FUNC} "ERROR" "Failed to install cilium helm chart prerequisites"
         return 1
     fi
+    ##################################################################
+    # # cleaning up cilium and maglev tables
+    # # EXPERIMENTAL ONLY AND STILL UNDER TESTING....
+    log -f ${CURRENT_FUNC} "Started cilium cleanup"
+    cilium_cleanup
+    log -f ${CURRENT_FUNC} "Cilium cleanup done"
+    ##################################################################
     log -f ${CURRENT_FUNC} "Finished cilium helm chart prerequisites"
     ##################################################################
     log -f ${CURRENT_FUNC} "Started installing cilium"
     #############################################################
-
     log -f ${CURRENT_FUNC} "Cilium native routing subnet is: ${control_plane_subnet}"
     local hash_seed=$(head -c12 /dev/urandom | base64 -w0)
     log -f ${CURRENT_FUNC} "Cilium maglev hashseed is: ${hash_seed}"
@@ -1249,13 +1258,13 @@ install_cilium () {
 
         while [ \$RETRY_COUNT -lt \$MAX_RETRIES ]; do
             OUTPUT=\$(cilium install --version $CILIUM_VERSION \
+                --namespace $CILIUM_NS \
                 --set ipv4NativeRoutingCIDR=${control_plane_subnet} \
                 --set k8sServiceHost=auto \
-                --set operator.replicas=${REPLICAS} \
-                --set hubble.relay.replicas=${REPLICAS} \
-                --set hubble.ui.replicas=${REPLICAS} \
+                --set operator.replicas=$OPERATOR_REPLICAS \
+                --set hubble.relay.replicas=$HUBBLE_RELAY_REPLICAS \
+                --set hubble.ui.replicas=$HUBBLE_UI_REPLICAS \
                 --set maglev.hashSeed="${hash_seed}" \
-                --set crds.enabled=true \
                 --values /tmp/values.yaml \
                 --set cleanBpfState=true \
                 --set cleanState=true \
@@ -1407,8 +1416,8 @@ install_gateway () {
         eval \"kubectl apply -f /tmp/http-gateway.yaml ${VERBOSE}\"
         log -f \"${CURRENT_FUNC}\" 'Finished deploying Gateway API'
         ##################################################################
-        log -f \"${CURRENT_FUNC}\" 'restarting cilium.'
-        eval \"kubectl rollout restart -n $CILIUM_NS ds/cilium ds/cilium-envoy deployment/cilium-operator ${VERBOSE}\" || true
+        # log -f \"${CURRENT_FUNC}\" 'restarting cilium.'
+        # # eval \"kubectl rollout restart -n $CILIUM_NS ds/cilium ds/cilium-envoy deployment/cilium-operator ${VERBOSE}\" || true
     """
     #################################################################
     if [ $? -ne 0 ]; then
@@ -1442,7 +1451,7 @@ restart_cilium() {
             if echo "\$CILIUM_STATUS" | grep -qi 'error'; then
                 log -f \"${CURRENT_FUNC}\" \"cilium status contains errors... restarting cilium. Try: \$current_retry\"
                 eval \"kubectl rollout restart -n $CILIUM_NS ds/cilium ds/cilium-envoy deployment/cilium-operator > /dev/null 2>&1\" || true
-                sleep 60
+                sleep 120
             else
                 log -f \"${CURRENT_FUNC}\" 'Cilium is up and running'
                 break
@@ -1628,7 +1637,8 @@ install_certmanager () {
     log -f "$CURRENT_FUNC" "Sending certmanager values to control-plane node: ${CONTROL_PLANE_NODE}"
     ssh -q ${CONTROL_PLANE_NODE} <<< """
         # create tmp dir for certmanager
-        rm -rf /tmp/certmanager &&  mkdir -p /tmp/certmanager
+        rm -rf /tmp/certmanager
+        mkdir -p /tmp/certmanager
     """
     # scp -q ./certmanager/values.yaml $CONTROL_PLANE_NODE:/tmp/certmanager/
     ##################################################################
@@ -1642,15 +1652,7 @@ install_certmanager () {
             --version ${CERTMANAGER_VERSION} \
             --namespace ${CERTMANAGER_NS} \
             --set namespace=${CERTMANAGER_NS} \
-            --set clusterResourceNamespace=${CERTMANAGER_NS} \
-            --set global.leaderElection.namespace=${CERTMANAGER_NS} \
             --create-namespace \
-            --set replicaCount=${REPLICAS} \
-            --set podDisruptionBudget.enabled=true \
-            --set webhook.replicaCount=${REPLICAS} \
-            --set cainjector.replicaCount=${REPLICAS} \
-            --set crds.enabled=true \
-            --set crds.keep=true \
             ${VERBOSE} || true)
         # Check if the Helm install command was successful
         if [ ! \$? -eq 0 ]; then
@@ -1674,7 +1676,14 @@ install_certmanager () {
         return 1
     fi
 }
-
+            # --set clusterResourceNamespace=${CERTMANAGER_NS} \
+            # --set global.leaderElection.namespace=${CERTMANAGER_NS} \
+            # --set replicaCount=2 \
+            # --set podDisruptionBudget.enabled=true \
+            # --set webhook.replicaCount=2 \
+            # --set cainjector.replicaCount=2 \
+            # --set crds.enabled=true \
+            # --set crds.keep=true \
 
 install_longhorn_prerequisites() {
     ##################################################################
@@ -2605,13 +2614,12 @@ if [ "$PREREQUISITES" == "true" ]; then
 else
     log -f "main" "Cluster prerequisites have been skipped"
 fi
-
 ################################################################
 if ! install_cluster; then
     log -f main "ERROR" "An error occurred while deploying the cluster"
     exit 1
 fi
-#################################################################
+################################################################
 join_cluster
 ################################################################
 if ! install_gateway_CRDS; then
@@ -2628,40 +2636,39 @@ if ! install_cilium; then
     log -f main "ERROR" "An error occurred while installing cilium"
     exit 1
 fi
-
 #################################################################
 if ! install_gateway; then
     log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
     exit 1
 fi
-##################################################################
+#################################################################
 if ! restart_cilium; then
     log -f "main" "ERROR" "Failed to start cilium service."
     exit 1
 fi
 #################################################################
-if [ "$PREREQUISITES" == "true" ]; then
-    if ! install_certmanager_prerequisites; then
-        log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
-        exit 1
-    fi
-fi
-if ! install_certmanager; then
-    log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
-    exit 1
-fi
+# if [ "$PREREQUISITES" == "true" ]; then
+#     if ! install_certmanager_prerequisites; then
+#         log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
+#         exit 1
+#     fi
+# fi
+# if ! install_certmanager; then
+#     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
+#     exit 1
+# fi
 
-##################################################################
-if ! install_rookceph; then
-    log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
-    exit 1
-fi
-##################################################################
-if ! install_rookceph_cluster; then
-    log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
-    exit 1
-fi
-##################################################################
+# ##################################################################
+# if ! install_rookceph; then
+#     log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
+#     exit 1
+# fi
+# ##################################################################
+# if ! install_rookceph_cluster; then
+#     log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
+#     exit 1
+# fi
+# ##################################################################
 
 
 
@@ -2708,7 +2715,7 @@ fi
 #     exit 1
 # fi
 ##################################################################
-log -f "main" "deployment finished"
+# log -f "main" "deployment finished"
 
 
 # ./main -r -v --with-prerequisites
