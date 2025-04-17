@@ -285,13 +285,13 @@ EOF
             capture { block=block $0 ORS }
             END { print block }
         ' "$CONFIG_FILE")
-        #####################################################################################
+        #######################################################################
         # Normalize SSH_BLOCK
         local normalized_ssh_block=$(echo "$SSH_BLOCK" | sed '/^\s*$/d' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
         # Normalize current_block
         local normalized_current_block=$(echo "$current_block" | sed '/^\s*$/d' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        #####################################################################################
+        #######################################################################
         if [[ -z "$current_block" ]]; then
             # New host — mark as update needed
             hosts_updated=true
@@ -304,7 +304,7 @@ EOF
 
             log -f $CURRENT_FUNC "Host: $hostname already exists but differs, updating..."
         fi
-        #####################################################################################
+        #######################################################################
         # If the host exists, replace it
         if grep -q "Host $hostname" "$CONFIG_FILE"; then
             # Use awk to remove the old block
@@ -327,7 +327,7 @@ EOF
             # Append new block
             printf "%s" "$SSH_BLOCK" >> "$CONFIG_FILE"
         fi
-        #####################################################################################
+        #######################################################################
         # Append the entry to the file (e.g., /etc/hosts)
         # Normalize spaces in the input line (collapse multiple spaces/tabs into one)
         local line="$ip         $hostname"
@@ -354,7 +354,7 @@ EOF
         else
             debug_log -f ${CURRENT_FUNC} "Host already exists: $line"
         fi
-        #####################################################################################
+        #######################################################################
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     if [ "$hosts_updated" == true ]; then
         log -f ${CURRENT_FUNC} "SSH config file updated successfully. Relaunch terminal to apply changes."
@@ -362,16 +362,16 @@ EOF
     else
         log -f ${CURRENT_FUNC} "No changes made to SSH config file."
     fi
-    #####################################################################################
+    #######################################################################
     while read -r node; do
-        #####################################################################################
+        #######################################################################
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
         local port=$(echo "$node" | jq -r '.port // 22')
         local role=$(echo "$node" | jq -r '.role')
         local user=$(echo "$node" | jq -r '.user')
         local password=$(echo "$node" | jq -r '.password')
-        #####################################################################################
+        #######################################################################
         log -f ${CURRENT_FUNC} "Started configuring HTTP/HTTPS Proxy for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             echo '''
@@ -400,7 +400,7 @@ EOF
             sudo sed -i 's/^[[:space:]]\+//' /etc/environment
 
         """
-        ####################################################################################
+        ########################################################################
         # export keys to nodes:
         if [ "$STRICT_HOSTKEYS" -eq 0 ]; then
             # Remove any existing entry for the host
@@ -420,7 +420,7 @@ EOF
                 continue
             fi
         fi
-        #####################################################################################
+        #######################################################################
         # 1. Check if SSH key exists
         if [[ ! -f "${SSH_KEY}" || ! -f "${SSH_KEY}.pub" ]]; then
             log -f $CURRENT_FUNC "Generating 🔑 SSH key for $role node ${hostname}..."
@@ -428,7 +428,7 @@ EOF
         else
             log -f $CURRENT_FUNC "✅ SSH key already exists: ${SSH_KEY}"
         fi
-        #####################################################################################
+        #######################################################################
         log -f ${CURRENT_FUNC} "Exporting ssh-key to $role node ${hostname} using IP..."
         if ! sshpass -p "$password" ssh-copy-id -f -p "$port" -i "${SSH_KEY}.pub" "${user}@${ip}" >/dev/null 2>&1; then
             log -f $CURRENT_FUNC "ERROR" "Failed to copy ssh id for $hostname."
@@ -442,7 +442,7 @@ EOF
             continue
         fi
         log -f ${CURRENT_FUNC} "Finished exporting ssh-key to $role node ${hostname}..."
-        #####################################################################################
+        #######################################################################
         log -f ${CURRENT_FUNC} "sending SSH config file to target $role node ${hostname}"
         # scp -q $CONFIG_FILE ${hostname}:/tmp
         output=$(scp -q "$CONFIG_FILE" "${hostname}:/tmp" 2>&1)
@@ -456,7 +456,7 @@ EOF
             echo "Error: SSH key scan prompt detected."
             return 1
         fi
-        #####################################################################################
+        #######################################################################
         log -f ${CURRENT_FUNC} "Started gid and uid visudo configuration for ${role} node ${hostname}"
 
         local log_prefix=$(date +"\033[0;32m%Y-%m-%d %H:%M:%S,%3N ")
@@ -471,7 +471,7 @@ EOF
             '''
         """
         log -f ${CURRENT_FUNC} "Finished gid and uid visudo configuration for ${role} node ${hostname}"
-        #####################################################################################
+        #######################################################################
         log -f ${CURRENT_FUNC} "Check if the groups exists with the specified GIDs for ${role} node ${hostname}"
         local log_prefix=$(date +"\033[0;32m%Y-%m-%d %H:%M:%S,%3N")
         ssh -q ${hostname} <<< """
@@ -483,7 +483,7 @@ EOF
             fi
         """
         log -f ${CURRENT_FUNC} "Finished checking the sudoer groups with the specified GIDs for ${role} node ${hostname}"
-        #####################################################################################
+        #######################################################################
         log -f ${CURRENT_FUNC} "Check if the user '${SUDO_USERNAME}' exists for ${role} node ${hostname}"
         local log_prefix=$(date +"\033[0;32m%Y-%m-%d %H:%M:%S,%3N")
         ssh -q ${hostname} <<< """
@@ -502,7 +502,7 @@ EOF
             continue  # continue to next node and skip this one
         fi
         log -f ${CURRENT_FUNC} "Finished check if the user '${SUDO_USERNAME}' exists for ${role} node ${hostname}"
-        #####################################################################################
+        #######################################################################
         if [ ! -z $SUDO_NEW_PASSWORD ]; then
             log -f ${CURRENT_FUNC} "setting password for user '${SUDO_USERNAME}' for ${role} node ${hostname}"
             ssh -q ${hostname} << EOF
@@ -516,7 +516,7 @@ EOF
             fi
             log -f ${CURRENT_FUNC} "Finished setting password for user '${SUDO_USERNAME}' for ${role} node ${hostname}"
         fi
-        #####################################################################################
+        #######################################################################
         log -f ${CURRENT_FUNC} "Applying new SSH config for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             sudo cp /tmp/config ${TARGET_CONFIG_FILE}
@@ -530,7 +530,7 @@ EOF
             CURRENT_HOSTNAME=$(eval hostname)
         """
         log -f ${CURRENT_FUNC} "Finished setting hostname for '$role node': ${hostname}"
-        #####################################################################################
+        #######################################################################
         log -f ${CURRENT_FUNC} "Deploying logger function for ${role} node ${hostname}"
         scp -q ./log $hostname:/tmp/
         ssh -q $hostname <<< """
@@ -538,14 +538,14 @@ EOF
             sudo chmod +x /usr/local/bin/log
         """
         log -f ${CURRENT_FUNC} "Finished deploying logger function for ${role} node ${hostname}"
-        #####################################################################################
+        #######################################################################
         log -f ${CURRENT_FUNC} "Configuring NTP for ${role} node ${hostname}"
         ssh -q $hostname <<< """
             sudo timedatectl set-ntp true > /dev/null 2>&1
             sudo timedatectl set-timezone $TIMEZONE > /dev/null 2>&1
             sudo timedatectl status > /dev/null 2>&1
         """
-        #####################################################################################
+        #######################################################################
         log -f ${CURRENT_FUNC} "Configuring repos for ${role} node ${hostname}"
         configure_repos $hostname $role "/etc/yum.repos.d/almalinux.repo"
         if [ $? -ne 0 ]; then
@@ -555,14 +555,14 @@ EOF
         else
             log -f ${CURRENT_FUNC} "repos configured successfully for ${role} node ${hostname}"
         fi
-        ####################################################################################
+        ########################################################################
         log -f ${CURRENT_FUNC} "Adjusting NTP with chrony ${role} node ${hostname}"
         ssh -q $hostname <<< """
             sudo dnf install -y chrony > /dev/null 2>&1
             sudo systemctl enable --now chronyd > /dev/null 2>&1
             sudo chronyc makestep > /dev/null 2>&1
         """
-        ####################################################################################
+        ########################################################################
         log -f ${CURRENT_FUNC} "Checking NTP sync for ${role} node ${hostname}"
 
         check_ntp_sync $hostname
@@ -748,25 +748,25 @@ reset_cluster () {
 
 # policycoreutils iproute  iptables
 prerequisites_requirements() {
-    #########################################################################################
+    #######################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
-    #########################################################################################
+    #######################################################################
     local error_raised=0
-    #########################################################################################
+    #######################################################################
     log -f ${CURRENT_FUNC}  "Started cluster prerequisites installation and checks"
-    #########################################################################################
+    #######################################################################
     log -f ${CURRENT_FUNC} "WARNING" "Will install cluster prerequisites, manual nodes reboot is required."
-    #########################################################################################
+    #######################################################################
     while read -r node; do
-       #####################################################################################
+       #######################################################################
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
         local role=$(echo "$node" | jq -r '.role')
-        #####################################################################################
+        #######################################################################
         log -f ${CURRENT_FUNC} "Starting dnf optimisations for ${role} node ${hostname}"
         optimize_dnf $hostname "${VERBOSE}"
         log -f ${CURRENT_FUNC} "Finished dnf optimisations for ${role} node ${hostname}"
-        #####################################################################################
+        #######################################################################
         log -f ${CURRENT_FUNC} "Started checking if the kernel is recent enough for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             log -f $CURRENT_FUNC \"checking if the kernel is recent enough...\" ${VERBOSE}
@@ -788,7 +788,7 @@ prerequisites_requirements() {
             continue  # continue to next node and skip this one
         fi
         log -f ${CURRENT_FUNC} "Finished checking if the kernel is recent enough for ${role} node ${hostname}"
-        #####################################################################################
+        #######################################################################
         log -f ${CURRENT_FUNC} "Checking eBPF support for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             # Check if bpftool is installed
@@ -821,7 +821,7 @@ prerequisites_requirements() {
             continue  # continue to next node and skip this one
         fi
         log -f ${CURRENT_FUNC} "Finished checking eBPF support for ${role} node ${hostname}"
-        #####################################################################################
+        #######################################################################
         log -f ${CURRENT_FUNC} "Checking if bpf is mounted for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             mount_output=\$(mount | grep /sys/fs/bpf)
@@ -840,11 +840,11 @@ prerequisites_requirements() {
             continue # continue to next node...
         fi
         log -f ${CURRENT_FUNC} "Finished checking if bpf is mounted for ${role} node ${hostname}"
-        ###################################################################################
+        #######################################################################
         log -f $CURRENT_FUNC "Started updating env variables for ${role} node ${hostname}"
         update_path ${hostname}
         log -f $CURRENT_FUNC "Finished updating env variables for ${role} node ${hostname}"
-        ################################################################
+        #######################################################################
         log -f ${CURRENT_FUNC} "Started disabling swap for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             sudo swapoff -a
@@ -1640,7 +1640,7 @@ install_certmanager () {
         rm -rf /tmp/certmanager
         mkdir -p /tmp/certmanager
     """
-    # scp -q ./certmanager/values.yaml $CONTROL_PLANE_NODE:/tmp/certmanager/
+    scp -q ./certmanager/values.yaml $CONTROL_PLANE_NODE:/tmp/certmanager/
     ##################################################################
     log -f "$CURRENT_FUNC" "Sending certmanager test deployment to control-plane node: ${CONTROL_PLANE_NODE}"
     scp -q ./certmanager/test-resources.yaml $CONTROL_PLANE_NODE:/tmp/certmanager/
@@ -1653,6 +1653,7 @@ install_certmanager () {
             --namespace ${CERTMANAGER_NS} \
             --set namespace=${CERTMANAGER_NS} \
             --create-namespace \
+            -f /tmp/certmanager/values.yaml \
             ${VERBOSE} || true)
         # Check if the Helm install command was successful
         if [ ! \$? -eq 0 ]; then
@@ -2581,82 +2582,82 @@ install_kafka() {
 }
 
 
-#################################################################
-if [ "$PREREQUISITES" = true ]; then
-    #################################################################
-    if ! provision_deployer; then
-        log -f "main" "ERROR" "An error occurred while provisioning the deployer node."
-        exit 1
-    fi
-    log -f "main" "Deployer node provisioned successfully."
-    #################################################################
-    if ! deploy_hostsfile; then
-        log -f "main" "ERROR" "An error occured while updating the hosts files."
-        exit 1
-    fi
-    log -f "main" "Hosts files updated successfully."
-    #################################################################
-fi
-
-#################################################################
-if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
-    reset_cluster
-    log -f "main" "Cluster reset completed."
-fi
-#################################################################
-if [ "$PREREQUISITES" == "true" ]; then
-    #################################################################
-    if ! prerequisites_requirements; then
-        log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
-        exit 1
-    fi
-    #################################################################
-else
-    log -f "main" "Cluster prerequisites have been skipped"
-fi
-################################################################
-if ! install_cluster; then
-    log -f main "ERROR" "An error occurred while deploying the cluster"
-    exit 1
-fi
-################################################################
-join_cluster
-################################################################
-if ! install_gateway_CRDS; then
-    log -f main "ERROR" "An error occurred while deploying gateway CRDS"
-    exit 1
-fi
-################################################################
-if ! install_cilium_prerequisites; then
-    log -f main "ERROR" "An error occurred while installing cilium prerequisites"
-    exit 1
-fi
-################################################################
-if ! install_cilium; then
-    log -f main "ERROR" "An error occurred while installing cilium"
-    exit 1
-fi
-#################################################################
-if ! install_gateway; then
-    log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
-    exit 1
-fi
-#################################################################
-if ! restart_cilium; then
-    log -f "main" "ERROR" "Failed to start cilium service."
-    exit 1
-fi
-#################################################################
-# if [ "$PREREQUISITES" == "true" ]; then
-#     if ! install_certmanager_prerequisites; then
-#         log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
+# #################################################################
+# if [ "$PREREQUISITES" = true ]; then
+#     #################################################################
+#     if ! provision_deployer; then
+#         log -f "main" "ERROR" "An error occurred while provisioning the deployer node."
 #         exit 1
 #     fi
+#     log -f "main" "Deployer node provisioned successfully."
+#     #################################################################
+#     if ! deploy_hostsfile; then
+#         log -f "main" "ERROR" "An error occured while updating the hosts files."
+#         exit 1
+#     fi
+#     log -f "main" "Hosts files updated successfully."
+#     #################################################################
 # fi
-# if ! install_certmanager; then
-#     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
+
+# #################################################################
+# if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
+#     reset_cluster
+#     log -f "main" "Cluster reset completed."
+# fi
+# #################################################################
+# if [ "$PREREQUISITES" == "true" ]; then
+#     #################################################################
+#     if ! prerequisites_requirements; then
+#         log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
+#         exit 1
+#     fi
+#     #################################################################
+# else
+#     log -f "main" "Cluster prerequisites have been skipped"
+# fi
+# ################################################################
+# if ! install_cluster; then
+#     log -f main "ERROR" "An error occurred while deploying the cluster"
 #     exit 1
 # fi
+# ################################################################
+# join_cluster
+# ################################################################
+# if ! install_gateway_CRDS; then
+#     log -f main "ERROR" "An error occurred while deploying gateway CRDS"
+#     exit 1
+# fi
+# ################################################################
+# if ! install_cilium_prerequisites; then
+#     log -f main "ERROR" "An error occurred while installing cilium prerequisites"
+#     exit 1
+# fi
+# ################################################################
+# if ! install_cilium; then
+#     log -f main "ERROR" "An error occurred while installing cilium"
+#     exit 1
+# fi
+# #################################################################
+# if ! install_gateway; then
+#     log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
+#     exit 1
+# fi
+# #################################################################
+# if ! restart_cilium; then
+#     log -f "main" "ERROR" "Failed to start cilium service."
+#     exit 1
+# fi
+################################################################
+if [ "$PREREQUISITES" == "true" ]; then
+    if ! install_certmanager_prerequisites; then
+        log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
+        exit 1
+    fi
+fi
+if ! install_certmanager; then
+    log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
+    exit 1
+fi
 
 # ##################################################################
 # if ! install_rookceph; then
@@ -2723,7 +2724,7 @@ fi
 
 
 #  2>&1 || true
-################################################################################################################################################################
+####################################################################################################################
 # in dev:
 # TODO: print default values of helm charts:
 # helm show values cilium/cilium > cilium/default-values.yaml
