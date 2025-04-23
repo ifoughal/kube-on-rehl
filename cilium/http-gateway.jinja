@@ -31,3 +31,11 @@ spec:
       certificateRefs:
       - kind: Secret
         name: shared-tls
+  - name: https-passthrough
+    protocol: TLS
+    port: 443
+    tls:
+      mode: Passthrough
+    allowedRoutes:
+      namespaces:
+        from: All
