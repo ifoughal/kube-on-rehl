@@ -11,7 +11,7 @@ resources:
 
 # -- Global log level for the operator.
 # Options: `ERROR`, `WARNING`, `INFO`, `DEBUG`
-logLevel: ERROR
+logLevel: DEBUG
 
 csi:
   # -- Enable Ceph CSI RBD driver
@@ -74,7 +74,7 @@ csi:
   enableMetadata: false
 
   # -- Set replicas for csi provisioner deployment
-  provisionerReplicas: 2
+  provisionerReplicas: 3
 
   # -- Cluster name identifier to set as metadata on the CephFS subvolume and RBD images. This will be useful
   # in cases like for example, when two container orchestrator clusters (Kubernetes/OCP) are using a single ceph cluster
