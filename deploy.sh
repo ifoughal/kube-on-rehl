@@ -453,8 +453,9 @@ EOF
         fi
         # Check if the output contains the SSH key scan prompt
         if echo "$output" | grep -q "The authenticity of host"; then
+            error_raised=1
             echo "Error: SSH key scan prompt detected."
-            return 1
+            continue
         fi
         #######################################################################
         log -f ${CURRENT_FUNC} "Started gid and uid visudo configuration for ${role} node ${hostname}"
@@ -610,6 +611,7 @@ EOF
         log -f ${CURRENT_FUNC} "Finished deploying hosts file"
     else
         log -f ${CURRENT_FUNC} "ERROR" "Some errors occured during the hosts file deployment"
+        return 1
     fi
 }
 
@@ -1260,14 +1262,11 @@ install_cilium () {
             OUTPUT=\$(cilium install --version $CILIUM_VERSION \
                 --namespace $CILIUM_NS \
                 --set ipv4NativeRoutingCIDR=${control_plane_subnet} \
-                --set k8sServiceHost=auto \
                 --set operator.replicas=$OPERATOR_REPLICAS \
                 --set hubble.relay.replicas=$HUBBLE_RELAY_REPLICAS \
                 --set hubble.ui.replicas=$HUBBLE_UI_REPLICAS \
                 --set maglev.hashSeed="${hash_seed}" \
-                --values /tmp/values.yaml \
-                --set cleanBpfState=true \
-                --set cleanState=true \
+                -f /tmp/values.yaml
                 2>&1)
             if [ \$RETRY_COUNT -eq \$MAX_RETRIES ]; then
                 log -f $CURRENT_FUNC 'ERROR' 'Max retries reached. Cilium installation failed.'
@@ -1306,6 +1305,9 @@ install_cilium () {
         return 1
     fi
     #############################################################
+    #  \
+    #             --set cleanBpfState=true \
+    #             --set cleanState=true \
             # --set k8sServiceHost=auto \
             #   --set cleanBpfState=true \
             #     --set cleanState=true \
@@ -1340,8 +1342,11 @@ join_cluster () {
             continue
         fi
 
-        log -f ${CURRENT_FUNC} "sending cluster config to target ${role} node: ${hostname}"
-        sudo cat /etc/kubernetes/admin.conf | ssh -q ${hostname} """
+        log -f ${CURRENT_FUNC} "Getting cluster config from control-plane node: ${CONTROL_PLANE_NODE}"
+        ssh -q $CONTROL_PLANE_NODE "sudo cat /etc/kubernetes/admin.conf" > /tmp/admin.conf
+
+        log -f ${CURRENT_FUNC} "Sending cluster config to target ${role} node: ${hostname}"
+        sudo cat /tmp/admin.conf | ssh -q ${hostname} """
             sudo tee -p /etc/kubernetes/admin.conf > /dev/null
 
             sudo chmod 600 /etc/kubernetes/admin.conf
@@ -1976,7 +1981,7 @@ install_longhorn_prerequisites() {
         local role=$(echo "$node" | jq -r '.role')
 
         log -f ${CURRENT_FUNC} "sending camo script to target node: ${hostname}"
-        scp -q ./longhorn/os-camo.sh ${hostname}:/tmp/
+        scp -q ./tools/os-camo.sh ${hostname}:/tmp/
         log -f ${CURRENT_FUNC} "Executing camofoulage for ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             sudo chmod +x /tmp/os-camo.sh
@@ -2575,93 +2580,95 @@ install_kafka() {
 }
 
 
-# #################################################################
-# if [ "$PREREQUISITES" = true ]; then
-#     #################################################################
-#     if ! provision_deployer; then
-#         log -f "main" "ERROR" "An error occurred while provisioning the deployer node."
-#         exit 1
-#     fi
-#     log -f "main" "Deployer node provisioned successfully."
-#     #################################################################
-#     if ! deploy_hostsfile; then
-#         log -f "main" "ERROR" "An error occured while updating the hosts files."
-#         exit 1
-#     fi
-#     log -f "main" "Hosts files updated successfully."
-#     #################################################################
-# fi
-
-# #################################################################
-# if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
-#     reset_cluster
-#     log -f "main" "Cluster reset completed."
-# fi
-# #################################################################
-# if [ "$PREREQUISITES" == "true" ]; then
-#     #################################################################
-#     if ! prerequisites_requirements; then
-#         log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
-#         exit 1
-#     fi
-#     #################################################################
-# else
-#     log -f "main" "Cluster prerequisites have been skipped"
-# fi
-# ################################################################
-# if ! install_cluster; then
-#     log -f main "ERROR" "An error occurred while deploying the cluster"
-#     exit 1
-# fi
-# ################################################################
-# join_cluster
-# ################################################################
-# if ! install_gateway_CRDS; then
-#     log -f main "ERROR" "An error occurred while deploying gateway CRDS"
-#     exit 1
-# fi
-# ################################################################
-# if ! install_cilium_prerequisites; then
-#     log -f main "ERROR" "An error occurred while installing cilium prerequisites"
-#     exit 1
-# fi
-# ################################################################
-# if ! install_cilium; then
-#     log -f main "ERROR" "An error occurred while installing cilium"
-#     exit 1
-# fi
-# #################################################################
-# if ! install_gateway; then
-#     log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
-#     exit 1
-# fi
-# #################################################################
-# if ! restart_cilium; then
-#     log -f "main" "ERROR" "Failed to start cilium service."
-#     exit 1
-# fi
-# ################################################################
-# if [ "$PREREQUISITES" == "true" ]; then
-#     if ! install_certmanager_prerequisites; then
-#         log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
-#         exit 1
-#     fi
-# fi
-# if ! install_certmanager; then
-#     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
-#     exit 1
-# fi
-##################################################################
-if ! install_rookceph; then
-    log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
+#################################################################
+if [ "$PREREQUISITES" = true ]; then
+    #################################################################
+    if ! provision_deployer; then
+        log -f "main" "ERROR" "An error occurred while provisioning the deployer node."
+        exit 1
+    fi
+    log -f "main" "Deployer node provisioned successfully."
+    #################################################################
+    if ! deploy_hostsfile; then
+        log -f "main" "ERROR" "An error occured while updating the hosts files."
+        exit 1
+    fi
+    log -f "main" "Hosts files updated successfully."
+    #################################################################
+fi
+#################################################################
+if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
+    reset_cluster
+    log -f "main" "Cluster reset completed."
+fi
+#################################################################
+if [ "$PREREQUISITES" == "true" ]; then
+    #################################################################
+    if ! prerequisites_requirements; then
+        log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
+        exit 1
+    fi
+    #################################################################
+else
+    log -f "main" "Cluster prerequisites have been skipped"
+fi
+################################################################
+if ! install_cluster; then
+    log -f main "ERROR" "An error occurred while deploying the cluster"
     exit 1
 fi
-##################################################################
-if ! install_rookceph_cluster; then
-    log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
+################################################################
+if ! install_gateway_CRDS; then
+    log -f main "ERROR" "An error occurred while deploying gateway CRDS"
     exit 1
 fi
-##################################################################
+################################################################
+if [ "$PREREQUISITES" == "true" ]; then
+    if ! install_cilium_prerequisites; then
+        log -f main "ERROR" "An error occurred while installing cilium prerequisites"
+        exit 1
+    fi
+fi
+################################################################
+if ! install_cilium; then
+    log -f main "ERROR" "An error occurred while installing cilium"
+    exit 1
+fi
+#################################################################
+if ! install_gateway; then
+    log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
+    exit 1
+fi
+################################################################
+join_cluster
+sleep 500
+################################################################
+if ! restart_cilium; then
+    log -f "main" "ERROR" "Failed to start cilium service."
+    exit 1
+fi
+################################################################
+if [ "$PREREQUISITES" == "true" ]; then
+    if ! install_certmanager_prerequisites; then
+        log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
+        exit 1
+    fi
+fi
+if ! install_certmanager; then
+    log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
+    exit 1
+fi
+# ##################################################################
+# if ! install_rookceph; then
+#     log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
+#     exit 1
+# fi
+# ##################################################################
+# if ! install_rookceph_cluster; then
+#     log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
+#     exit 1
+# fi
+# ##################################################################
 
 
 
