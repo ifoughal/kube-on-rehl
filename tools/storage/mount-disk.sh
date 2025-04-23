@@ -1,6 +1,6 @@
 #!/bin/bash
 
-DISK=/dev/sdb
+DISK=/dev/sdc
 # Check if /dev/sdb exists
 if lsblk | grep -q "sdb"; then
   echo "${DISK} exists, proceeding with mounting steps."
@@ -66,13 +66,13 @@ mkfs.xfs /dev/sdb1
 
 #############################################
 # extend a specific volume:
-DISK=/dev/sdb
-SUB_DISK=2
+DISK=/dev/sdc
+SUB_DISK=1
 
 VOLUME_PATH=/var
 VOLUME_TO_EXTEND=/dev/rootvg/lv_var
 
-PARTITION_SIZE="+30G"
+PARTITION_SIZE="+10G"
 
 #create a new partition
 sudo fdisk "$DISK" <<EOF
@@ -89,7 +89,7 @@ SUB_DISK=${DISK}${SUB_DISK}    # EG: /dev/sdb2
 # # Extend rootvg:
 sudo vgextend rootvg ${SUB_DISK}
 
-sudo lvextend -L+10G $VOLUME_TO_EXTEND
+sudo lvextend -l +100%FREE $VOLUME_TO_EXTEND
 # if ext4
 sudo resize2fs ${VOLUME_TO_EXTEND}
 # else if xfs:
