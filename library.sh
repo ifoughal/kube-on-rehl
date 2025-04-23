@@ -875,6 +875,52 @@ update_firewall() {
     """
 }
 
+# - type: IPAddress
+#     value: 10.66.65.11
+generate_http_gateway() {
+    set -euo pipefail
+
+    local template_file="./cilium/http-gateway.jinja"
+    local output_file="/tmp/http-gateway.yaml"
+
+    local addresses=()
+    while read -r node; do
+        # Parse node information using jq
+        local hostname=$(echo "$node" | jq -r '.hostname')
+        local ip=$(echo "$node" | jq -r '.ip')
+        local role=$(echo "$node" | jq -r '.role')
+        local ingress_interface=$(echo "$node" | jq -r '.ingress.public_interface')
+
+        log -f ${CURRENT_FUNC} "Generating HTTP Gateway for $role node $hostname with ingress interface: $ingress_interface"
+        current_ip=$(ssh -q ${hostname} <<< """
+            ip -o -f inet addr show ${ingress_interface} | awk '{print \$4}' | cut -d/ -f1
+        """)
+        # Add the IP to the array
+        addresses+=("$current_ip")
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
+
+
+    log -f ${CURRENT_FUNC} "Generating HTTP Gateway"
+
+    # Format IPs as YAML block with type/value structure
+    local yaml_addresses=""
+    for addr in "${addresses[@]}"; do
+        yaml_addresses+="  - type: IPAddress\n    value: $addr\n"
+    done
+
+    # Replace {{ addresses }} in template with structured addresses
+    awk -v addrs="$yaml_addresses" '
+    {
+        if ($0 ~ /{{ addresses }}/) {
+            printf "%s", addrs
+        } else {
+            print $0
+        }
+    }' "$template_file" > "$output_file"
+
+    log -f ${CURRENT_FUNC} "HTTP Gateway generated successfully at $output_file"
+}
+
 
 generate_ip_pool() {
     set -euo pipefail
@@ -890,9 +936,16 @@ generate_ip_pool() {
         local ip=$(echo "$node" | jq -r '.ip')
         local role=$(echo "$node" | jq -r '.role')
         # Add the IP to the array
-        ips_array+=("$ip")
-    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
 
+        local ingress_interface=$(echo "$node" | jq -r '.ingress.public_interface')
+
+        log -f ${CURRENT_FUNC} "Generating HTTP Gateway for $role node $hostname with ingress interface: $ingress_interface"
+        current_ip=$(ssh -q ${hostname} <<< """
+            ip -o -f inet addr show ${ingress_interface} | awk '{print \$4}' | cut -d/ -f1
+        """)
+        # Add the IP to the array
+        ips_array+=("$current_ip")
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
 
     local template_file="./cilium/loadbalancer-ip-pool.jinja"
     local output_file="/tmp/loadbalancer-ip-pool.yaml"

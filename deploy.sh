@@ -1188,7 +1188,7 @@ install_cilium () {
         # Use 'ip' to show the IPv4 address and CIDR of the given interface
 
         ip -o -f inet addr show ${CONTROLPLANE_INGRESS_CLUSTER_INTER} | awk '{print \$4}' | while read cidr; do
-            # Split the CIDR into IP and prefix (e.g., 10.66.65.11 and 24)
+            # Split the CIDR into IP and prefix (e.g., 10.10.10.11 and 24)
             IFS=/ read ip prefix <<< \"\$cidr\"
             # Split the IP address into its 4 octets
             IFS=. read -r o1 o2 o3 o4 <<< \"\$ip\"
@@ -1317,6 +1317,9 @@ install_cilium () {
 
 
 join_cluster () {
+    set +u
+    set +e
+    set +o pipefail
     ##################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
     ##################################################################
@@ -1325,6 +1328,10 @@ join_cluster () {
 
     JOIN_COMMAND_WORKER=$(ssh -q $CONTROL_PLANE_NODE <<< "kubeadm token create --print-join-command""")
     JOIN_COMMAND_CONTROLPLANE="${JOIN_COMMAND_WORKER} --control-plane"
+
+    log -f ${CURRENT_FUNC} "Getting cluster config from control-plane node: ${CONTROL_PLANE_NODE}"
+    ssh -q $CONTROL_PLANE_NODE <<< "sudo cat /etc/kubernetes/admin.conf" > /tmp/admin.conf
+
 
     # for i in $(seq 2 "$((2 + NODES_LAST - 2))"); do
     while read -r node; do
@@ -1338,35 +1345,52 @@ join_cluster () {
         """
 
         if [ $hostname == ${CONTROL_PLANE_NODE} ]; then
-            log -f ${CURRENT_FUNC} "hostname: ${hostname} "
             continue
         fi
 
-        log -f ${CURRENT_FUNC} "Getting cluster config from control-plane node: ${CONTROL_PLANE_NODE}"
-        ssh -q $CONTROL_PLANE_NODE "sudo cat /etc/kubernetes/admin.conf" > /tmp/admin.conf
-
         log -f ${CURRENT_FUNC} "Sending cluster config to target ${role} node: ${hostname}"
-        sudo cat /tmp/admin.conf | ssh -q ${hostname} """
-            sudo tee -p /etc/kubernetes/admin.conf > /dev/null
+        scp /tmp/admin.conf ${hostname}:/tmp/
 
+        ssh -q ${hostname} <<< """
+            set -euo pipefail
+            sudo cp /tmp/admin.conf /etc/kubernetes/admin.conf
             sudo chmod 600 /etc/kubernetes/admin.conf
             mkdir -p \$HOME/.kube
             sudo cp -f -i /etc/kubernetes/admin.conf \$HOME/.kube/config >/dev/null 2>&1
             sudo chown \$(id -u):\$(id -g) \$HOME/.kube/config
         """
+        if [ $? -ne 0 ]; then
+            sudo rm -f /tmp/admin.conf
+            log -f ${CURRENT_FUNC} "ERROR" "Failed to send cluster config to target ${role} node: ${hostname}"
+            continue
+        fi
 
         log -f ${CURRENT_FUNC} "initiating cluster join for ${role} node ${hostname}"
         if [ $role == "worker" ]; then
             ssh -q ${hostname} <<< """
+                set -euo pipefail
                 eval sudo ${JOIN_COMMAND_WORKER} >/dev/null 2>&1 || true
             """
+            if [ $? -ne 0 ]; then
+                log -f ${CURRENT_FUNC} "ERROR" "Failed to join cluster for ${role} node ${hostname}"
+                continue
+            fi
+
         elif [ $role == "control-plane-replica" ]; then
             ssh -q ${hostname} <<< """
+                set -euo pipefail
                 eval sudo ${JOIN_COMMAND_CONTROLPLANE} >/dev/null 2>&1 || true
             """
+            if [ $? -ne 0 ]; then
+                log -f ${CURRENT_FUNC} "ERROR" "Failed to join cluster for ${role} node ${hostname}"
+                continue
+            fi
         fi
         log -f ${CURRENT_FUNC} "Finished joining cluster for ${role} node ${hostname}"
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
+
+    sudo rm -f /tmp/admin.conf
+    log -f ${CURRENT_FUNC} "Finished joining cluster for all nodes"
     ##################################################################
 
 }
@@ -1392,6 +1416,8 @@ install_gateway () {
         return $RETURN_CODE
     fi
     log -f "${CURRENT_FUNC}" "Finished checking prerequisites for Gateway API"
+    ##################################################################
+    generate_http_gateway
     ##################################################################
     log -f "${CURRENT_FUNC}" "Sending Gateway API config to control-plane node: ${CONTROL_PLANE_NODE}"
     scp -q ./cilium/http-gateway.yaml ${CONTROL_PLANE_NODE}:/tmp/
@@ -1440,6 +1466,7 @@ restart_cilium() {
     #################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
     #################################################################
+    local sleep_timer=500
     log -f "$CURRENT_FUNC" "Ensuring that cilium replicas scale without errors..."
     ssh -q ${CONTROL_PLANE_NODE} <<< """
         current_retry=0
@@ -1456,7 +1483,7 @@ restart_cilium() {
             if echo "\$CILIUM_STATUS" | grep -qi 'error'; then
                 log -f \"${CURRENT_FUNC}\" \"cilium status contains errors... restarting cilium. Try: \$current_retry\"
                 eval \"kubectl rollout restart -n $CILIUM_NS ds/cilium ds/cilium-envoy deployment/cilium-operator > /dev/null 2>&1\" || true
-                sleep 120
+                sleep $sleep_timer
             else
                 log -f \"${CURRENT_FUNC}\" 'Cilium is up and running'
                 break
@@ -2347,6 +2374,74 @@ install_rancher () {
 }
 
 
+rook_ceph_cleanup() {
+    ###################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    # ###################################################################
+    # local chart_name="rook-ceph"
+    # local chart_url="https://charts.rook.io/release"
+    # log -f ${CURRENT_FUNC} "Started ${chart_name} helm chart prerequisites"
+    # helm_chart_prerequisites "$CONTROL_PLANE_NODE" "${chart_name}" "${chart_url}" "$ROOKCEPH_NS" "true" "true"
+    # if [ $? -ne 0 ]; then
+    #     log -f ${CURRENT_FUNC} "ERROR" "Failed to install ${chart_name} helm chart prerequisites"
+    #     return 1
+    # fi
+    # log -f ${CURRENT_FUNC} "Finished ${chart_name} helm chart prerequisites"
+    # ###################################################################
+    # local chart_name="rook-ceph-cluster"
+    # local chart_url="https://charts.rook.io/release"
+    # log -f ${CURRENT_FUNC} "Started ${chart_name} helm chart prerequisites"
+    # helm_chart_prerequisites "$CONTROL_PLANE_NODE" "${chart_name}" "${chart_url}" "$ROOKCEPH_NS" "false" "false"
+    # if [ $? -ne 0 ]; then
+    #     log -f ${CURRENT_FUNC} "ERROR" "Failed to install ${chart_name} helm chart prerequisites"
+    #     return 1
+    # fi
+    # log -f ${CURRENT_FUNC} "Finished ${chart_name} helm chart prerequisites"
+    ###################################################################
+    log -f ${CURRENT_FUNC} "Started cleaning up rook-ceph on control-plane node ${CONTROL_PLANE_NODE}"
+    ssh -q $CONTROL_PLANE_NODE <<< """
+        kubectl delete -n $ROOKCEPH_NS cephblockpool replicapool
+        kubectl delete storageclass rook-ceph-block
+        kubectl delete storageclass csi-cephfs
+
+        kubectl -n $ROOKCEPH_NS patch cephcluster rook-ceph --type merge -p '{"spec":{"cleanupPolicy":{"confirmation":"yes-really-destroy-data"}}}'
+
+        kubectl -n $ROOKCEPH_NS delete cephcluster rook-ceph
+
+    """
+    log -f ${CURRENT_FUNC} "Finished cleaning up rook-ceph on control-plane node ${CONTROL_PLANE_NODE}"
+
+    while read -r node; do
+        ##################################################################
+        local hostname=$(echo "$node" | jq -r '.hostname')
+        local ip=$(echo "$node" | jq -r '.ip')
+        local role=$(echo "$node" | jq -r '.role')
+        ##################################################################
+        log -f ${CURRENT_FUNC} "Started cleaning up rook-ceph on $role node ${hostname}"
+        ssh -q ${hostname} <<< """
+            sudo rm -rf /var/lib/rook
+
+            # Zap the disk to a fresh, usable state (zap-all is important, b/c MBR has to be clean)
+            sudo sgdisk --zap-all $ROOKCEPH_HOST_DISK
+
+            # Wipe a large portion of the beginning of the disk to remove more LVM metadata that may be present
+            sudo dd if=/dev/zero of="$ROOKCEPH_HOST_DISK" bs=1M count=100 oflag=direct,dsync
+
+            # SSDs may be better cleaned with blkdiscard instead of dd
+            sudo blkdiscard $ROOKCEPH_HOST_DISK
+
+            # Inform the OS of partition table changes
+            sudo partprobe $ROOKCEPH_HOST_DISK
+
+            rm -rf /dev/ceph-*
+            rm -rf /dev/mapper/ceph--*
+        """
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
+    log -f ${CURRENT_FUNC} "Finished cleaning up rook-ceph storage on all nodes"
+    ##################################################################
+}
+
+
 install_rookceph(){
     ###################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
@@ -2449,6 +2544,11 @@ install_rookceph_cluster() {
         return 1
     fi
     log -f ${CURRENT_FUNC} "Finished ${chart_name} helm chart prerequisites"
+    ##################################################################
+    log -f ${CURRENT_FUNC} "removing cephcluster crds"
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        kubectl patch cephcluster rook-ceph -n $ROOKCEPH_NS -p '{"metadata":{"finalizers":null}}' --type=merge
+    """
     ##################################################################
     ssh -q ${CONTROL_PLANE_NODE} <<< """
         rm -rf /tmp/${chart_name} &&  mkdir -p /tmp/${chart_name}
@@ -2639,10 +2739,9 @@ if ! install_gateway; then
     log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
     exit 1
 fi
-################################################################
+###############################################################
 join_cluster
-sleep 500
-################################################################
+###############################################################
 if ! restart_cilium; then
     log -f "main" "ERROR" "Failed to start cilium service."
     exit 1
@@ -2658,21 +2757,31 @@ if ! install_certmanager; then
     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
     exit 1
 fi
-# ##################################################################
-# if ! install_rookceph; then
-#     log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
-#     exit 1
-# fi
-# ##################################################################
-# if ! install_rookceph_cluster; then
-#     log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
-#     exit 1
-# fi
-# ##################################################################
+
+##################################################################
+rook_ceph_cleanup
+##################################################################
+if ! install_rookceph; then
+    log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
+    exit 1
+fi
+##################################################################
+if ! install_rookceph_cluster; then
+    log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
+    exit 1
+fi
+##################################################################
+##################################################################
+if ! install_vault; then
+    log -f "main" "ERROR" "Failed to install longhorn on the cluster"
+    exit 1
+fi
+##################################################################
 
 
 
-
+log -f "main" "INFO" "Workload finished"
+exit 0
 
 
 
