@@ -6,6 +6,10 @@ nodeinit:
   # -- Enable the node initialization DaemonSet
   enabled: false
 
+
+cleanBpfState: true
+cleanState: true
+
 # nodePort.enabled is not needed if this is set to true.
 kubeProxyReplacement: true
 
@@ -90,7 +94,7 @@ envoy:
   enabled: true
   # dnsPolicy: ~
   # dnsPolicy: "None"
-  dnsPolicy: "Default"
+  dnsPolicy: ~  # "Default"
   # dnsConfig:
   #   nameservers:
   #   - 10.96.0.101 # this is the default kube-dns ip
@@ -125,11 +129,11 @@ envoy:
   # ref: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
   resources:
     limits:
-      cpu: 8000m
-      memory: 14Gi
+      cpu: 4000m
+      memory: 6Gi
     requests:
-      cpu: 1000m
-      memory: 4Gi
+      cpu: 500m
+      memory: 1Gi
   securityContext:
     privileged: true
     capabilities:
@@ -295,7 +299,7 @@ dnsProxy:
   # enableTransparentMode: true
 #############################################################################################################
 # # -- (string) Kubernetes service host - use "auto" for automatic lookup from the cluster-info ConfigMap
-# k8sServiceHost: auto
+k8sServiceHost: auto
 # k8sServiceHost: 10.96.0.1
 # k8sServicePort: 443
 #############################################################################################################
