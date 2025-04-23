@@ -1094,17 +1094,15 @@ install_gateway_CRDS () {
     ##################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
     # this hits a bug described here: https://github.com/cilium/cilium/issues/38420
-    # log -f ${CURRENT_FUNC} "Installing Gateway API version: ${GATEWAY_VERSION} from the standard channel"
-    # kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_VERSION}/standard-install.yaml
 
     log -f ${CURRENT_FUNC} "sending http-routes.yaml file to control plane node: ${CONTROL_PLANE_NODE}"
     scp -q ./cilium/http-routes.yaml ${CONTROL_PLANE_NODE}:/tmp/
 
     # using experimental CRDS channel
     log -f ${CURRENT_FUNC} "Installing Gateway API version: ${GATEWAY_VERSION} from the experimental channel"
-
     ssh -q $CONTROL_PLANE_NODE <<< """
-        # set -e  # Exit on error
+        set -euo pipefail
+
         eval \"kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_VERSION}/experimental-install.yaml ${VERBOSE}\"
 
         log -f \"${CURRENT_FUNC}\" 'Installing Gateway API Experimental TLSRoute from the Experimental channel'
@@ -1114,6 +1112,12 @@ install_gateway_CRDS () {
         log -f \"${CURRENT_FUNC}\" 'Applying hubble-ui HTTPRoute for ingress.'
         eval \"kubectl apply -f /tmp/http-routes.yaml ${VERBOSE}\"
     """
+    if [ $? -eq 0 ]; then
+        log -f ${CURRENT_FUNC} "Finished installing Gateway API CRDS"
+    else
+        log -f ${CURRENT_FUNC} "ERROR" "Error occurred while installing Gateway API CRDS"
+        return 1
+    fi
 }
 
 
@@ -1420,7 +1424,7 @@ install_gateway () {
     generate_http_gateway
     ##################################################################
     log -f "${CURRENT_FUNC}" "Sending Gateway API config to control-plane node: ${CONTROL_PLANE_NODE}"
-    scp -q ./cilium/http-gateway.yaml ${CONTROL_PLANE_NODE}:/tmp/
+    scp -q /tmp/http-gateway.yaml ${CONTROL_PLANE_NODE}:/tmp/
     ##################################################################
     log -f "${CURRENT_FUNC}" "Started deploying TLS cert for TLS-HTTPS Gateway API on control-plane node: ${CONTROL_PLANE_NODE}"
 
@@ -1447,8 +1451,6 @@ install_gateway () {
         eval \"kubectl apply -f /tmp/http-gateway.yaml ${VERBOSE}\"
         log -f \"${CURRENT_FUNC}\" 'Finished deploying Gateway API'
         ##################################################################
-        # log -f \"${CURRENT_FUNC}\" 'restarting cilium.'
-        # # eval \"kubectl rollout restart -n $CILIUM_NS ds/cilium ds/cilium-envoy deployment/cilium-operator ${VERBOSE}\" || true
     """
     #################################################################
     if [ $? -ne 0 ]; then
@@ -2611,15 +2613,23 @@ install_rookceph_cluster() {
         log -f "${CURRENT_FUNC}" "ERROR" "Failed to check the status of rook-ceph cluster"
         return 1
     else
+        log -f "${CURRENT_FUNC}" "Applying http-route for rook-ceph ingress."
+        scp -q ./rook-ceph-cluster/http-routes.yaml $CONTROL_PLANE_NODE:/tmp/rook-ceph-cluster/
+
+        ssh -q ${CONTROL_PLANE_NODE} <<< """
+            kubectl apply -f /tmp/rook-ceph-cluster/http-routes.yaml ${VERBOSE}
+        """
+
+        log -f "${CURRENT_FUNC}" "Generating admin password for rook-ceph dashboard"
+        rook_ceph_dasbharod_password=$(ssh -q ${CONTROL_PLANE_NODE} <<< """
+            kubectl -n $ROOKCEPH_NS get secret rook-ceph-dashboard-password -o jsonpath=\"{['data']['password']}\" | base64 --decode && echo
+        """)
+        log -f "${CURRENT_FUNC}" "admin password for rook-ceph dashboard password is: $rook_ceph_dasbharod_password"
+
         log -f "${CURRENT_FUNC}" "Finished deploying rook-ceph cluster on the cluster."
     fi
     ##################################################################
 }
-
-
-
-
-
 
 
 install_kafka() {
@@ -2680,97 +2690,96 @@ install_kafka() {
 }
 
 
-#################################################################
-if [ "$PREREQUISITES" = true ]; then
-    #################################################################
-    if ! provision_deployer; then
-        log -f "main" "ERROR" "An error occurred while provisioning the deployer node."
-        exit 1
-    fi
-    log -f "main" "Deployer node provisioned successfully."
-    #################################################################
-    if ! deploy_hostsfile; then
-        log -f "main" "ERROR" "An error occured while updating the hosts files."
-        exit 1
-    fi
-    log -f "main" "Hosts files updated successfully."
-    #################################################################
-fi
-#################################################################
-if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
-    reset_cluster
-    log -f "main" "Cluster reset completed."
-fi
-#################################################################
-if [ "$PREREQUISITES" == "true" ]; then
-    #################################################################
-    if ! prerequisites_requirements; then
-        log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
-        exit 1
-    fi
-    #################################################################
-else
-    log -f "main" "Cluster prerequisites have been skipped"
-fi
-################################################################
-if ! install_cluster; then
-    log -f main "ERROR" "An error occurred while deploying the cluster"
-    exit 1
-fi
-################################################################
-if ! install_gateway_CRDS; then
-    log -f main "ERROR" "An error occurred while deploying gateway CRDS"
-    exit 1
-fi
-################################################################
-if [ "$PREREQUISITES" == "true" ]; then
-    if ! install_cilium_prerequisites; then
-        log -f main "ERROR" "An error occurred while installing cilium prerequisites"
-        exit 1
-    fi
-fi
-################################################################
-if ! install_cilium; then
-    log -f main "ERROR" "An error occurred while installing cilium"
-    exit 1
-fi
-#################################################################
-if ! install_gateway; then
-    log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
-    exit 1
-fi
-###############################################################
-join_cluster
-###############################################################
-if ! restart_cilium; then
-    log -f "main" "ERROR" "Failed to start cilium service."
-    exit 1
-fi
-################################################################
-if [ "$PREREQUISITES" == "true" ]; then
-    if ! install_certmanager_prerequisites; then
-        log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
-        exit 1
-    fi
-fi
-if ! install_certmanager; then
-    log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
-    exit 1
-fi
+# #################################################################
+# if [ "$PREREQUISITES" = true ]; then
+#     #################################################################
+#     if ! provision_deployer; then
+#         log -f "main" "ERROR" "An error occurred while provisioning the deployer node."
+#         exit 1
+#     fi
+#     log -f "main" "Deployer node provisioned successfully."
+#     #################################################################
+#     if ! deploy_hostsfile; then
+#         log -f "main" "ERROR" "An error occured while updating the hosts files."
+#         exit 1
+#     fi
+#     log -f "main" "Hosts files updated successfully."
+#     #################################################################
+# fi
+# #################################################################
+# if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
+#     reset_cluster
+#     log -f "main" "Cluster reset completed."
+# fi
+# #################################################################
+# if [ "$PREREQUISITES" == "true" ]; then
+#     #################################################################
+#     if ! prerequisites_requirements; then
+#         log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
+#         exit 1
+#     fi
+#     #################################################################
+# else
+#     log -f "main" "Cluster prerequisites have been skipped"
+# fi
+# ################################################################
+# if ! install_cluster; then
+#     log -f main "ERROR" "An error occurred while deploying the cluster"
+#     exit 1
+# fi
+# ################################################################
+# if ! install_gateway_CRDS; then
+#     log -f main "ERROR" "An error occurred while deploying gateway CRDS"
+#     exit 1
+# fi
+# ################################################################
+# if [ "$PREREQUISITES" == "true" ]; then
+#     if ! install_cilium_prerequisites; then
+#         log -f main "ERROR" "An error occurred while installing cilium prerequisites"
+#         exit 1
+#     fi
+# fi
+# ################################################################
+# if ! install_cilium; then
+#     log -f main "ERROR" "An error occurred while installing cilium"
+#     exit 1
+# fi
+# #################################################################
+# if ! install_gateway; then
+#     log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
+#     exit 1
+# fi
+# ###############################################################
+# join_cluster
+# ###############################################################
+# if ! restart_cilium; then
+#     log -f "main" "ERROR" "Failed to start cilium service."
+#     exit 1
+# fi
+# ################################################################
+# if [ "$PREREQUISITES" == "true" ]; then
+#     if ! install_certmanager_prerequisites; then
+#         log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
+#         exit 1
+#     fi
+# fi
+# if ! install_certmanager; then
+#     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
+#     exit 1
+# fi
 
-##################################################################
-rook_ceph_cleanup
-##################################################################
-if ! install_rookceph; then
-    log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
-    exit 1
-fi
-##################################################################
-if ! install_rookceph_cluster; then
-    log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
-    exit 1
-fi
-##################################################################
+# ##################################################################
+# rook_ceph_cleanup
+# ##################################################################
+# if ! install_rookceph; then
+#     log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
+#     exit 1
+# fi
+# ##################################################################
+# if ! install_rookceph_cluster; then
+#     log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
+#     exit 1
+# fi
 ##################################################################
 if ! install_vault; then
     log -f "main" "ERROR" "Failed to install longhorn on the cluster"
