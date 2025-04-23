@@ -594,7 +594,8 @@ install_containerd () {
         # sudo sed -i 's|sandbox_image = \"registry.k8s.io/pause:\"|sandbox_image = \"registry.k8s.io/pause:$PAUSE_VERSION\"|' \$CONFIG_FILE
         sudo sed -i 's|sandbox_image = \\\"registry.k8s.io/pause:[^\"]*\\\"|sandbox_image = \\\"registry.k8s.io/pause:$PAUSE_VERSION\\\"|' "\$CONFIG_FILE"
 
-        # sudo sed -i 's|root = \"/var/lib/containerd\"|root = \"/mnt/longhorn-1/var/lib/containerd\"|' \$CONFIG_FILE
+
+        # sudo sed -i 's|path = \"/opt/containerd\"|path = \"/var/opt/containerd\"|' \$CONFIG_FILE
 
         sudo mkdir -p /etc/nri/conf.d /opt/nri/plugins
         sudo chown -R root:root /etc/nri /opt/nri
@@ -984,27 +985,29 @@ cilium_cleanup () {
     log -f TODO WARNING "this must be in a ssh session to control plane"
 
     echo "cleaning up cluster from previous cilium installs"
-    kubectl delete crd $(kubectl get crd | grep cilium | awk '{print $1}')  >/dev/null 2>&1 || true
-    for ns in $(kubectl get ns | grep cilium | awk '{print $1}'); do
-        kubectl delete ns $ns --grace-period=0 --force  >/dev/null 2>&1 || true
-    done
-    kubectl -n kube-system delete ds cilium --grace-period=0 --force  >/dev/null 2>&1 || true
-    kubectl -n kube-system delete ds cilium-operator --grace-period=0 --force  >/dev/null 2>&1 || true
-    kubectl delete configmap cilium-config -n kube-system  >/dev/null 2>&1 || true
-    for cr in $(kubectl get crd | grep cilium | awk '{print $1}'); do
-        kubectl get $cr -A --no-headers | awk '{print $2}' | xargs -I{} kubectl patch $cr {} --type=json -p '[{"op": "remove", "path": "/metadata/finalizers"}]'
-    done
-    kubectl delete networkpolicy --all -n kube-system
-    sudo iptables-save | grep -v CILIUM | sudo iptables-restore
-    kubectl -n kube-system delete ds -l k8s-app=cilium >/dev/null 2>&1 || true
-    kubectl -n kube-system delete ds -l io.cilium/app >/dev/null 2>&1 || true
-    kubectl -n kube-system delete ds -l name=cilium >/dev/null 2>&1 || true
-    kubectl -n kube-system delete ds -l app=cilium >/dev/null 2>&1 || true
+    ssh -q $CONTROL_PLANE_NODE <<< """
+        kubectl delete crd \$(kubectl get crd | grep cilium | awk '{print \$1}')  >/dev/null 2>&1 || true
+        for ns in \$(kubectl get ns | grep cilium | awk '{print \$1}'); do
+            kubectl delete ns \$ns --grace-period=0 --force  >/dev/null 2>&1 || true
+        done
+        kubectl -n kube-system delete ds cilium --grace-period=0 --force  >/dev/null 2>&1 || true
+        kubectl -n kube-system delete ds cilium-operator --grace-period=0 --force  >/dev/null 2>&1 || true
+        kubectl delete configmap cilium-config -n kube-system  >/dev/null 2>&1 || true
+        for cr in \$(kubectl get crd | grep cilium | awk '{print \$1}'); do
+            kubectl get \$cr -A --no-headers | awk '{print \$2}' | xargs -I{} kubectl patch \$cr {} --type=json -p '[{\"op\": \"remove\", \"path\": \"/metadata/finalizers\"}]'
+        done
+        kubectl delete networkpolicy --all -n kube-system
+        sudo iptables-save | grep -v CILIUM | sudo iptables-restore
+        kubectl -n kube-system delete ds -l k8s-app=cilium >/dev/null 2>&1 || true
+        kubectl -n kube-system delete ds -l io.cilium/app >/dev/null 2>&1 || true
+        kubectl -n kube-system delete ds -l name=cilium >/dev/null 2>&1 || true
+        kubectl -n kube-system delete ds -l app=cilium >/dev/null 2>&1 || true
 
-    kubectl -n kube-system delete deploy -l k8s-app=cilium >/dev/null 2>&1 || true
-    kubectl -n kube-system delete deploy -l io.cilium/app >/dev/null 2>&1 || true
-    kubectl -n kube-system delete deploy -l name=cilium >/dev/null 2>&1 || true
-    kubectl -n kube-system delete deploy -l app=cilium >/dev/null 2>&1 || true
+        kubectl -n kube-system delete deploy -l k8s-app=cilium >/dev/null 2>&1 || true
+        kubectl -n kube-system delete deploy -l io.cilium/app >/dev/null 2>&1 || true
+        kubectl -n kube-system delete deploy -l name=cilium >/dev/null 2>&1 || true
+        kubectl -n kube-system delete deploy -l app=cilium >/dev/null 2>&1 || true
+    """
 }
 
 
