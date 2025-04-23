@@ -1,8 +1,8 @@
 #!/bin/bash
 VG_NAME="rootvg"
-REDUCE_VOL_LV="lv_varlog"
-REDUCE_VOL_MOUNT="/var/log"
-REDUCE_TO_SIZE="2G"
+REDUCE_VOL_LV="lv_var"
+REDUCE_VOL_MOUNT="/var"
+REDUCE_TO_SIZE="500M"
 EXTEND_VOL_LV="lv_opt"
 EXTEND_VOL_MOUNT="/opt"
 
@@ -16,6 +16,13 @@ echo "[+] Calculated target LV size: ${size_gb}G"
 
 # Unmount before resizing
 umount "$REDUCE_VOL_MOUNT"  # || { echo "[-] Failed to unmount $REDUCE_VOL_MOUNT"; exit 1; }
+if [ "$?" -ne 0 ]; then
+    echo "[-] Failed to unmount $REDUCE_VOL_MOUNT"
+    mkdir /tmp$REDUCE_VOL_MOUNT
+    mount --bind /tmp$REDUCE_VOL_MOUNT $REDUCE_VOL_MOUNT
+
+fi
+
 
 echo "[*] Running fsck before shrinking..."
 e2fsck -f "/dev/$VG_NAME/$REDUCE_VOL_LV"  # || { echo "[-] fsck failed"; exit 1; }
