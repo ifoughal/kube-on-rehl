@@ -456,7 +456,7 @@ parse_inventory() {
     # Format the list as YAML array (i.e., each node on a new line with a '-')
     export CONTROL_PLANE_NODES_LIST=""
     for node in "${nodes_list[@]}"; do
-        CONTROL_PLANE_NODES_LIST+=$'\n'"- $node"
+        CONTROL_PLANE_NODES_LIST+=$'\n'"  - $node"
     done
 }
 
