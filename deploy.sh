@@ -680,6 +680,7 @@ reset_cluster () {
             log -f ${CURRENT_FUNC} 'removing cilium cgroupv2 mount and deleting cluster directories'
             sudo umount /var/run/cilium/cgroupv2 > /dev/null 2>&1
             sudo rm -rf \
+                /var/lib/rook \
                 /var/lib/cilium \
                 \$HOME/.kube \
                 /root/.kube \
@@ -1117,10 +1118,10 @@ install_cluster () {
     fi
     #############################################################################
     log -f ${CURRENT_FUNC} "Generating kubeadm init config file"
-    envsubst < init-config-template.yaml > init-config.yaml
+    envsubst < init-config-template.yaml > /tmp/init-config.yaml
     ####################################################################
     log -f ${CURRENT_FUNC} "sending kubeadm init config file to main control-plane: ${CONTROL_PLANE_NODE}"
-    scp -q ./init-config.yaml ${CONTROL_PLANE_NODE}:/tmp/
+    scp -q /tmp/init-config.yaml ${CONTROL_PLANE_NODE}:/tmp/
     ####################################################################
     # Kubeadm init logic
     KUBE_ADM_COMMAND="sudo kubeadm init --config /tmp/init-config.yaml --skip-phases=addon/kube-proxy "
@@ -1383,7 +1384,11 @@ install_cilium () {
         kubectl delete svc -n $CILIUM_NS cilium-ingress >/dev/null 2>&1 || true
         #############################################################
         log -f $CURRENT_FUNC 'Apply LB IPAM on cluster'
-        eval \"kubectl apply -f /tmp/loadbalancer-ip-pool.yaml ${VERBOSE}\"
+        eval \"kubectl apply -f /tmp/loadbalancer-ip-pool.yaml > /dev/null 2>&1\"
+        if [ \$? -ne 0 ]; then
+            sudo systemctl restart containerd
+            eval \"kubectl apply -f /tmp/loadbalancer-ip-pool.yaml ${VERBOSE}\"
+        fi
         #############################################################
     """
     #############################################################
@@ -1413,30 +1418,20 @@ join_cluster () {
     ##################################################################
     # TODO: for control-plane nodes:
 
-    log -f ${CURRENT_FUNC} "Getting control-plane node config and certs"
+    log -f ${CURRENT_FUNC} "Getting control-plane node config"
     ssh -q $CONTROL_PLANE_NODE <<< """
-        kubectl get configmap kubeadm-config -n kube-system -o jsonpath='{.data.ClusterConfiguration}'  | sudo tee kubeadm-config.yaml
+        cd /etc/kubernetes
+
+        kubectl get configmap kubeadm-config -n kube-system -o jsonpath='{.data.ClusterConfiguration}'  | sudo tee kubeadm-config.yaml > /dev/null
         sudo tar czf pki-and-config.tar.gz pki admin.conf kubeadm-config.yaml
         sudo mv pki-and-config.tar.gz /tmp/ && sudo chmod 666 /tmp/pki-and-config.tar.gz
     """
-
-
-    local CERT_KEY=$(ssh -q $CONTROL_PLANE_NODE <<< """
-        output=\$(sudo kubeadm init phase upload-certs --upload-certs 2>/dev/null)
-
-        # Extract the certificate key from the output
-        CERT=\$(echo \"\$output\" | grep -A 1 'Using certificate key:' | tail -n 1 | tr -d ' ')
-
-        # Print the variable (optional)
-        echo \$CERT
-    """)
-    scp -q ${CERTMANAGER_CLI_VERSION}:/tmp/pki-and-config.tar.gz /tmp
+    scp -q ${CONTROL_PLANE_NODE}:/tmp/pki-and-config.tar.gz /tmp
 
     log -f ${CURRENT_FUNC} "Getting cluster config from control-plane node: ${CONTROL_PLANE_NODE}"
     ssh -q $CONTROL_PLANE_NODE <<< "sudo cat /etc/kubernetes/admin.conf" > /tmp/admin.conf
 
 
-    # for i in $(seq 2 "$((2 + NODES_LAST - 2))"); do
     while read -r node; do
         local hostname=$(echo "$node" | jq -r '.hostname')
         local ip=$(echo "$node" | jq -r '.ip')
@@ -1450,10 +1445,6 @@ join_cluster () {
         if [ $hostname == ${CONTROL_PLANE_NODE} ]; then
             continue
         fi
-
-        log -f ${CURRENT_FUNC} "Generating join command from control-plane node: ${CONTROL_PLANE_NODE}"
-        JOIN_COMMAND_WORKER=$(ssh -q $CONTROL_PLANE_NODE <<< "kubeadm token create --print-join-command""")
-        JOIN_COMMAND_CONTROLPLANE="${JOIN_COMMAND_WORKER} --control-plane --certificate-key ${CERT_KEY}"
 
         log -f ${CURRENT_FUNC} "Sending cluster config to target ${role} node: ${hostname}"
         scp /tmp/admin.conf ${hostname}:/tmp/
@@ -1473,9 +1464,14 @@ join_cluster () {
         fi
 
         if [ $role == "worker" ]; then
+            log -f ${CURRENT_FUNC} "Generating join command from control-plane node: ${CONTROL_PLANE_NODE}"
+            JOIN_COMMAND_WORKER=$(ssh -q $CONTROL_PLANE_NODE <<< "kubeadm token create --print-join-command""")
+
             log -f ${CURRENT_FUNC} "initiating cluster join for ${role} node ${hostname}"
             ssh -q ${hostname} <<< """
                 set -euo pipefail
+
+                log -f $CURRENT_FUNC 'Executing join command: $JOIN_COMMAND_WORKER on ${role} node ${hostname}'
                 eval sudo ${JOIN_COMMAND_WORKER} >/dev/null 2>&1 || true
             """
             if [ $? -ne 0 ]; then
@@ -1484,24 +1480,18 @@ join_cluster () {
             fi
 
         elif [ $role == "control-plane-replica" ]; then
+
+
+            log -f ${CURRENT_FUNC} "Generating join command from control-plane node: ${CONTROL_PLANE_NODE}"
+            JOIN_COMMAND_CONTROLPLANE=$(ssh -q $CONTROL_PLANE_NODE <<< """kubeadm token create --print-join-command --certificate-key \$(sudo kubeadm init phase upload-certs --upload-certs | sed -n '3p')""")
+
             log -f ${CURRENT_FUNC} "initiating cluster join for ${role} node ${hostname}"
-
-            log -f ${CURRENT_FUNC} "sending pki and config to target ${role} node: ${hostname}"
-            scp -q /tmp/pki-and-config.tar.gz  ${hostname}:/tmp/
-
-
-
             ssh -q ${hostname} <<< """
                 set -euo pipefail
 
-                sudo mkdir -p /etc/kubernetes
-                cd /etc/kubernetes
-                sudo tar xzf /tmp/pki-and-config.tar.gz
-
-                sudo chown -R root:root /etc/kubernetes/pki
-                sudo chmod 600 /etc/kubernetes/*.conf
-
-                eval sudo ${JOIN_COMMAND_CONTROLPLANE} >/dev/null 2>&1 || true
+                log -f $CURRENT_FUNC 'Executing join command: $JOIN_COMMAND_CONTROLPLANE on ${role} node ${hostname}'
+                output=\$(sudo ${JOIN_COMMAND_CONTROLPLANE}  2>&1 || true)
+                echo output is: \$output
             """
             if [ $? -ne 0 ]; then
                 log -f ${CURRENT_FUNC} "ERROR" "Failed to join cluster for ${role} node ${hostname}"
@@ -1605,6 +1595,8 @@ restart_cilium() {
 
             if echo "\$CILIUM_STATUS" | grep -qi 'error'; then
                 log -f \"${CURRENT_FUNC}\" \"cilium status contains errors... restarting cilium. Try: \$current_retry\"
+                sudo rm -f /var/run/cilium/cilium.pid  # should be done accros the clsuter nodes
+                sudo rm -f /var/run/cilium/cilium-envoy.pid  # should be done accros the clsuter nodes
                 eval \"kubectl rollout restart -n $CILIUM_NS ds/cilium ds/cilium-envoy deployment/cilium-operator > /dev/null 2>&1\" || true
                 sleep $sleep_timer
             else
@@ -1615,11 +1607,11 @@ restart_cilium() {
     """
     if [ $? -ne 0 ]; then
         log -f ${CURRENT_FUNC} "ERROR" "Failed to restart cilium"
-        kubectl delete -n $CILIUM_NS daemonsets.apps cilium-node-init > /dev/null 2>&1 || true
+        # kubectl delete -n $CILIUM_NS daemonsets.apps cilium-node-init > /dev/null 2>&1 || true
         return 1
     else
         log -f ${CURRENT_FUNC} "Finished restarting cilium"
-        kubectl delete -n $CILIUM_NS daemonsets.apps cilium-node-init > /dev/null 2>&1 || true
+        # kubectl delete -n $CILIUM_NS daemonsets.apps cilium-node-init > /dev/null 2>&1 || true
         return 0
     fi
     #################################################################
@@ -1809,7 +1801,7 @@ install_certmanager () {
             --set namespace=${CERTMANAGER_NS} \
             --create-namespace \
             -f /tmp/certmanager/values.yaml \
-            ${VERBOSE} || true)
+            2>&1 || true)
         # Check if the Helm install command was successful
         if [ ! \$? -eq 0 ]; then
             log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install cert-manager:\n\t\${output}\"
@@ -2255,7 +2247,7 @@ install_longhorn () {
     #         --set longhornConversionWebhook.replicas=${LONGHORN_REPLICAS} \
     #         --set longhornAdmissionWebhook.replicas=${LONGHORN_REPLICAS} \
     #         --set longhornRecoveryBackend.replicas=${LONGHORN_REPLICAS} \
-    #         ${VERBOSE} || true)
+    #         2>&1 || true)
     #     # Check if the Helm install command was successful
     #     if [ ! \$? -eq 0 ]; then
     #         log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install longhorn:\n\t\${output}\"
@@ -2342,7 +2334,7 @@ install_consul() {
             --create-namespace \
             --version $CONSUL_VERSION \
             -f /tmp/consul/values.yaml \
-            ${VERBOSE} || true)
+            2>&1 || true)
             # Check if the Helm install command was successful
         if [ ! \$? -eq 0 ]; then
             log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install consul:\n\t\${output}\"
@@ -2412,7 +2404,7 @@ install_vault () {
             --create-namespace \
             --version $VAULT_VERSION \
             -f /tmp/vault/values.yaml \
-            ${VERBOSE} || true)
+            2>&1 || true)
             # Check if the Helm install command was successful
         if [ ! \$? -eq 0 ]; then
             log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install vault:\n\t\${output}\"
@@ -2555,6 +2547,12 @@ rook_ceph_cleanup() {
     # """
     # log -f ${CURRENT_FUNC} "Finished cleaning up rook-ceph on control-plane node ${CONTROL_PLANE_NODE}"
 
+    ##################################################################
+    # log -f ${CURRENT_FUNC} "removing cephcluster crds"
+    # ssh -q ${CONTROL_PLANE_NODE} <<< """
+    #     kubectl patch cephcluster rook-ceph -n $ROOKCEPH_NS -p '{"metadata":{"finalizers":null}}' --type=merge
+    # """
+    ##################################################################
     local error_raised=0
     ###################################################################
     while read -r node; do
@@ -2571,8 +2569,8 @@ rook_ceph_cleanup() {
             sudo rm -rf /var/lib/rook
 
             # Zap the disk to a fresh, usable state (zap-all is important, b/c MBR has to be clean)
-            # log -f ${CURRENT_FUNC} 'Zapping the disk to a fresh, usable state on $role node ${hostname}'
-            # sudo sgdisk --zap-all $ROOKCEPH_HOST_DISK
+            log -f ${CURRENT_FUNC} 'Zapping the disk to a fresh, usable state on $role node ${hostname}'
+            sudo sgdisk --zap-all $ROOKCEPH_HOST_DISK
 
             log -f ${CURRENT_FUNC} 'Removing all filesystem signatures on $role node ${hostname}'
             sudo wipefs -a $ROOKCEPH_HOST_DISK
@@ -2637,7 +2635,7 @@ install_rookceph(){
             --create-namespace \
             --version $ROOKCEPH_VERSION \
             -f /tmp/${chart_name}/values.yaml \
-            > /dev/null 2>&1 )
+            2>&1 )
         if [ ! \$? -eq 0 ]; then
             log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install ${chart_name}:\n\t\${output}\"
             exit 1
@@ -2679,7 +2677,7 @@ install_rookceph(){
 #             --set operatorNamespace=$ROOKCEPH_NS \
 #             --version $ROOKCEPH_VERSION \
 #             -f /tmp/${chart_name}/values.yaml \
-#             >/dev/null 2>&1)
+#             2>&1)
 #         echo output: \$output
 #         if [ ! \$? -eq 0 ]; then
 #             log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install ${chart_name}:\n\t\$(printf \"%s\n\" \"\$output\")\"
@@ -2711,11 +2709,6 @@ install_rookceph_cluster() {
     fi
     log -f ${CURRENT_FUNC} "Finished ${chart_name} helm chart prerequisites"
     ##################################################################
-    log -f ${CURRENT_FUNC} "removing cephcluster crds"
-    ssh -q ${CONTROL_PLANE_NODE} <<< """
-        kubectl patch cephcluster rook-ceph -n $ROOKCEPH_NS -p '{"metadata":{"finalizers":null}}' --type=merge
-    """
-    ##################################################################
     ssh -q ${CONTROL_PLANE_NODE} <<< """
         rm -rf /tmp/${chart_name} &&  mkdir -p /tmp/${chart_name}
     """
@@ -2723,11 +2716,35 @@ install_rookceph_cluster() {
     log -f ${CURRENT_FUNC} "sending ${chart_name} values.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
     scp -q ./${chart_name}/values.yaml $CONTROL_PLANE_NODE:/tmp/${chart_name}/
     ##################################################################
+    log -f ${CURRENT_FUNC} "installing CSI snapshot CRDs"
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        # create tmp dir for rook-ceph-cluster
+        kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/v8.2.1/client/config/crd/snapshot.storage.k8s.io_volumesnapshotclasses.yaml
+        kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/v8.2.1/client/config/crd/snapshot.storage.k8s.io_volumesnapshotcontents.yaml
+        kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/v8.2.1/client/config/crd/snapshot.storage.k8s.io_volumesnapshots.yaml
+
+        kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/v8.2.1/deploy/kubernetes/snapshot-controller/rbac-snapshot-controller.yaml
+        kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/v8.2.1/deploy/kubernetes/snapshot-controller/setup-snapshot-controller.yaml
+
+    """
+
+    ##################################################################
+    # to be able to run ceph-rook on the control plane nodes:
+
+    while read -r node; do
+        local hostname=$(echo "$node" | jq -r '.hostname')
+        local role=$(echo "$node" | jq -r '.role')
+
+        ssh -q ${CONTROL_PLANE_NODE} <<< """
+            log -f ${CURRENT_FUNC} 'Started untainting $role node ${hostname}'
+            kubectl taint nodes $hostname node-role.kubernetes.io/control-plane- > /dev/null 2>&1 || true
+        """
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
+    ##################################################################
     log -f ${CURRENT_FUNC} "Installing ${chart_name} cluster Helm chart"
     ssh -q ${CONTROL_PLANE_NODE} <<< """
         output=\$(helm install ${chart_name} ${chart_name}/${chart_name} \
             --namespace $ROOKCEPH_NS \
-            --create-namespace \
             --version $ROOKCEPH_VERSION \
             --set operatorNamespace=$ROOKCEPH_NS \
             -f /tmp/${chart_name}/values.yaml \
@@ -2962,22 +2979,22 @@ install_kafka_ui() {
 }
 
 
-# #################################################################
-# if [ "$PREREQUISITES" = true ]; then
-#     #################################################################
-#     if ! provision_deployer; then
-#         log -f "main" "ERROR" "An error occurred while provisioning the deployer node."
-#         exit 1
-#     fi
-#     log -f "main" "Deployer node provisioned successfully."
-#     #################################################################
-#     if ! deploy_hostsfile; then
-#         log -f "main" "ERROR" "An error occured while updating the hosts files."
-#         exit 1
-#     fi
-#     log -f "main" "Hosts files updated successfully."
-#     #################################################################
-# fi
+#################################################################
+if [ "$PREREQUISITES" = true ]; then
+    #################################################################
+    if ! provision_deployer; then
+        log -f "main" "ERROR" "An error occurred while provisioning the deployer node."
+        exit 1
+    fi
+    log -f "main" "Deployer node provisioned successfully."
+    #################################################################
+    if ! deploy_hostsfile; then
+        log -f "main" "ERROR" "An error occured while updating the hosts files."
+        exit 1
+    fi
+    log -f "main" "Hosts files updated successfully."
+    #################################################################
+fi
 #################################################################
 if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
     reset_cluster
@@ -3000,6 +3017,12 @@ if ! install_cluster; then
     exit 1
 fi
 ################################################################
+join_cluster
+################################################################
+log -f "main" "INFO" "Waiting for the cluster to be ready...sleeping for 8 minutes"
+sleep 500
+log -f "main" "INFO" "Finished waiting for the cluster to be ready, continuing with the installation"
+################################################################
 if ! install_gateway_CRDS; then
     log -f main "ERROR" "An error occurred while deploying gateway CRDS"
     exit 1
@@ -3021,30 +3044,12 @@ if ! install_gateway; then
     log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
     exit 1
 fi
-###############################################################
-join_cluster
-exit 0
-###############################################################
+##############################################################
 if ! restart_cilium; then
     log -f "main" "ERROR" "Failed to start cilium service."
     exit 1
 fi
 ################################################################
-exit 0
-################################################################
-if [ "$PREREQUISITES" == "true" ]; then
-    if ! install_certmanager_prerequisites; then
-        log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
-        exit 1
-    fi
-fi
-if ! install_certmanager; then
-    log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
-    exit 1
-fi
-##################################################################
-vault_uninstall
-##################################################################
 rook_ceph_cleanup
 ##################################################################
 if ! install_rookceph; then
@@ -3056,6 +3061,22 @@ if ! install_rookceph_cluster; then
     log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
     exit 1
 fi
+################################################################
+exit 0
+# ################################################################
+# if [ "$PREREQUISITES" == "true" ]; then
+#     if ! install_certmanager_prerequisites; then
+#         log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
+#         exit 1
+#     fi
+# fi
+# if ! install_certmanager; then
+#     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
+#     exit 1
+# fi
+# ##################################################################
+# vault_uninstall
+# ##################################################################
 ##################################################################
 if ! install_vault; then
     log -f "main" "ERROR" "Failed to install longhorn on the cluster"
