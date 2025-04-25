@@ -657,28 +657,28 @@ reset_cluster () {
 
 
             if command -v cilium &> /dev/null; then
-                log -f ${CURRENT_FUNC} \"Uninstalling Cilium from node ${hostname}\"
-                cilium uninstall --wait --timeout 30s ${VERBOSE}
+                log -f ${CURRENT_FUNC} 'Uninstalling Cilium from node ${hostname}'
+                cilium uninstall --timeout 30s ${VERBOSE}
             fi
 
             if command -v kubectl &> /dev/null; then
-                log -f ${CURRENT_FUNC} \"Deleting Cilium resources from node ${hostname}\"
+                log -f ${CURRENT_FUNC} 'Deleting Cilium resources from node ${hostname}'
                 kubectl delete crds -l app.kubernetes.io/part-of=cilium ${VERBOSE}
                 kubectl delete validatingwebhookconfigurations cilium-operator ${VERBOSE}
                 kubectl -n $CILIUM_NS delete deployment -l k8s-app=cilium-operator > /dev/null 2>&1
             fi
 
             if command -v kubeadm &> /dev/null; then
-                log -f ${CURRENT_FUNC} \"Reseting kubeadm on node ${hostname}\"
+                log -f ${CURRENT_FUNC} 'Reseting kubeadm on node ${hostname}'
                 output=\$(sudo kubeadm reset -f 2>&1 )
                 if [ \$? -ne 0 ]; then
-                    log -f ${CURRENT_FUNC} 'WARNING' \"Error occurred while resetting k8s node ${hostname}...\n\$(printf \"%s\n\" \"\$output\")\"
+                    log -f ${CURRENT_FUNC} 'WARNING' 'Error occurred while resetting k8s node ${hostname}...\n\$(printf \"%s\n\" \"\$output\")'
                 elif echo \"\$output\" | grep -qi 'failed\|error'; then
-                    log -f ${CURRENT_FUNC} 'WARNING' \"Error occurred while resetting k8s node ${hostname}...\n\$(printf \"%s\n\" \"\$output\")\"
+                    log -f ${CURRENT_FUNC} 'WARNING' 'Error occurred while resetting k8s node ${hostname}...\n\$(printf \"%s\n\" \"\$output\")'
                 fi
             fi
 
-            log -f ${CURRENT_FUNC} \"Removing kubernetes hanging pods and containers\"
+            log -f ${CURRENT_FUNC} 'Removing kubernetes hanging pods and containers'
             for id in \$(sudo crictl pods -q 2>&1); do
                 sudo crictl stopp \"\$id\" > /dev/null 2>&1
                 sudo crictl rmp \"\$id\" > /dev/null 2>&1
@@ -2857,69 +2857,71 @@ install_kafka_ui() {
 #     log -f "main" "Hosts files updated successfully."
 #     #################################################################
 # fi
-# #################################################################
-# if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
-#     reset_cluster
-#     log -f "main" "Cluster reset completed."
-# fi
-# #################################################################
-# if [ "$PREREQUISITES" == "true" ]; then
-#     #################################################################
-#     if ! prerequisites_requirements; then
-#         log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
-#         exit 1
-#     fi
-#     #################################################################
-# else
-#     log -f "main" "Cluster prerequisites have been skipped"
-# fi
-# ################################################################
-# if ! install_cluster; then
-#     log -f main "ERROR" "An error occurred while deploying the cluster"
-#     exit 1
-# fi
-# ################################################################
-# if ! install_gateway_CRDS; then
-#     log -f main "ERROR" "An error occurred while deploying gateway CRDS"
-#     exit 1
-# fi
-# ################################################################
-# if [ "$PREREQUISITES" == "true" ]; then
-#     if ! install_cilium_prerequisites; then
-#         log -f main "ERROR" "An error occurred while installing cilium prerequisites"
-#         exit 1
-#     fi
-# fi
-# ################################################################
-# if ! install_cilium; then
-#     log -f main "ERROR" "An error occurred while installing cilium"
-#     exit 1
-# fi
-# #################################################################
-# if ! install_gateway; then
-#     log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
-#     exit 1
-# fi
-# ###############################################################
-# join_cluster
-# ###############################################################
-# if ! restart_cilium; then
-#     log -f "main" "ERROR" "Failed to start cilium service."
-#     exit 1
-# fi
-# ################################################################
-# if [ "$PREREQUISITES" == "true" ]; then
-#     if ! install_certmanager_prerequisites; then
-#         log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
-#         exit 1
-#     fi
-# fi
-# if ! install_certmanager; then
-#     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
-#     exit 1
-# fi
+#################################################################
+if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
+    reset_cluster
+    log -f "main" "Cluster reset completed."
+fi
+#################################################################
+if [ "$PREREQUISITES" == "true" ]; then
+    #################################################################
+    if ! prerequisites_requirements; then
+        log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
+        exit 1
+    fi
+    #################################################################
+else
+    log -f "main" "Cluster prerequisites have been skipped"
+fi
+################################################################
+if ! install_cluster; then
+    log -f main "ERROR" "An error occurred while deploying the cluster"
+    exit 1
+fi
+################################################################
+if ! install_gateway_CRDS; then
+    log -f main "ERROR" "An error occurred while deploying gateway CRDS"
+    exit 1
+fi
+################################################################
+if [ "$PREREQUISITES" == "true" ]; then
+    if ! install_cilium_prerequisites; then
+        log -f main "ERROR" "An error occurred while installing cilium prerequisites"
+        exit 1
+    fi
+fi
+################################################################
+if ! install_cilium; then
+    log -f main "ERROR" "An error occurred while installing cilium"
+    exit 1
+fi
+#################################################################
+if ! install_gateway; then
+    log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
+    exit 1
+fi
+###############################################################
+join_cluster
+###############################################################
+if ! restart_cilium; then
+    log -f "main" "ERROR" "Failed to start cilium service."
+    exit 1
+fi
+################################################################
+exit 0
+################################################################
+if [ "$PREREQUISITES" == "true" ]; then
+    if ! install_certmanager_prerequisites; then
+        log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
+        exit 1
+    fi
+fi
+if ! install_certmanager; then
+    log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
+    exit 1
+fi
 ##################################################################
-# vault_uninstall
+vault_uninstall
 ##################################################################
 rook_ceph_cleanup
 ##################################################################
