@@ -569,14 +569,13 @@ install_containerd () {
     ssh -q ${CURRENT_NODE} <<< """
         set -euo pipefail # Exit on error
 
+        sudo mkdir -p /etc/containerd
+
         CONFIG_FILE='/etc/containerd/config.toml'
 
         # Pause version mismatch:
         log -f ${CURRENT_FUNC} 'Resetting containerD config to default on ${NODE_ROLE} node ${CURRENT_NODE}'
         containerd config default | sudo tee \$CONFIG_FILE >/dev/null
-
-        log -f ${CURRENT_FUNC} 'Backing up the original config file on ${NODE_ROLE} node ${CURRENT_NODE}'
-        sudo cp -f -n \$CONFIG_FILE \${CONFIG_FILE}.bak
 
         log -f ${CURRENT_FUNC} 'Configuring containerD for our cluster on ${NODE_ROLE} node ${CURRENT_NODE}'
         sudo sed -i '/\[plugins\\.\"io\\.containerd\\.nri\\.v1\\.nri\"\]/,/^\[/{
@@ -589,11 +588,9 @@ install_containerd () {
             s|socket_path = ".*"|socket_path = \"/var/run/nri/nri.sock\"|;
         }' "\$CONFIG_FILE"
 
-
         sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' \$CONFIG_FILE
         # sudo sed -i 's|sandbox_image = \"registry.k8s.io/pause:\"|sandbox_image = \"registry.k8s.io/pause:$PAUSE_VERSION\"|' \$CONFIG_FILE
         sudo sed -i 's|sandbox_image = \\\"registry.k8s.io/pause:[^\"]*\\\"|sandbox_image = \\\"registry.k8s.io/pause:$PAUSE_VERSION\\\"|' "\$CONFIG_FILE"
-
 
         # sudo sed -i 's|path = \"/opt/containerd\"|path = \"/var/opt/containerd\"|' \$CONFIG_FILE
 
