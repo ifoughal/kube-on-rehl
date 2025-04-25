@@ -6,7 +6,6 @@ nodeinit:
   # -- Enable the node initialization DaemonSet
   enabled: false
 
-
 cleanBpfState: true
 cleanState: true
 
@@ -55,38 +54,8 @@ routingMode: native
 #############################################################################################################
 # enables ingress controller:
 # https://docs.cilium.io/en/stable/network/servicemesh/ingress/
-# l7Proxy: true
+l7Proxy: true
 # enableXTSocketFallback: false
-#############################################################################################################
-# we need to expose the LB to the host network
-# REF: https://docs.cilium.io/en/stable/network/servicemesh/ingress/#gs-ingress-host-network-mode
-# REF: https://github.com/kubernetes/ingress-nginx/blob/main/docs/deploy/baremetal.md
-ingressController:
-  # enabled: true
-  # default: true
-  enabled: false
-  default: false
-  loadbalancerMode: dedicated  # loadbalancer per service to avoid paths collision
-  enforceHttps: false
-  service:
-    name: cilium-ingress
-    # type: LoadBalancer  # LoadBalancer  # ClusterIP
-    # type: ClusterIP  # LoadBalancer  # ClusterIP
-    type: LoadBalancer  # LoadBalancer  # ClusterIP
-    # insecureNodePort: 30080
-    # secureNodePort: 30443
-    # REF: https://docs.cilium.io/en/stable/network/servicemesh/ingress/#externaltrafficpolicy-for-loadbalancer-or-nodeport-services
-    externalTrafficPolicy: Cluster  # Local
-    # -- Configure whether the Envoy listeners should be exposed on the host network.
-  hostNetwork:
-    enabled: false
-    # -- Configure a specific port on the host network that gets used for the shared listener.
-    # sharedListenerPort: 8080
-    # Specify the nodes where the Ingress listeners should be exposed
-    # nodes:
-    #   matchLabels:
-    #     kubernetes.io/os: linux
-        # component: ingress
 
 # in order to be able to assign priviledged ports (80/443)
 # REF: https://docs.cilium.io/en/stable/network/servicemesh/ingress/#bind-to-privileged-port
@@ -209,8 +178,8 @@ enableLBIPAM: true
 ##############################################################################
 resources:
   limits:
-    cpu: 4000m
-    memory: 4Gi
+    cpu: 10000m
+    memory: 10Gi
   requests:
     cpu: 100m
     memory: 512Mi
@@ -463,7 +432,7 @@ maglev:
 # # TODO TS why it doesn't go up...
 encryption:
 # -- Enable transparent network encryption.
-  enabled: false
+  enabled: true
   # -- Encryption method. Can be either ipsec or wireguard.
   type: wireguard
   # -- Enable encryption for pure node to node traffic.

@@ -531,7 +531,7 @@ webhook:
   # availability.
   #
   # If `replicas > 1`, consider setting `webhook.podDisruptionBudget.enabled=true`.
-  replicaCount: 1
+  replicaCount: 2
 
   # The number of seconds the API server should wait for the webhook to respond before treating the call as a failure.
   # The value must be between 1 and 30 seconds. For more information, see
@@ -613,14 +613,14 @@ webhook:
     # For example, the PodDisruptionBudget will block `kubectl drain`
     # if it is used on the Node where the only remaining cert-manager
     # Pod is currently running.
-    enabled: false
+    enabled: true
 
     # This property configures the minimum available pods for disruptions. Can either be set to
     # an integer (e.g. 1) or a percentage value (e.g. 25%).
     # It cannot be used if `maxUnavailable` is set.
     # +docs:property
     # +docs:type=unknown
-    # minAvailable: 1
+    minAvailable: 1
 
     # This property configures the maximum unavailable pods for disruptions. Can either be set to
     # an integer (e.g. 1) or a percentage value (e.g. 25%).
@@ -917,7 +917,7 @@ cainjector:
   #
   # Note that cert-manager uses leader election to ensure that there can
   # only be a single instance active at a time.
-  replicaCount: 1
+  replicaCount: 2
 
   # This is used to configure options for the cainjector pod.
   # It allows setting options that are usually provided via flags.
@@ -980,14 +980,14 @@ cainjector:
     # For example, the PodDisruptionBudget will block `kubectl drain`
     # if it is used on the Node where the only remaining cert-manager
     # Pod is currently running.
-    enabled: false
+    enabled: true
 
     # `minAvailable` configures the minimum available pods for disruptions. It can either be set to
     # an integer (e.g. 1) or a percentage value (e.g. 25%).
     # Cannot be used if `maxUnavailable` is set.
     # +docs:property
     # +docs:type=unknown
-    # minAvailable: 1
+    minAvailable: 1
 
     # `maxUnavailable` configures the maximum unavailable pods for disruptions. It can either be set to
     # an integer (e.g. 1) or a percentage value (e.g. 25%).
@@ -1088,27 +1088,6 @@ cainjector:
 
   # Optional additional labels to add to the CA Injector metrics Service.
   serviceLabels: {}
-
-  image:
-    # The container registry to pull the cainjector image from.
-    # +docs:property
-    # registry: quay.io
-
-    # The container image for the cert-manager cainjector
-    # +docs:property
-    repository: quay.io/jetstack/cert-manager-cainjector
-
-    # Override the image tag to deploy by setting this variable.
-    # If no value is set, the chart's appVersion will be used.
-    # +docs:property
-    # tag: vX.Y.Z
-
-    # Setting a digest will override any tag.
-    # +docs:property
-    # digest: sha256:0e072dddd1f7f8fc8909a2ca6f65e76c5f0d2fcfb8be47935ae3457e8bbceb20
-
-    # Kubernetes imagePullPolicy on Deployment.
-    pullPolicy: IfNotPresent
 
   serviceAccount:
     # Specifies whether a service account should be created.

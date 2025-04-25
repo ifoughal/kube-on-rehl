@@ -549,7 +549,7 @@ server:
       # Enables Raft integrated storage
       enabled: true
       # Set the Node Raft ID to the name of the pod
-      setNodeId: false
+      setNodeId: true
 
       # Note: Configuration files are stored in ConfigMaps so sensitive data
       # such as passwords should be either mounted through extraSecretEnvironmentVars
@@ -574,6 +574,7 @@ server:
         }
 
         service_registration "kubernetes" {}
+
 
     # config is a raw string of default configuration when using a Stateful
     # deployment. Default is to use a Consul for its HA storage backend.

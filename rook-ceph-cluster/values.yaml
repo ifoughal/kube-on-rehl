@@ -141,13 +141,13 @@ cephClusterSpec:
   resources:
     mgr:
       limits:
-        memory: "1Gi"
+        memory: "3Gi"
       requests:
         cpu: "500m"
         memory: "512Mi"
     mon:
       limits:
-        memory: "2Gi"
+        memory: "4Gi"
       requests:
         cpu: "1000m"
         memory: "1Gi"
@@ -376,7 +376,8 @@ cephFileSystems:
         activeStandby: true
         resources:
           limits:
-            memory: "4Gi"
+            cpu: "10000m"
+            memory: "10Gi"
           requests:
             cpu: "1000m"
             memory: "4Gi"
@@ -453,7 +454,8 @@ cephObjectStores:
         port: 80
         resources:
           limits:
-            memory: "2Gi"
+            cpu: "5000m"
+            memory: "6Gi"
           requests:
             cpu: "1000m"
             memory: "1Gi"
