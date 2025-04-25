@@ -2242,6 +2242,25 @@ install_consul() {
 }
 
 
+vault_uninstall() {
+    ##################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Started uninstalling vault helm chart"
+    helm_chart_prerequisites "$CONTROL_PLANE_NODE" "hashicorp" " https://helm.releases.hashicorp.com" "$VAULT_NS" "true"
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to install vault helm chart prerequisites"
+        return 1
+    fi
+    #################################################################
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        kubectl delete crd --selector app=vault
+    """
+    log -f ${CURRENT_FUNC} "Finished uninstalling vault helm chart"
+    #################################################################
+}
+
+
 install_vault () {
     ##################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
@@ -2379,9 +2398,9 @@ install_rancher () {
 rook_ceph_cleanup() {
     ###################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
-    # ###################################################################
-    # local chart_name="rook-ceph"
-    # local chart_url="https://charts.rook.io/release"
+    ###################################################################
+    local chart_name="rook-ceph"
+    local chart_url="https://charts.rook.io/release"
     # log -f ${CURRENT_FUNC} "Started ${chart_name} helm chart prerequisites"
     # helm_chart_prerequisites "$CONTROL_PLANE_NODE" "${chart_name}" "${chart_url}" "$ROOKCEPH_NS" "true" "true"
     # if [ $? -ne 0 ]; then
@@ -2393,26 +2412,30 @@ rook_ceph_cleanup() {
     # local chart_name="rook-ceph-cluster"
     # local chart_url="https://charts.rook.io/release"
     # log -f ${CURRENT_FUNC} "Started ${chart_name} helm chart prerequisites"
-    # helm_chart_prerequisites "$CONTROL_PLANE_NODE" "${chart_name}" "${chart_url}" "$ROOKCEPH_NS" "false" "false"
+    # helm_chart_prerequisites "$CONTROL_PLANE_NODE" "${chart_name}" "${chart_url}" "$ROOKCEPH_NS"
     # if [ $? -ne 0 ]; then
     #     log -f ${CURRENT_FUNC} "ERROR" "Failed to install ${chart_name} helm chart prerequisites"
     #     return 1
     # fi
     # log -f ${CURRENT_FUNC} "Finished ${chart_name} helm chart prerequisites"
+    # ###################################################################
+    # log -f ${CURRENT_FUNC} "Started cleaning up rook-ceph on control-plane node ${CONTROL_PLANE_NODE}"
+    # ssh -q $CONTROL_PLANE_NODE <<< """
+    #     set -e
+
+    #     kubectl delete -n $ROOKCEPH_NS cephblockpool replicapool --timeout=30s > /dev/null 2>&1 || true
+    #     kubectl delete storageclass rook-ceph-block --timeout=30s > /dev/null 2>&1 || true
+    #     kubectl delete storageclass csi-cephfs --timeout=30s > /dev/null 2>&1 || true
+
+    #     kubectl -n $ROOKCEPH_NS patch cephcluster rook-ceph --type merge -p '{\"spec\":{\"cleanupPolicy\":{\"confirmation\":\"yes-really-destroy-data\"}}}' > /dev/null 2>&1 || true
+
+    #     kubectl patch cephcluster -n $ROOKCEPH_NS rook-ceph -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge > /dev/null 2>&1
+    #     kubectl -n $ROOKCEPH_NS delete cephcluster rook-ceph --timeout=30s > /dev/null 2>&1 || true
+    # """
+    # log -f ${CURRENT_FUNC} "Finished cleaning up rook-ceph on control-plane node ${CONTROL_PLANE_NODE}"
+
+    local error_raised=0
     ###################################################################
-    log -f ${CURRENT_FUNC} "Started cleaning up rook-ceph on control-plane node ${CONTROL_PLANE_NODE}"
-    ssh -q $CONTROL_PLANE_NODE <<< """
-        kubectl delete -n $ROOKCEPH_NS cephblockpool replicapool
-        kubectl delete storageclass rook-ceph-block
-        kubectl delete storageclass csi-cephfs
-
-        kubectl -n $ROOKCEPH_NS patch cephcluster rook-ceph --type merge -p '{"spec":{"cleanupPolicy":{"confirmation":"yes-really-destroy-data"}}}'
-
-        kubectl -n $ROOKCEPH_NS delete cephcluster rook-ceph
-
-    """
-    log -f ${CURRENT_FUNC} "Finished cleaning up rook-ceph on control-plane node ${CONTROL_PLANE_NODE}"
-
     while read -r node; do
         ##################################################################
         local hostname=$(echo "$node" | jq -r '.hostname')
@@ -2421,24 +2444,44 @@ rook_ceph_cleanup() {
         ##################################################################
         log -f ${CURRENT_FUNC} "Started cleaning up rook-ceph on $role node ${hostname}"
         ssh -q ${hostname} <<< """
+            log -f ${CURRENT_FUNC} 'Started cleaning up rook-ceph on $role node ${hostname}'
+            set -euo pipefail
+
             sudo rm -rf /var/lib/rook
 
             # Zap the disk to a fresh, usable state (zap-all is important, b/c MBR has to be clean)
-            sudo sgdisk --zap-all $ROOKCEPH_HOST_DISK
+            # log -f ${CURRENT_FUNC} 'Zapping the disk to a fresh, usable state on $role node ${hostname}'
+            # sudo sgdisk --zap-all $ROOKCEPH_HOST_DISK
+
+            log -f ${CURRENT_FUNC} 'Removing all filesystem signatures on $role node ${hostname}'
+            sudo wipefs -a $ROOKCEPH_HOST_DISK
+
 
             # Wipe a large portion of the beginning of the disk to remove more LVM metadata that may be present
-            sudo dd if=/dev/zero of="$ROOKCEPH_HOST_DISK" bs=1M count=100 oflag=direct,dsync
+            log -f ${CURRENT_FUNC} 'Wiping a large portion of the beginning of the disk to remove more LVM metadata that may be present on $role node ${hostname}'
+            sudo dd if=/dev/zero of='$ROOKCEPH_HOST_DISK' bs=1M count=100 oflag=direct,dsync
 
             # SSDs may be better cleaned with blkdiscard instead of dd
-            sudo blkdiscard $ROOKCEPH_HOST_DISK
+            log -f ${CURRENT_FUNC} 'Cleaning the disk with blkdiscard on $role node ${hostname}'
+            sudo blkdiscard $ROOKCEPH_HOST_DISK || true
 
             # Inform the OS of partition table changes
+            log -f ${CURRENT_FUNC} 'Informing the OS of partition table changes on $role node ${hostname}'
             sudo partprobe $ROOKCEPH_HOST_DISK
 
             rm -rf /dev/ceph-*
             rm -rf /dev/mapper/ceph--*
         """
+        if [ $? -ne 0 ]; then
+            log -f ${CURRENT_FUNC} "ERROR" "Failed to clean up rook-ceph on $role node ${hostname}"
+            error_raised=1
+        fi
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
+    ##################################################################
+    if [ $error_raised -eq 1 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to clean up rook-ceph."
+        return 1
+    fi
     log -f ${CURRENT_FUNC} "Finished cleaning up rook-ceph storage on all nodes"
     ##################################################################
 }
@@ -2637,7 +2680,7 @@ install_kafka() {
     CURRENT_FUNC=${FUNCNAME[0]}
     ###################################################################
     log -f ${CURRENT_FUNC} "Started kafka helm chart prerequisites"
-    helm_chart_prerequisites "$CONTROL_PLANE_NODE" "bitnami" "https://charts.bitnami.com/bitnami" "$KAFKA_NS" "true" "true"
+    helm_chart_prerequisites "$CONTROL_PLANE_NODE" "kafka" "https://charts.bitnami.com/bitnami" "$KAFKA_NS" "true" "true"
     if [ $? -ne 0 ]; then
         log -f ${CURRENT_FUNC} "ERROR" "Failed to install kafka helm chart prerequisites"
         return 1
@@ -2662,12 +2705,12 @@ install_kafka() {
     ##################################################################
     log -f ${CURRENT_FUNC} "Installing bitnami kafka Helm chart"
     ssh -q ${CONTROL_PLANE_NODE} <<< """
-        output=\$(helm install kafka bitnami/kafka \
+        output=\$(helm install kafka kafka/kafka \
             --namespace $KAFKA_NS \
             --create-namespace \
             --version $KAFKA_VERSION \
             -f /tmp/kafka/values.yaml \
-            ${VERBOSE} || true)
+            2>&1)
             # Check if the Helm install command was successful
         if [ ! \$? -eq 0 ]; then
             log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install kafka:\n\t\${output}\"
@@ -2687,6 +2730,114 @@ install_kafka() {
     # """
     ##################################################################
     log -f ${CURRENT_FUNC} "Finished deploying kafka on the cluster."
+}
+
+
+install_akhq() {
+    ###################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ###################################################################
+    local chart_name="kafka-akhq"
+    log -f ${CURRENT_FUNC} "Started $chart_name helm chart prerequisites"
+    helm_chart_prerequisites ${CONTROL_PLANE_NODE} $chart_name "https://akhq.io/" "$KAFKA_NS"
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to install $chart_name helm chart prerequisites"
+        return 1
+    fi
+    log -f ${CURRENT_FUNC} "Finished $chart_name helm chart prerequisites"
+    ##################################################################
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        # create tmp dir for chart
+        rm -rf /tmp/$chart_name &&  mkdir -p /tmp/$chart_name
+    """
+    ##################################################################
+    log -f ${CURRENT_FUNC} "sending $chart_name values.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    scp -q ./$chart_name/values.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
+    ##################################################################
+    log -f ${CURRENT_FUNC} "sending $chart_name http-routes.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    scp -q ./$chart_name/http-routes.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Installing $chart_name Helm chart"
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        output=\$(helm install $chart_name $chart_name/akhq \
+            --namespace $KAFKA_NS \
+            --create-namespace \
+            --version $KAFKA_AKHQ_VERSION \
+            -f /tmp/$chart_name/values.yaml \
+            2>&1)
+            # Check if the Helm install command was successful
+        if [ ! \$? -eq 0 ]; then
+            log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install kafka:\n\t\${output}\"
+            exit 1
+        fi
+    """
+    if [ $? -eq 0 ]; then
+        log -f "${CURRENT_FUNC}" "Finished installing $chart_name on namespace: '${KAFKA_NS}'"
+    else
+        log -f "${CURRENT_FUNC}" "ERROR" "Failed to install $chart_name"
+        return 1
+    fi
+    # ##################################################################
+    # log -f $CURRENT_FUNC "applying http-routes for $chart_name ingress"
+    # ssh -q ${CONTROL_PLANE_NODE} <<< """
+    #     kubectl apply -f /tmp/$chart_name/http-routes.yaml ${VERBOSE}
+    # """
+    ##################################################################
+}
+
+
+
+install_kafka_ui() {
+    ###################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ###################################################################
+    local chart_name="kafka-ui"
+    ###################################################################
+    log -f ${CURRENT_FUNC} "Started $chart_name helm chart prerequisites"
+    helm_chart_prerequisites ${CONTROL_PLANE_NODE} $chart_name "https://ui.charts.kafbat.io/" "$KAFKA_NS"
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to install $chart_name helm chart prerequisites"
+        return 1
+    fi
+    log -f ${CURRENT_FUNC} "Finished $chart_name helm chart prerequisites"
+    ##################################################################
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        # create tmp dir for chart
+        rm -rf /tmp/$chart_name &&  mkdir -p /tmp/$chart_name
+    """
+    ##################################################################
+    log -f ${CURRENT_FUNC} "sending $chart_name values.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    scp -q ./$chart_name/values.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
+    ##################################################################
+    log -f ${CURRENT_FUNC} "sending $chart_name http-routes.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    scp -q ./$chart_name/http-routes.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Installing $chart_name Helm chart"
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        output=\$(helm install $chart_name $chart_name/$chart_name \
+            --namespace $KAFKA_NS \
+            --create-namespace \
+            --version $KAFKA_UI_VERSION \
+            -f /tmp/$chart_name/values.yaml \
+            2>&1)
+            # Check if the Helm install command was successful
+        if [ ! \$? -eq 0 ]; then
+            log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install kafka:\n\t\${output}\"
+            exit 1
+        fi
+    """
+    if [ $? -eq 0 ]; then
+        log -f "${CURRENT_FUNC}" "Finished installing $chart_name on namespace: '${KAFKA_NS}'"
+    else
+        log -f "${CURRENT_FUNC}" "ERROR" "Failed to install $chart_name"
+        return 1
+    fi
+    ##################################################################
+    log -f $CURRENT_FUNC "applying http-routes for $chart_name ingress"
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        kubectl apply -f /tmp/$chart_name/http-routes.yaml ${VERBOSE}
+    """
+    ##################################################################
 }
 
 
@@ -2767,26 +2918,35 @@ install_kafka() {
 #     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
 #     exit 1
 # fi
-
-# ##################################################################
-# rook_ceph_cleanup
-# ##################################################################
-# if ! install_rookceph; then
-#     log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
-#     exit 1
-# fi
-# ##################################################################
-# if ! install_rookceph_cluster; then
-#     log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
-#     exit 1
-# fi
+##################################################################
+# vault_uninstall
+##################################################################
+rook_ceph_cleanup
+##################################################################
+if ! install_rookceph; then
+    log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
+    exit 1
+fi
+##################################################################
+if ! install_rookceph_cluster; then
+    log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
+    exit 1
+fi
 ##################################################################
 if ! install_vault; then
     log -f "main" "ERROR" "Failed to install longhorn on the cluster"
     exit 1
 fi
 ##################################################################
+if ! install_kafka; then
+    log -f "main" "ERROR" "Failed to install kafka on the cluster"
+    exit 1
+fi
+##################################################################
 
+# install_akhq
+
+# install_kafka_ui
 
 
 log -f "main" "INFO" "Workload finished"
@@ -2827,11 +2987,6 @@ exit 0
 #     exit 1
 # fi
 
-##################################################################
-# if ! install_kafka; then
-#     log -f "main" "ERROR" "Failed to install kafka on the cluster"
-#     exit 1
-# fi
 ##################################################################
 # log -f "main" "deployment finished"
 
