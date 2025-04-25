@@ -1412,10 +1412,25 @@ join_cluster () {
     CURRENT_FUNC=${FUNCNAME[0]}
     ##################################################################
     # TODO: for control-plane nodes:
-    log -f ${CURRENT_FUNC} "Generating join command from control-plane node: ${CONTROL_PLANE_NODE}"
 
-    JOIN_COMMAND_WORKER=$(ssh -q $CONTROL_PLANE_NODE <<< "kubeadm token create --print-join-command""")
-    JOIN_COMMAND_CONTROLPLANE="${JOIN_COMMAND_WORKER} --control-plane"
+    log -f ${CURRENT_FUNC} "Getting control-plane node config and certs"
+    ssh -q $CONTROL_PLANE_NODE <<< """
+        kubectl get configmap kubeadm-config -n kube-system -o jsonpath='{.data.ClusterConfiguration}'  | sudo tee kubeadm-config.yaml
+        sudo tar czf pki-and-config.tar.gz pki admin.conf kubeadm-config.yaml
+        sudo mv pki-and-config.tar.gz /tmp/ && sudo chmod 666 /tmp/pki-and-config.tar.gz
+    """
+
+
+    local CERT_KEY=$(ssh -q $CONTROL_PLANE_NODE <<< """
+        output=\$(sudo kubeadm init phase upload-certs --upload-certs 2>/dev/null)
+
+        # Extract the certificate key from the output
+        CERT=\$(echo \"\$output\" | grep -A 1 'Using certificate key:' | tail -n 1 | tr -d ' ')
+
+        # Print the variable (optional)
+        echo \$CERT
+    """)
+    scp -q ${CERTMANAGER_CLI_VERSION}:/tmp/pki-and-config.tar.gz /tmp
 
     log -f ${CURRENT_FUNC} "Getting cluster config from control-plane node: ${CONTROL_PLANE_NODE}"
     ssh -q $CONTROL_PLANE_NODE <<< "sudo cat /etc/kubernetes/admin.conf" > /tmp/admin.conf
@@ -1436,6 +1451,10 @@ join_cluster () {
             continue
         fi
 
+        log -f ${CURRENT_FUNC} "Generating join command from control-plane node: ${CONTROL_PLANE_NODE}"
+        JOIN_COMMAND_WORKER=$(ssh -q $CONTROL_PLANE_NODE <<< "kubeadm token create --print-join-command""")
+        JOIN_COMMAND_CONTROLPLANE="${JOIN_COMMAND_WORKER} --control-plane --certificate-key ${CERT_KEY}"
+
         log -f ${CURRENT_FUNC} "Sending cluster config to target ${role} node: ${hostname}"
         scp /tmp/admin.conf ${hostname}:/tmp/
 
@@ -1453,8 +1472,8 @@ join_cluster () {
             continue
         fi
 
-        log -f ${CURRENT_FUNC} "initiating cluster join for ${role} node ${hostname}"
         if [ $role == "worker" ]; then
+            log -f ${CURRENT_FUNC} "initiating cluster join for ${role} node ${hostname}"
             ssh -q ${hostname} <<< """
                 set -euo pipefail
                 eval sudo ${JOIN_COMMAND_WORKER} >/dev/null 2>&1 || true
@@ -1465,14 +1484,32 @@ join_cluster () {
             fi
 
         elif [ $role == "control-plane-replica" ]; then
+            log -f ${CURRENT_FUNC} "initiating cluster join for ${role} node ${hostname}"
+
+            log -f ${CURRENT_FUNC} "sending pki and config to target ${role} node: ${hostname}"
+            scp -q /tmp/pki-and-config.tar.gz  ${hostname}:/tmp/
+
+
+
             ssh -q ${hostname} <<< """
                 set -euo pipefail
+
+                sudo mkdir -p /etc/kubernetes
+                cd /etc/kubernetes
+                sudo tar xzf /tmp/pki-and-config.tar.gz
+
+                sudo chown -R root:root /etc/kubernetes/pki
+                sudo chmod 600 /etc/kubernetes/*.conf
+
                 eval sudo ${JOIN_COMMAND_CONTROLPLANE} >/dev/null 2>&1 || true
             """
             if [ $? -ne 0 ]; then
                 log -f ${CURRENT_FUNC} "ERROR" "Failed to join cluster for ${role} node ${hostname}"
                 continue
             fi
+        else
+            log -f ${CURRENT_FUNC} "Can't initiate cluster join for ${role} node ${hostname}, role unknown"
+
         fi
         log -f ${CURRENT_FUNC} "Finished joining cluster for ${role} node ${hostname}"
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
@@ -2986,6 +3023,7 @@ if ! install_gateway; then
 fi
 ###############################################################
 join_cluster
+exit 0
 ###############################################################
 if ! restart_cilium; then
     log -f "main" "ERROR" "Failed to start cilium service."

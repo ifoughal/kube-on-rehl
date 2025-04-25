@@ -447,6 +447,17 @@ parse_inventory() {
     export CONTROL_PLANE_API_PORT=$(echo "$CLUSTER_NODES" | yq e -r '.[] | select(.role == "control-plane-leader") | .API_PORT' -)
     export CONTROL_PLANE_NODE=$(echo "$CLUSTER_NODES" | yq e -r '.[] | select(.role == "control-plane-leader") | .hostname' -)
     #########################################################
+    # Initialize the control_plane_nodes_list as an empty array
+    local nodes_list=()
+    # Loop through the nodes and append to the list if role is control-plane-leader or control-plane-replica
+    for node in $(echo "$CLUSTER_NODES" | yq e '.[] | select(.role == "control-plane-leader" or .role == "control-plane-replica") | .hostname'); do
+        nodes_list+=("$node")
+    done
+    # Format the list as YAML array (i.e., each node on a new line with a '-')
+    export CONTROL_PLANE_NODES_LIST=""
+    for node in "${nodes_list[@]}"; do
+        CONTROL_PLANE_NODES_LIST+=$'\n'"- $node"
+    done
 }
 
 

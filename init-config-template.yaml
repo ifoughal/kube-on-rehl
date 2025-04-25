@@ -8,12 +8,13 @@ etcd:
     dataDir: /var/lib/etcd
 imageRepository: ${KUBE_IMAGE_REPO}
 kubernetesVersion: v${K8S_MINOR_VERSION}
-networking:
-  dnsDomain: ${CLUSTER_DNS_DOMAINS}
-  serviceSubnet: ${CLUSTER_SERVICES_SUBNET}
+# networking:
+#   dnsDomain: ${CLUSTER_DNS_DOMAINS}
+#   serviceSubnet: ${CLUSTER_SERVICES_SUBNET}
 # CILIUM REPLACEMENT
 proxy:
   disabled: true
+certSANs: ${CONTROL_PLANE_NODES_LIST}
 # controllerManager: {}
 # dns: {}
 # encryptionAlgorithm: RSA-2048
