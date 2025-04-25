@@ -34,8 +34,3 @@ spec:
   - backendRefs:
     - name: rook-ceph-mgr-dashboard
       port: 8443
-
-# - matches:
-  #   - path:
-  #       type: PathPrefix
-  #       value: "/"
