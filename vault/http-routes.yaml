@@ -34,7 +34,7 @@ spec:
   - matches:
     - path:
         type: PathPrefix
-        value: "/"
+        value: "/ui/"
     backendRefs:
     - name: vault-ui
       port: 8200
