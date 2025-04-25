@@ -481,9 +481,9 @@ helm_chart_prerequisites () {
     local control_plane_host=$1
     local CHART_NAME=$2
     local CHART_REPO=$3
-    local CHART_NS=$4
-    local DELETE_NS=$5
-    local CREATE_NS=$6
+    local CHART_NS=${4:-"default"}
+    local DELETE_NS=${5:-"false"}
+    local CREATE_NS=${6:-"false"}
     local timeout=${7:-"10s"}
     local sleep_time=${8:-"15s"}
 
