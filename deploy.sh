@@ -16,6 +16,7 @@ SUDO_PASSWORD=
 STRICT_HOSTKEYS=0
 RESET_CLUSTER_ARG=0
 CLUSTER_NODES=
+INSTALL_CLUSTER=
 
 set -u # fail on unset variables
 
@@ -36,6 +37,10 @@ while [[ $# -gt 0 ]]; do
         -i|--inventory)
             INVENTORY="$2"
             shift 2
+            ;;
+        --install)
+            INSTALL_CLUSTER=true
+            shift
             ;;
         --with-prerequisites)
             PREREQUISITES=true
@@ -642,7 +647,7 @@ reset_cluster () {
     ##################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
     ##################################################################
-    log -f ${CURRENT_FUNC} "Started reseting cluster"
+    log -f ${CURRENT_FUNC} "Started reseting cluster worker nodes:"
     ##################################################################
     error_raised=0
     while read -r node; do
@@ -720,34 +725,35 @@ reset_cluster () {
         log -f ${CURRENT_FUNC} "Finished resetting ${role} node ${hostname}"
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     ##################################################################
-    log -f ${CURRENT_FUNC} "Started resetting control plane nodes"
+    log -f ${CURRENT_FUNC} "Started resetting cluster main control plane node"
     # reset cilium, crds etc on the main control plane node
     ssh -q $CONTROL_PLANE_NODE <<< """
         sudo swapoff -a
 
         if command -v cilium &> /dev/null; then
-            log -f ${CURRENT_FUNC} 'Uninstalling Cilium from node ${hostname}'
+            log -f ${CURRENT_FUNC} 'Uninstalling Cilium from node ${CONTROL_PLANE_NODE}'
             cilium uninstall --timeout 30s ${VERBOSE}
         fi
 
         if command -v kubectl &> /dev/null; then
-            log -f ${CURRENT_FUNC} 'Deleting Cilium resources from node ${hostname}'
+            log -f ${CURRENT_FUNC} 'Deleting Cilium resources from node ${CONTROL_PLANE_NODE}'
             kubectl delete crds -l app.kubernetes.io/part-of=cilium ${VERBOSE}
             kubectl delete validatingwebhookconfigurations cilium-operator ${VERBOSE}
             kubectl -n $CILIUM_NS delete deployment -l k8s-app=cilium-operator > /dev/null 2>&1
         fi
 
         if command -v kubeadm &> /dev/null; then
-            log -f ${CURRENT_FUNC} 'Reseting kubeadm on node ${hostname}'
+            log -f ${CURRENT_FUNC} 'Reseting kubeadm on node ${CONTROL_PLANE_NODE}'
             output=\$(sudo kubeadm reset -f 2>&1 )
             if [ \$? -ne 0 ]; then
-                log -f ${CURRENT_FUNC} 'WARNING' 'Error occurred while resetting k8s node ${hostname}...\n\$(printf \"%s\n\" \"\$output\")'
+                log -f ${CURRENT_FUNC} 'WARNING' 'Error occurred while resetting k8s node ${CONTROL_PLANE_NODE}...\n\$(printf \"%s\n\" \"\$output\")'
             elif echo \"\$output\" | grep -qi 'failed\|error'; then
-                log -f ${CURRENT_FUNC} 'WARNING' \"Error occurred while resetting k8s node ${hostname}...\n\$(printf \"%s\n\" \"\$output\")\"
+                log -f ${CURRENT_FUNC} 'WARNING' \"Error occurred while resetting k8s node ${CONTROL_PLANE_NODE}...\n\$(printf \"%s\n\" \"\$output\")\"
             fi
         fi
     """
-
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Started resetting cluster control plane nodes"
     # reset the control plane node replicas last.
     while read -r node; do
         ##################################################################
@@ -761,7 +767,6 @@ reset_cluster () {
         log -f ${CURRENT_FUNC} "Started resetting k8s ${role} node node: ${hostname}"
         ssh -q ${hostname} <<< """
             sudo swapoff -a
-
 
             if command -v kubeadm &> /dev/null; then
                 log -f ${CURRENT_FUNC} 'Reseting kubeadm on node ${hostname}'
@@ -1210,14 +1215,14 @@ install_cilium_prerequisites () {
     ##################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
     log -f ${CURRENT_FUNC} "INFO" "Started installing cilium prerequisites"
-   ##################################################################
-    ssh -q $CONTROL_PLANE_NODE <<< """
-        eval 'sudo cilium uninstall > /dev/null 2>&1' || true
-        log -f '${CURRENT_FUNC}' 'Ensuring that kube-proxy is not installed'
-        eval 'kubectl -n kube-system delete ds kube-proxy > /dev/null 2>&1' || true
-        # Delete the configmap as well to avoid kube-proxy being reinstalled during a Kubeadm upgrade (works only for K8s 1.19 and newer)
-        eval 'kubectl -n kube-system delete cm kube-proxy > /dev/null 2>&1' || true
-    """
+    ##################################################################
+    # ssh -q $CONTROL_PLANE_NODE <<< """
+    #     eval 'sudo cilium uninstall > /dev/null 2>&1' || true
+    #     log -f '${CURRENT_FUNC}' 'Ensuring that kube-proxy is not installed'
+    #     eval 'kubectl -n kube-system delete ds kube-proxy > /dev/null 2>&1' || true
+    #     # Delete the configmap as well to avoid kube-proxy being reinstalled during a Kubeadm upgrade (works only for K8s 1.19 and newer)
+    #     eval 'kubectl -n kube-system delete cm kube-proxy > /dev/null 2>&1' || true
+    # """
     ##################################################################
     while read -r node; do
         local hostname=$(echo "$node" | jq -r '.hostname')
@@ -1258,6 +1263,35 @@ install_cilium_prerequisites () {
         """
         add_bashcompletion ${hostname}  cilium $VERBOSE
         log -f ${CURRENT_FUNC} "Finished installing cilium cli on $role node ${hostname}"
+
+        ##################################################################
+        log -f ${CURRENT_FUNC} "installing cilium Hubble cli version: $CILIUM_HUBBLE_CLI_VERSION on $role node ${hostname}"
+
+        # get the latest version of hubble cli:
+        # HUBBLE_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/hubble/master/stable.txt)
+        ssh -q ${hostname} <<< """
+
+            if command -v hubble &> /dev/null; then
+                log -f \"${CURRENT_FUNC}\" 'cilium hubble cli already installed, skipping installation.'
+                exit 0
+            fi
+            cd /tmp
+
+            HUBBLE_ARCH=amd64
+
+            if [ \"\$\(uname -m\)\" = 'aarch64' ]; then HUBBLE_ARCH=arm64; fi
+
+            curl -s -L --fail --remote-name-all https://github.com/cilium/hubble/releases/download/$CILIUM_HUBBLE_CLI_VERSION/hubble-linux-\${HUBBLE_ARCH}.tar.gz{,.sha256sum}
+
+            sha256sum --check hubble-linux-\${HUBBLE_ARCH}.tar.gz.sha256sum ${VERBOSE}
+            sudo tar xzvfC hubble-linux-\${HUBBLE_ARCH}.tar.gz /usr/local/bin ${VERBOSE}
+            rm hubble-linux-\${HUBBLE_ARCH}.tar.gz{,.sha256sum}
+        """
+        add_bashcompletion ${hostname}  hubble $VERBOSE
+
+        log -f ${CURRENT_FUNC} "checkout https://docs.cilium.io/en/stable/observability/hubble/setup/#hubble-cli-install for hubble CLI usage details."
+
+        log -f ${CURRENT_FUNC} "Finished installing cilium hubble cli on $role node ${hostname}"
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     ##################################################################
     log -f ${CURRENT_FUNC} "INFO" "Finished installing cilium prerequisites"
@@ -1579,7 +1613,7 @@ restart_cilium() {
     #################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
     #################################################################
-    local sleep_timer=500
+    local sleep_timer=120
     log -f "$CURRENT_FUNC" "Ensuring that cilium replicas scale without errors..."
     ssh -q ${CONTROL_PLANE_NODE} <<< """
         current_retry=0
@@ -1588,17 +1622,19 @@ restart_cilium() {
             current_retry=\$((current_retry + 1))
             if [ \$current_retry -gt \$max_retries ]; then
                 log -f \"${CURRENT_FUNC}\" 'ERROR' 'Reached maximum retry count for cilium status to go up. Exiting...'
-                exit 1001
+                exit 1
             fi
+
+            log -f $CURRENT_FUNC 'Sleeping for $sleep_timer seconds to allow cilium to scale up...'
+            sleep $sleep_timer
 
             CILIUM_STATUS=\$(cilium status | tr -d '\0')
 
             if echo "\$CILIUM_STATUS" | grep -qi 'error'; then
-                log -f \"${CURRENT_FUNC}\" \"cilium status contains errors... restarting cilium. Try: \$current_retry\"
+                log -f ${CURRENT_FUNC} \"cilium status contains errors... restarting cilium. Try: \$current_retry\"
                 sudo rm -f /var/run/cilium/cilium.pid  # should be done accros the clsuter nodes
                 sudo rm -f /var/run/cilium/cilium-envoy.pid  # should be done accros the clsuter nodes
                 eval \"kubectl rollout restart -n $CILIUM_NS ds/cilium ds/cilium-envoy deployment/cilium-operator > /dev/null 2>&1\" || true
-                sleep $sleep_timer
             else
                 log -f \"${CURRENT_FUNC}\" 'Cilium is up and running'
                 break
@@ -2602,6 +2638,7 @@ rook_ceph_cleanup() {
         return 1
     fi
     log -f ${CURRENT_FUNC} "Finished cleaning up rook-ceph storage on all nodes"
+    log -f ${CURRENT_FUNC} "WARNING" "a reboot for all nodes is required to remove the ceph modules"
     ##################################################################
 }
 
@@ -2728,6 +2765,14 @@ install_rookceph_cluster() {
 
     """
 
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        kubectl create ns csi-addons-system
+        kubectl create -f https://github.com/csi-addons/kubernetes-csi-addons/releases/download/${CSI_ADDONS_VERSION}/crds.yaml
+
+        kubectl create -f https://github.com/csi-addons/kubernetes-csi-addons/releases/download/${CSI_ADDONS_VERSION}/rbac.yaml
+
+        kubectl create -f https://github.com/csi-addons/kubernetes-csi-addons/releases/download/${CSI_ADDONS_VERSION}/setup-controller.yaml
+    """
     ##################################################################
     # to be able to run ceph-rook on the control plane nodes:
 
@@ -2806,6 +2851,9 @@ install_rookceph_cluster() {
             kubectl -n $ROOKCEPH_NS get secret rook-ceph-dashboard-password -o jsonpath=\"{['data']['password']}\" | base64 --decode && echo
         """)
         log -f "${CURRENT_FUNC}" "admin password for rook-ceph dashboard password is: $rook_ceph_dasbharod_password"
+
+        log -f ${CURRENT_FUNC} "Removing completed pods"
+        kubectl delete pods -n ${ROOKCEPH_NS} --field-selector=status.phase=Succeeded
 
         log -f "${CURRENT_FUNC}" "Finished deploying rook-ceph cluster on the cluster."
     fi
@@ -2978,121 +3026,121 @@ install_kafka_ui() {
     ##################################################################
 }
 
-
-#################################################################
-if [ "$PREREQUISITES" = true ]; then
-    #################################################################
-    if ! provision_deployer; then
-        log -f "main" "ERROR" "An error occurred while provisioning the deployer node."
-        exit 1
-    fi
-    log -f "main" "Deployer node provisioned successfully."
-    #################################################################
-    if ! deploy_hostsfile; then
-        log -f "main" "ERROR" "An error occured while updating the hosts files."
-        exit 1
-    fi
-    log -f "main" "Hosts files updated successfully."
-    #################################################################
-fi
-#################################################################
-if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
-    reset_cluster
-    log -f "main" "Cluster reset completed."
-fi
-#################################################################
-if [ "$PREREQUISITES" == "true" ]; then
-    #################################################################
-    if ! prerequisites_requirements; then
-        log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
-        exit 1
-    fi
-    #################################################################
-else
-    log -f "main" "Cluster prerequisites have been skipped"
-fi
-################################################################
-if ! install_cluster; then
-    log -f main "ERROR" "An error occurred while deploying the cluster"
-    exit 1
-fi
-################################################################
-join_cluster
-################################################################
-log -f "main" "INFO" "Waiting for the cluster to be ready...sleeping for 8 minutes"
-sleep 500
-log -f "main" "INFO" "Finished waiting for the cluster to be ready, continuing with the installation"
-################################################################
-if ! install_gateway_CRDS; then
-    log -f main "ERROR" "An error occurred while deploying gateway CRDS"
-    exit 1
-fi
-################################################################
-if [ "$PREREQUISITES" == "true" ]; then
-    if ! install_cilium_prerequisites; then
-        log -f main "ERROR" "An error occurred while installing cilium prerequisites"
-        exit 1
-    fi
-fi
-################################################################
-if ! install_cilium; then
-    log -f main "ERROR" "An error occurred while installing cilium"
-    exit 1
-fi
-#################################################################
-if ! install_gateway; then
-    log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
-    exit 1
-fi
-##############################################################
-if ! restart_cilium; then
-    log -f "main" "ERROR" "Failed to start cilium service."
-    exit 1
-fi
-################################################################
-rook_ceph_cleanup
-##################################################################
-if ! install_rookceph; then
-    log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
-    exit 1
-fi
-##################################################################
-if ! install_rookceph_cluster; then
-    log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
-    exit 1
-fi
-################################################################
-exit 0
-# ################################################################
-# if [ "$PREREQUISITES" == "true" ]; then
-#     if ! install_certmanager_prerequisites; then
-#         log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
-#         exit 1
+# if [ "$INSTALL_CLUSTER" = true ]; then
+#     if [ "$PREREQUISITES" = true ]; then
+#         #################################################################
+#         if ! provision_deployer; then
+#             log -f "main" "ERROR" "An error occurred while provisioning the deployer node."
+#             exit 1
+#         fi
+#         log -f "main" "Deployer node provisioned successfully."
+#         #################################################################
+#         if ! deploy_hostsfile; then
+#             log -f "main" "ERROR" "An error occured while updating the hosts files."
+#             exit 1
+#         fi
+#         log -f "main" "Hosts files updated successfully."
+#         #################################################################
 #     fi
 # fi
-# if ! install_certmanager; then
-#     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
-#     exit 1
+
+
+# #################################################################
+# if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
+#     reset_cluster
+#     rook_ceph_cleanup
+#     log -f "main" "Cluster reset completed."
 # fi
-# ##################################################################
-# vault_uninstall
-# ##################################################################
-##################################################################
-if ! install_vault; then
-    log -f "main" "ERROR" "Failed to install longhorn on the cluster"
-    exit 1
-fi
-##################################################################
-if ! install_kafka; then
-    log -f "main" "ERROR" "Failed to install kafka on the cluster"
-    exit 1
-fi
-##################################################################
 
-# install_akhq
+# if [ "$INSTALL_CLUSTER" = true ]; then
+#     #################################################################
+#     if [ "$PREREQUISITES" == "true" ]; then
+#         #################################################################
+#         if ! prerequisites_requirements; then
+#             log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
+#             exit 1
+#         fi
+#         #################################################################
+#     else
+#         log -f "main" "Cluster prerequisites have been skipped"
+#     fi
+#     ################################################################
+#     if ! install_cluster; then
+#         log -f main "ERROR" "An error occurred while deploying the cluster"
+#         exit 1
+#     fi
+#     ################################################################
+#     join_cluster
+#     ################################################################
+#     if ! install_gateway_CRDS; then
+#         log -f main "ERROR" "An error occurred while deploying gateway CRDS"
+#         exit 1
+#     fi
+#     ################################################################
+#     if [ "$PREREQUISITES" == "true" ]; then
+#         if ! install_cilium_prerequisites; then
+#             log -f main "ERROR" "An error occurred while installing cilium prerequisites"
+#             exit 1
+#         fi
+#     fi
+#     ################################################################
+#     if ! install_cilium; then
+#         log -f main "ERROR" "An error occurred while installing cilium"
+#         exit 1
+#     fi
+#     #################################################################
+#     if ! install_gateway; then
+#         log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
+#         exit 1
+#     fi
+#     ##############################################################
+#     if ! restart_cilium; then
+#         log -f "main" "ERROR" "Failed to start cilium service."
+#         exit 1
+#     fi
+#     ################################################################
+# fi
 
-# install_kafka_ui
 
+# if [ "$INSTALL_CLUSTER" = true ]; then
+#     # ##################################################################
+#     # if ! install_rookceph; then
+#     #     log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
+#     #     exit 1
+#     # fi
+#     # ##################################################################
+#     # if ! install_rookceph_cluster; then
+#     #     log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
+#     #     exit 1
+#     # fi
+#     # ################################################################
+#     # if [ "$PREREQUISITES" == "true" ]; then
+#     #     if ! install_certmanager_prerequisites; then
+#     #         log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
+#     #         exit 1
+#     #     fi
+#     # fi
+#     # if ! install_certmanager; then
+#     #     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
+#     #     exit 1
+#     # fi
+#     # ##################################################################
+#     # vault_uninstall
+#     # ##################################################################
+#     # ##################################################################
+#     # if ! install_vault; then
+#     #     log -f "main" "ERROR" "Failed to install longhorn on the cluster"
+#     #     exit 1
+#     # fi
+#     ##################################################################
+#     if ! install_kafka; then
+#         log -f "main" "ERROR" "Failed to install kafka on the cluster"
+#         exit 1
+#     fi
+#     ##################################################################
+#     # install_akhq
+#     install_kafka_ui
+# fi
 
 log -f "main" "INFO" "Workload finished"
 exit 0
