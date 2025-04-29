@@ -16,8 +16,9 @@ SUDO_PASSWORD=
 STRICT_HOSTKEYS=0
 RESET_CLUSTER_ARG=0
 CLUSTER_NODES=
-INSTALL_CLUSTER=
-PRINT_ROOK_PASSWORD=
+INSTALL_CLUSTER=false
+PRINT_ROOK_PASSWORD=false
+UPGRADE_CILIUM=false
 set -u # fail on unset variables
 
 ####################################################################
@@ -40,6 +41,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --install)
             INSTALL_CLUSTER=true
+            shift
+            ;;
+        --upgrade-cilium)
+            UPGRADE_CILIUM=true
             shift
             ;;
         --with-prerequisites)
@@ -1197,14 +1202,16 @@ install_gateway_CRDS () {
     ssh -q $CONTROL_PLANE_NODE <<< """
         set -euo pipefail
 
-        eval \"kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_VERSION}/experimental-install.yaml ${VERBOSE}\"
+        kubectl create ns cilium-monitoring > /dev/null 2>&1 || true
 
-        log -f \"${CURRENT_FUNC}\" 'Installing Gateway API Experimental TLSRoute from the Experimental channel'
+        kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_VERSION}/experimental-install.yaml ${VERBOSE}
 
-        eval \"kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/${GATEWAY_VERSION}/config/crd/experimental/gateway.networking.k8s.io_tlsroutes.yaml ${VERBOSE}\"
+        log -f ${CURRENT_FUNC} 'Installing Gateway API Experimental TLSRoute from the Experimental channel'
 
-        log -f \"${CURRENT_FUNC}\" 'Applying hubble-ui HTTPRoute for ingress.'
-        eval \"kubectl apply -f /tmp/http-routes.yaml ${VERBOSE}\"
+        kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/${GATEWAY_VERSION}/config/crd/experimental/gateway.networking.k8s.io_tlsroutes.yaml ${VERBOSE}
+
+        log -f ${CURRENT_FUNC} 'Applying hubble-ui HTTPRoute for ingress.'
+        kubectl apply -f /tmp/http-routes.yaml ${VERBOSE}
     """
     if [ $? -eq 0 ]; then
         log -f ${CURRENT_FUNC} "Finished installing Gateway API CRDS"
@@ -1303,9 +1310,18 @@ install_cilium_prerequisites () {
 
 
 install_cilium () {
-    set -u
     ##################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
+    #############################################################
+    set +u
+    if [ -z "$MAGLEV_HASH_SEED" ]; then
+        log -f ${CURRENT_FUNC} "Cilium maglev hashseed is not set, generating a random one."
+        local hash_seed=$(head -c12 /dev/urandom | base64 -w0)
+    else
+        local hash_seed=$MAGLEV_HASH_SEED
+    fi
+    log -f ${CURRENT_FUNC} "Cilium maglev hashseed is: ${hash_seed}"
+    set -u
     #############################################################
     local control_plane_address=$(ssh -q ${CONTROL_PLANE_NODE} <<< """
         ip -o -4 addr show $CONTROLPLANE_INGRESS_CLUSTER_INTER | awk '{print \$4}' | cut -d/ -f1
@@ -1339,6 +1355,7 @@ install_cilium () {
             echo \"\$n1.\$n2.\$n3.\$n4/\$prefix\"
         done
     """)
+    log -f ${CURRENT_FUNC} "Cilium native routing subnet is: ${control_plane_subnet}"
     #############################################################
     log -f ${CURRENT_FUNC} "Started cilium helm chart prerequisites"
     ssh -q $CONTROL_PLANE_NODE <<< """
@@ -1360,10 +1377,6 @@ install_cilium () {
     log -f ${CURRENT_FUNC} "Finished cilium helm chart prerequisites"
     ##################################################################
     log -f ${CURRENT_FUNC} "Started installing cilium"
-    #############################################################
-    log -f ${CURRENT_FUNC} "Cilium native routing subnet is: ${control_plane_subnet}"
-    local hash_seed=$(head -c12 /dev/urandom | base64 -w0)
-    log -f ${CURRENT_FUNC} "Cilium maglev hashseed is: ${hash_seed}"
     #############################################################
     log -f ${CURRENT_FUNC} "sending cilium values to control plane node: ${CONTROL_PLANE_NODE}"
     scp -q ./cilium/values.yaml ${CONTROL_PLANE_NODE}:/tmp/
@@ -1393,7 +1406,7 @@ install_cilium () {
                 --set hubble.relay.replicas=$HUBBLE_RELAY_REPLICAS \
                 --set hubble.ui.replicas=$HUBBLE_UI_REPLICAS \
                 --set maglev.hashSeed="${hash_seed}" \
-                -f /tmp/values.yaml
+                -f /tmp/values.yaml \
                 2>&1)
             if [ \$RETRY_COUNT -eq \$MAX_RETRIES ]; then
                 log -f $CURRENT_FUNC 'ERROR' 'Max retries reached. Cilium installation failed.'
@@ -1485,7 +1498,7 @@ join_cluster () {
         fi
 
         log -f ${CURRENT_FUNC} "Sending cluster config to target ${role} node: ${hostname}"
-        scp /tmp/admin.conf ${hostname}:/tmp/
+        scp -q /tmp/admin.conf ${hostname}:/tmp/
 
         ssh -q ${hostname} <<< """
             set -euo pipefail
@@ -1617,43 +1630,65 @@ restart_cilium() {
     #################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
     #################################################################
-    local sleep_timer=120
+    local sleep_timer=500
     log -f "$CURRENT_FUNC" "Ensuring that cilium replicas scale without errors..."
-    ssh -q ${CONTROL_PLANE_NODE} <<< """
-        current_retry=0
-        max_retries=10
-        while true; do
-            current_retry=\$((current_retry + 1))
-            if [ \$current_retry -gt \$max_retries ]; then
-                log -f \"${CURRENT_FUNC}\" 'ERROR' 'Reached maximum retry count for cilium status to go up. Exiting...'
-                exit 1
-            fi
 
-            log -f $CURRENT_FUNC 'Sleeping for $sleep_timer seconds to allow cilium to scale up...'
-            sleep $sleep_timer
+    current_retry=0
+    max_retries=10
+    while true; do
+        current_retry=$((current_retry + 1))
+        #################################################################
+        if [ $current_retry -gt $max_retries ]; then
+            log -f ${CURRENT_FUNC} 'ERROR' 'Reached maximum retry count for cilium status to go up. Exiting...'
+            return 1
+        fi
+        #################################################################
+        ssh -q ${CONTROL_PLANE_NODE} <<< """
+                CILIUM_STATUS=\$(cilium status | tr -d '\0')
 
-            CILIUM_STATUS=\$(cilium status | tr -d '\0')
+                if echo "\$CILIUM_STATUS" | grep -qi 'error'; then
+                    log -f ${CURRENT_FUNC} 'cilium status contains errors...'
+                    exit 1
+                else
+                    log -f ${CURRENT_FUNC} 'Cilium is up and running'
+                    exit 0
+                fi
+        """
+        if [ $? -eq 0 ]; then
+            log -f ${CURRENT_FUNC} "Finished restarting cilium"
+            return 0
+        else
+            #################################################################
+            while read -r node; do
+                local hostname=$(echo "$node" | jq -r '.hostname')
+                local ip=$(echo "$node" | jq -r '.ip')
+                local role=$(echo "$node" | jq -r '.role')
 
-            if echo "\$CILIUM_STATUS" | grep -qi 'error'; then
-                log -f ${CURRENT_FUNC} \"cilium status contains errors... restarting cilium. Try: \$current_retry\"
-                sudo rm -f /var/run/cilium/cilium.pid  # should be done accros the clsuter nodes
-                sudo rm -f /var/run/cilium/cilium-envoy.pid  # should be done accros the clsuter nodes
-                eval \"kubectl rollout restart -n $CILIUM_NS ds/cilium ds/cilium-envoy deployment/cilium-operator > /dev/null 2>&1\" || true
-            else
-                log -f \"${CURRENT_FUNC}\" 'Cilium is up and running'
-                break
-            fi
-        done
-    """
-    if [ $? -ne 0 ]; then
-        log -f ${CURRENT_FUNC} "ERROR" "Failed to restart cilium"
-        # kubectl delete -n $CILIUM_NS daemonsets.apps cilium-node-init > /dev/null 2>&1 || true
-        return 1
-    else
-        log -f ${CURRENT_FUNC} "Finished restarting cilium"
-        # kubectl delete -n $CILIUM_NS daemonsets.apps cilium-node-init > /dev/null 2>&1 || true
-        return 0
-    fi
+                log -f ${CURRENT_FUNC} "Restarting cilium PIDs on $role node ${hostname}"
+                ssh -q ${hostname} <<< """
+                    sudo rm -f /var/run/cilium/cilium.pid
+                    sudo rm -f /var/run/cilium/cilium-envoy.pid
+                """
+
+            done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
+            #################################################################
+            log -f ${CURRENT_FUNC} "Restarting cilium pods... Try: $current_retry"
+            ssh -q ${CONTROL_PLANE_NODE} <<< """
+                kubectl rollout restart -n $CILIUM_NS \
+                    ds/cilium \
+                    ds/cilium-envoy \
+                    deployment/cilium-operator \
+                    deployment/hubble-relay \
+                    deployment/coredns \
+                    > /dev/null 2>&1 || true
+            """
+            #################################################################
+        fi
+        #################################################################
+        log -f $CURRENT_FUNC "Sleeping for $sleep_timer seconds to allow cilium to scale up..."
+        sleep $sleep_timer
+        #################################################################
+    done
     #################################################################
 }
 
@@ -3025,6 +3060,7 @@ install_kafka_ui() {
     ##################################################################
 }
 
+
 install_kyverno() {
     ###################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
@@ -3057,6 +3093,10 @@ install_kyverno() {
             --namespace $KYVERNO_NS \
             --create-namespace \
             --version $KYVERNO_VERSION \
+            --set admissionController.replicas=3 \
+            --set backgroundController.replicas=2 \
+            --set cleanupController.replicas=2 \
+            --set reportsController.replicas=2 \
             -f /tmp/$chart_name/values.yaml \
             2>&1)
             # Check if the Helm install command was successful
@@ -3079,111 +3119,265 @@ install_kyverno() {
     ##################################################################
 }
 
-# #################################################################
-# if [ "$INSTALL_CLUSTER" = true ]; then
-#     if [ "$PREREQUISITES" = true ]; then
-#         #################################################################
-#         if ! provision_deployer; then
-#             log -f "main" "ERROR" "An error occurred while provisioning the deployer node."
-#             exit 1
-#         fi
-#         log -f "main" "Deployer node provisioned successfully."
-#         #################################################################
-#         if ! deploy_hostsfile; then
-#             log -f "main" "ERROR" "An error occured while updating the hosts files."
-#             exit 1
-#         fi
-#         log -f "main" "Hosts files updated successfully."
-#         #################################################################
-#     fi
-# fi
+
+upgrade_cilium() {
+    ##################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    #############################################################
+    set +u
+    if [ -z "$MAGLEV_HASH_SEED" ]; then
+        log -f ${CURRENT_FUNC} "Cilium maglev hashseed is not set, generating a random one."
+        local hash_seed=$(head -c12 /dev/urandom | base64 -w0)
+    else
+        local hash_seed=$MAGLEV_HASH_SEED
+    fi
+    log -f ${CURRENT_FUNC} "Cilium maglev hashseed is: ${hash_seed}"
+    set -u
+    #############################################################
+    local control_plane_address=$(ssh -q ${CONTROL_PLANE_NODE} <<< """
+        ip -o -4 addr show $CONTROLPLANE_INGRESS_CLUSTER_INTER | awk '{print \$4}' | cut -d/ -f1
+    """)
+
+    local control_plane_subnet=$(ssh -q "${CONTROL_PLANE_NODE}" """
+        # Use 'ip' to show the IPv4 address and CIDR of the given interface
+
+        ip -o -f inet addr show ${CONTROLPLANE_INGRESS_CLUSTER_INTER} | awk '{print \$4}' | while read cidr; do
+            # Split the CIDR into IP and prefix (e.g., 10.10.10.11 and 24)
+            IFS=/ read ip prefix <<< \"\$cidr\"
+            # Split the IP address into its 4 octets
+            IFS=. read -r o1 o2 o3 o4 <<< \"\$ip\"
+
+            # Generate the subnet mask as a 32-bit integer, then mask out unused bits
+            mask=\$(( 0xFFFFFFFF << (32 - prefix) & 0xFFFFFFFF ))
+
+            # Extract each octet of the subnet mask
+            m1=\$(( (mask >> 24) & 0xFF ))
+            m2=\$(( (mask >> 16) & 0xFF ))
+            m3=\$(( (mask >> 8) & 0xFF ))
+            m4=\$(( mask & 0xFF ))
+
+            # Calculate the network address by bitwise ANDing IP and subnet mask
+            n1=\$(( o1 & m1 ))
+            n2=\$(( o2 & m2 ))
+            n3=\$(( o3 & m3 ))
+            n4=\$(( o4 & m4 ))
+
+            # Output the resulting network address in CIDR notation
+            echo \"\$n1.\$n2.\$n3.\$n4/\$prefix\"
+        done
+    """)
+    log -f ${CURRENT_FUNC} "Cilium native routing subnet is: ${control_plane_subnet}"
+    #############################################################
+    log -f ${CURRENT_FUNC} "sending cilium values to control plane node: ${CONTROL_PLANE_NODE}"
+    scp -q ./cilium/values.yaml ${CONTROL_PLANE_NODE}:/tmp/
+    #############################################################
+    log -f ${CURRENT_FUNC} "Upgrading cilium to version: '${CILIUM_VERSION}' using cilium cli"
+    ssh -q $CONTROL_PLANE_NODE <<< """
+        #############################################################
+        echo \" upgrading cilium with command:
+            cilium upgrade --version $CILIUM_VERSION \
+            --namespace $CILIUM_NS \
+            --set cluster.name="$CLUSTER_NAME" \
+            --set ipv4NativeRoutingCIDR=${control_plane_subnet} \
+            --set operator.replicas=$OPERATOR_REPLICAS \
+            --set hubble.relay.replicas=$HUBBLE_RELAY_REPLICAS \
+            --set hubble.ui.replicas=$HUBBLE_UI_REPLICAS \
+            --set maglev.hashSeed=\"${hash_seed}\" \
+            -f /tmp/values.yaml
+        \"
+        OUTPUT=\$(cilium upgrade --version $CILIUM_VERSION \
+            --namespace $CILIUM_NS \
+            --set ipv4NativeRoutingCIDR=${control_plane_subnet} \
+            --set operator.replicas=$OPERATOR_REPLICAS \
+            --set hubble.relay.replicas=$HUBBLE_RELAY_REPLICAS \
+            --set hubble.ui.replicas=$HUBBLE_UI_REPLICAS \
+            --set maglev.hashSeed=\"${hash_seed}\" \
+            -f /tmp/values.yaml \
+            2>&1)
+        echo \$OUTPUT
+        kubectl rollout restart -n $CILIUM_NS ds/cilium ds/cilium-envoy deployment/cilium-operator deployment/coredns deployment/hubble-relay > /dev/null 2>&1 || true
+        #############################################################
+        sleep 30
+        # log -f $CURRENT_FUNC 'Removing default cilium ingress.'
+        # kubectl delete svc -n $CILIUM_NS cilium-ingress >/dev/null 2>&1 || true
+        #############################################################
+    """
+    #############################################################
+    if [ $? -eq 0 ]; then
+        log -f ${CURRENT_FUNC} "Finished upgrading cilium."
+    else
+        return 1
+    fi
+    #############################################################
+}
 
 
-# #################################################################
-# if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
-#     reset_cluster
-#     rook_ceph_cleanup
-#     log -f "main" "Cluster reset completed."
-# fi
+install_cilium_observability() {
+    ###################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ###################################################################
+    log -f ${CURRENT_FUNC} "Started cilium observability installation on the cluster"
 
-# if [ "$INSTALL_CLUSTER" = true ]; then
-#     #################################################################
-#     if [ "$PREREQUISITES" == "true" ]; then
-#         #################################################################
-#         if ! prerequisites_requirements; then
-#             log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
-#             exit 1
-#         fi
-#         #################################################################
-#     else
-#         log -f "main" "Cluster prerequisites have been skipped"
-#     fi
-#     ################################################################
-#     if ! install_cluster; then
-#         log -f main "ERROR" "An error occurred while deploying the cluster"
-#         exit 1
-#     fi
-#     ################################################################
-#     join_cluster
-#     ################################################################
-#     if ! install_gateway_CRDS; then
-#         log -f main "ERROR" "An error occurred while deploying gateway CRDS"
-#         exit 1
-#     fi
-#     ################################################################
-#     if [ "$PREREQUISITES" == "true" ]; then
-#         if ! install_cilium_prerequisites; then
-#             log -f main "ERROR" "An error occurred while installing cilium prerequisites"
-#             exit 1
-#         fi
-#     fi
-#     ################################################################
-#     if ! install_cilium; then
-#         log -f main "ERROR" "An error occurred while installing cilium"
-#         exit 1
-#     fi
-#     #################################################################
-#     if ! install_gateway; then
-#         log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
-#         exit 1
-#     fi
-#     #################################################################
-#     if ! install_kyverno; then
-#          log -f "main" "WARNING" "Failed to deploy kyverno on the cluster, cluster pods wont be able to reach internet if nodes are behind a proxy..."
-#     fi
-#     ##############################################################
-#     if ! restart_cilium; then
-#         log -f "main" "ERROR" "Failed to start cilium service."
-#         exit 1
-#     fi
+    log -f ${CURRENT_FUNC} "Patching cilium config map to enable observability on prometheus port: $PROMETHEUS_LISTEN_PORT"
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        # create tmp dir for chart
+        set -euo pipefail
+        kubectl patch -n ${CILIUM_NS} configmap cilium-config --type merge --patch '{\"data\":{\"prometheus-serve-addr\":\":$PROMETHEUS_LISTEN_PORT\"}}' ${VERBOSE}
+    """
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to patch cilium config map"
+        return 1
+    fi
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Installing cilium prometheus service monitor"
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        set -euo pipefail
+        kubectl delete -f https://raw.githubusercontent.com/cilium/cilium/${CILIUM_VERSION}/examples/kubernetes/addons/prometheus/monitoring-example.yaml > /dev/null 2>&1 || true
+
+        kubectl apply -f https://raw.githubusercontent.com/cilium/cilium/${CILIUM_VERSION}/examples/kubernetes/addons/prometheus/monitoring-example.yaml ${VERBOSE}
+    """
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to install cilium prometheus service monitor"
+        return 1
+    fi
+    ##################################################################
+    local chart_name="cilium"
+    ##################################################################
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        # create tmp dir for chart
+        rm -rf /tmp/$chart_name &&  mkdir -p /tmp/$chart_name
+    """
+    ##################################################################
+    log -f ${CURRENT_FUNC} "sending $chart_name http-routes.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    scp -q ./$chart_name/http-routes.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
+    ###################################################################
+    log -f ${CURRENT_FUNC} "Deploying http-routes for cilium Grafana ingress"
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        kubectl apply -f /tmp/$chart_name/http-routes.yaml ${VERBOSE}
+    """
+    ###################################################################
+    log -f ${CURRENT_FUNC} "Finished cilium observability installation on the cluster"
+}
+
+
+
+#################################################################
+if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
+    reset_cluster
+    rook_ceph_cleanup
+    log -f "main" "Cluster reset completed."
+    exit 0
+fi
+
+
+#################################################################
+if [ "$INSTALL_CLUSTER" = true ]; then
+    if [ "$PREREQUISITES" = true ]; then
+        #################################################################
+        if ! provision_deployer; then
+            log -f "main" "ERROR" "An error occurred while provisioning the deployer node."
+            exit 1
+        fi
+        log -f "main" "Deployer node provisioned successfully."
+        #################################################################
+        if ! deploy_hostsfile; then
+            log -f "main" "ERROR" "An error occured while updating the hosts files."
+            exit 1
+        fi
+        log -f "main" "Hosts files updated successfully."
+        #################################################################
+    fi
+fi
+
+
+if [ "$INSTALL_CLUSTER" = true ]; then
+    ################################################################
+    if [ "$PREREQUISITES" == "true" ]; then
+        #################################################################
+        if ! prerequisites_requirements; then
+            log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
+            exit 1
+        fi
+        #################################################################
+    else
+        log -f "main" "Cluster prerequisites have been skipped"
+    fi
+    ################################################################
+    if ! install_cluster; then
+        log -f main "ERROR" "An error occurred while deploying the cluster"
+        exit 1
+    fi
+    ################################################################
+    join_cluster
+    ################################################################
+    if ! install_gateway_CRDS; then
+        log -f main "ERROR" "An error occurred while deploying gateway CRDS"
+        exit 1
+    fi
+    ################################################################
+    if [ "$PREREQUISITES" == "true" ]; then
+        if ! install_cilium_prerequisites; then
+            log -f main "ERROR" "An error occurred while installing cilium prerequisites"
+            exit 1
+        fi
+    fi
+    ################################################################
+    if ! install_cilium; then
+        log -f main "ERROR" "An error occurred while installing cilium"
+        exit 1
+    fi
+    #################################################################
+    if ! install_gateway; then
+        log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
+        exit 1
+    fi
+    #################################################################
+    if ! install_kyverno; then
+         log -f "main" "WARNING" "Failed to deploy kyverno on the cluster, cluster pods wont be able to reach internet if nodes are behind a proxy..."
+    fi
     ################################################################
     if ! install_cilium_observability; then
         log -f "main" "WARNING" "Failed to install cilium observability on the cluster"
     fi
-    #################################################################
-# fi
+    ################################################################
+    if ! restart_cilium; then
+        log -f "main" "ERROR" "Failed to start cilium service."
+        exit 1
+    fi
+    #############################################################
+fi
 
 
-# if [ "$INSTALL_CLUSTER" = true ]; then
-#     # ##################################################################
-#     # if ! install_rookceph; then
-#     #     log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
-#     #     exit 1
-#     # fi
-#     # ##################################################################
-#     # if ! install_rookceph_cluster; then
-#     #     log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
-#     #     exit 1
-#     # fi
-# fi
+if [ "$UPGRADE_CILIUM" = true ]; then
+    if ! upgrade_cilium; then
+        log -f "main" "ERROR" "Failed to upgrade cilium on the cluster"
+        exit 1
+    fi
+fi
 
-# if [ $PRINT_ROOK_PASSWORD == "true" ]; then
-#     log -f "rook-ceph" "Generating admin password for rook-ceph dashboard"
-#     rook_ceph_dasbharod_password=$(ssh -q "${CONTROL_PLANE_NODE}" <<< """
-#         kubectl -n $ROOKCEPH_NS get secret rook-ceph-dashboard-password -o jsonpath=\"{['data']['password']}\" | base64 --decode && echo
-#     """)
-#     log -f "rook-ceph" "admin password for rook-ceph dashboard password is: '$rook_ceph_dasbharod_password'"
-# fi
+if [ "$INSTALL_CLUSTER" = true ]; then
+    ##################################################################
+    if ! install_rookceph; then
+        log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
+        exit 1
+    fi
+    ##################################################################
+    if ! install_rookceph_cluster; then
+        log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
+        exit 1
+    fi
+fi
+
+
+################################################################
+if [ "$PRINT_ROOK_PASSWORD" == "true" ]; then
+    log -f "rook-ceph" "Generating admin password for rook-ceph dashboard"
+    rook_ceph_dasbharod_password=$(ssh -q "${CONTROL_PLANE_NODE}" <<< """
+        kubectl -n $ROOKCEPH_NS get secret rook-ceph-dashboard-password -o jsonpath=\"{['data']['password']}\" | base64 --decode && echo
+    """)
+    log -f "rook-ceph" "admin password for rook-ceph dashboard password is: '$rook_ceph_dasbharod_password'"
+fi
+################################################################
 
 
 # if [ "$INSTALL_CLUSTER" = true ]; then
