@@ -220,6 +220,8 @@ cni:
 # -- Enable installation of PodCIDR routes between worker
 # nodes if worker nodes share a common L2 network segment.
 operator:
+  prometheus:
+    enabled: true
   securityContext:
     privileged: true
   enabled: true
@@ -283,6 +285,22 @@ securityContext:
 hubble:
   enabled: true
   debug: true
+  metrics:
+    enabled:
+    - dns
+    - drop
+    - tcp
+    - flow
+    - port-distribution
+    - icmp
+    - httpV2:exemplars=true;labelsContext=source_ip
+    - source_namespace
+    - source_workload
+    - destination_ip
+    - destination_namespace
+    - destination_workload
+    - traffic_direction
+    enableOpenMetrics: true
   securityContext:
     # -- User to run the pod with
     # runAsUser: 0
@@ -455,7 +473,7 @@ encryption:
 #######################################################################
 # # Enable Prometheus metrics
 prometheus:
- enabled: false
+ enabled: true
 
 dashboards:
   enabled: true
