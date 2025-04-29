@@ -17,7 +17,7 @@ STRICT_HOSTKEYS=0
 RESET_CLUSTER_ARG=0
 CLUSTER_NODES=
 INSTALL_CLUSTER=
-
+PRINT_ROOK_PASSWORD=
 set -u # fail on unset variables
 
 ####################################################################
@@ -57,6 +57,10 @@ while [[ $# -gt 0 ]]; do
         -p|--sudo-password)
             SUDO_PASSWORD="$2"
             shift 2
+            ;;
+        --print-rookceph-password)
+            PRINT_ROOK_PASSWORD=true
+            shift
             ;;
         -v)
             VERBOSE_LEVEL=1
@@ -2846,12 +2850,6 @@ install_rookceph_cluster() {
             kubectl apply -f /tmp/rook-ceph-cluster/http-routes.yaml ${VERBOSE}
         """
 
-        log -f "${CURRENT_FUNC}" "Generating admin password for rook-ceph dashboard"
-        rook_ceph_dasbharod_password=$(ssh -q ${CONTROL_PLANE_NODE} <<< """
-            kubectl -n $ROOKCEPH_NS get secret rook-ceph-dashboard-password -o jsonpath=\"{['data']['password']}\" | base64 --decode && echo
-        """)
-        log -f "${CURRENT_FUNC}" "admin password for rook-ceph dashboard password is: $rook_ceph_dasbharod_password"
-
         log -f ${CURRENT_FUNC} "Removing completed pods"
         kubectl delete pods -n ${ROOKCEPH_NS} --field-selector=status.phase=Succeeded
 
@@ -2882,6 +2880,7 @@ install_kafka() {
         # create tmp dir for kafka
         rm -rf /tmp/kafka &&  mkdir -p /tmp/kafka
     """
+    return 0
     ##################################################################
     log -f ${CURRENT_FUNC} "sending kafka values.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
     scp -q ./kafka/values.yaml $CONTROL_PLANE_NODE:/tmp/kafka/
@@ -3026,6 +3025,61 @@ install_kafka_ui() {
     ##################################################################
 }
 
+install_kyverno() {
+    ###################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ###################################################################
+    local chart_name="kyverno"
+    local chart_url=" https://kyverno.github.io/kyverno/"
+    ###################################################################
+    log -f ${CURRENT_FUNC} "Started $chart_name helm chart prerequisites"
+    helm_chart_prerequisites ${CONTROL_PLANE_NODE} "${chart_name}" "${chart_url}" "$KYVERNO_NS"
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to install $chart_name helm chart prerequisites"
+        return 1
+    fi
+    log -f ${CURRENT_FUNC} "Finished $chart_name helm chart prerequisites"
+    ##################################################################
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        # create tmp dir for chart
+        rm -rf /tmp/$chart_name &&  mkdir -p /tmp/$chart_name
+    """
+    ##################################################################
+    log -f ${CURRENT_FUNC} "sending $chart_name values.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    scp -q ./$chart_name/values.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
+    ##################################################################
+    log -f ${CURRENT_FUNC} "sending $chart_name http-proxy.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    scp -q ./$chart_name/http-proxy.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Installing $chart_name Helm chart"
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        output=\$(helm install $chart_name $chart_name/$chart_name \
+            --namespace $KYVERNO_NS \
+            --create-namespace \
+            --version $KYVERNO_VERSION \
+            -f /tmp/$chart_name/values.yaml \
+            2>&1)
+            # Check if the Helm install command was successful
+        if [ ! \$? -eq 0 ]; then
+            log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install ${chart_name}:\n\t\${output}\"
+            exit 1
+        fi
+    """
+    if [ $? -eq 0 ]; then
+        log -f "${CURRENT_FUNC}" "Finished installing $chart_name on namespace: '${KYVERNO_NS}'"
+    else
+        log -f "${CURRENT_FUNC}" "ERROR" "Failed to install $chart_name"
+        return 1
+    fi
+    ##################################################################
+    log -f ${CURRENT_FUNC} "applying http-proxy for $chart_name ingress"
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        kubectl apply -f /tmp/$chart_name/http-proxy.yaml ${VERBOSE}
+    """
+    ##################################################################
+}
+
+# #################################################################
 # if [ "$INSTALL_CLUSTER" = true ]; then
 #     if [ "$PREREQUISITES" = true ]; then
 #         #################################################################
@@ -3093,12 +3147,20 @@ install_kafka_ui() {
 #         log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
 #         exit 1
 #     fi
+#     #################################################################
+#     if ! install_kyverno; then
+#          log -f "main" "WARNING" "Failed to deploy kyverno on the cluster, cluster pods wont be able to reach internet if nodes are behind a proxy..."
+#     fi
 #     ##############################################################
 #     if ! restart_cilium; then
 #         log -f "main" "ERROR" "Failed to start cilium service."
 #         exit 1
 #     fi
-#     ################################################################
+    ################################################################
+    if ! install_cilium_observability; then
+        log -f "main" "WARNING" "Failed to install cilium observability on the cluster"
+    fi
+    #################################################################
 # fi
 
 
@@ -3113,17 +3175,29 @@ install_kafka_ui() {
 #     #     log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
 #     #     exit 1
 #     # fi
-#     # ################################################################
-#     # if [ "$PREREQUISITES" == "true" ]; then
-#     #     if ! install_certmanager_prerequisites; then
-#     #         log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
-#     #         exit 1
-#     #     fi
-#     # fi
-#     # if ! install_certmanager; then
-#     #     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
-#     #     exit 1
-#     # fi
+# fi
+
+# if [ $PRINT_ROOK_PASSWORD == "true" ]; then
+#     log -f "rook-ceph" "Generating admin password for rook-ceph dashboard"
+#     rook_ceph_dasbharod_password=$(ssh -q "${CONTROL_PLANE_NODE}" <<< """
+#         kubectl -n $ROOKCEPH_NS get secret rook-ceph-dashboard-password -o jsonpath=\"{['data']['password']}\" | base64 --decode && echo
+#     """)
+#     log -f "rook-ceph" "admin password for rook-ceph dashboard password is: '$rook_ceph_dasbharod_password'"
+# fi
+
+
+# if [ "$INSTALL_CLUSTER" = true ]; then
+#     ################################################################
+#     if [ "$PREREQUISITES" == "true" ]; then
+#         if ! install_certmanager_prerequisites; then
+#             log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
+#             exit 1
+#         fi
+#     fi
+#     if ! install_certmanager; then
+#         log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
+#         exit 1
+#     fi
 #     # ##################################################################
 #     # vault_uninstall
 #     # ##################################################################
@@ -3140,6 +3214,7 @@ install_kafka_ui() {
 #     ##################################################################
 #     # install_akhq
 #     install_kafka_ui
+#     ##################################################################
 # fi
 
 log -f "main" "INFO" "Workload finished"
