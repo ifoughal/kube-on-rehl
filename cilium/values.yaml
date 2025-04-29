@@ -63,7 +63,8 @@ envoy:
   enabled: true
   # dnsPolicy: ~
   # dnsPolicy: "None"
-  dnsPolicy: ~  # "Default"
+  # dnsPolicy: ~  # "Default"
+  dnsPolicy: ClusterFirst
   # dnsConfig:
   #   nameservers:
   #   - 10.96.0.101 # this is the default kube-dns ip
@@ -98,10 +99,10 @@ envoy:
   # ref: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
   resources:
     limits:
-      cpu: 4000m
+      cpu: 10000m
       memory: 6Gi
     requests:
-      cpu: 500m
+      cpu: 1000m
       memory: 1Gi
   securityContext:
     privileged: true
@@ -181,8 +182,8 @@ resources:
     cpu: 10000m
     memory: 10Gi
   requests:
-    cpu: 100m
-    memory: 512Mi
+    cpu: 1000m
+    memory: 1Gi
 
 cni:
   install: true
@@ -223,7 +224,8 @@ operator:
     privileged: true
   enabled: true
   # dnsPolicy: "None"
-  dnsPolicy: "Default"
+  # dnsPolicy: "Default"
+  dnsPolicy: ClusterFirst
   debug:
     enabled: true
   # We have  3 nodes
@@ -237,8 +239,8 @@ operator:
       memory: 2Gi
 #############################################################################################################
 # dnsPolicy: "None"
-dnsPolicy: "Default"
-
+# dnsPolicy: "Default"
+dnsPolicy: ClusterFirst
 
 dnsProxy:
   # -- Timeout (in seconds) when closing the connection between the DNS proxy and the upstream server. If set to 0, the connection is closed immediately (with TCP RST). If set to -1, the connection is closed asynchronously in the background.
@@ -279,6 +281,8 @@ securityContext:
   privileged: true
 #############################################################################################################
 hubble:
+  enabled: true
+  debug: true
   securityContext:
     # -- User to run the pod with
     # runAsUser: 0
@@ -294,8 +298,6 @@ hubble:
     #     group: "cert-manager.io" # Reference to cert-manager's issuer
     #     kind: "ClusterIssuer"
     #     name: "ca-issuer"
-  enabled: true
-  debug: true
   listenAddress: ":4244"
   peerService:
     targetPort: 4244
@@ -432,7 +434,7 @@ maglev:
 # # TODO TS why it doesn't go up...
 encryption:
 # -- Enable transparent network encryption.
-  enabled: true
+  enabled: false
   # -- Encryption method. Can be either ipsec or wireguard.
   type: wireguard
   # -- Enable encryption for pure node to node traffic.
