@@ -41,6 +41,8 @@ gatewayAPI:
 #############################################################################################################
 # mandatory for L4/L7 LB: (no tunelling)
 routingMode: native
+# No tunelling, native routing only
+tunnelProtocol: ""
 #############################################################################################################
 # TO BE TESTER https://github.com/cilium/cilium/issues/38123
 # l2announcements:
@@ -135,8 +137,7 @@ envoy:
 # of calico's cluster mesh
 autoDirectNodeRoutes: true
 
-# No tunelling, native routing only
-tunnelProtocol: ""
+
 
 # -- Configure the eBPF-based ip-masq-agent
 ipMasqAgent:
@@ -220,11 +221,38 @@ cni:
 # -- Enable installation of PodCIDR routes between worker
 # nodes if worker nodes share a common L2 network segment.
 operator:
+  enabled: true
   prometheus:
     enabled: true
+    port: 9963
+    # metricsService: false
+    # serviceMonitor:
+    #   # -- Enable service monitors.
+    #   # This requires the prometheus CRDs to be available (see https://github.com/prometheus-operator/prometheus-operator/blob/main/example/prometheus-operator-crd/monitoring.coreos.com_servicemonitors.yaml)
+    #   enabled: false
+    #   # -- Labels to add to ServiceMonitor cilium-operator
+    #   labels: {}
+    #   # -- Annotations to add to ServiceMonitor cilium-operator
+    #   annotations: {}
+    #   # -- jobLabel to add for ServiceMonitor cilium-operator
+    #   jobLabel: ""
+    #   # -- Interval for scrape metrics.
+    #   interval: "10s"
+    #   # @schema
+    #   # type: [null, array]
+    #   # @schema
+    #   # -- Relabeling configs for the ServiceMonitor cilium-operator
+    #   relabelings: ~
+    #   # @schema
+    #   # type: [null, array]
+    #   # @schema
+    #   # -- Metrics relabeling configs for the ServiceMonitor cilium-operator
+    #   metricRelabelings: ~
+  dashboards:
+    enabled: true
+    label: grafana_dashboard
   securityContext:
     privileged: true
-  enabled: true
   # dnsPolicy: "None"
   # dnsPolicy: "Default"
   dnsPolicy: ClusterFirst
@@ -284,23 +312,44 @@ securityContext:
 #############################################################################################################
 hubble:
   enabled: true
-  debug: true
+  debug: false
+  enableOpenMetrics: false
+  # Enabling hubble metrics makes hubble-relay crash during init
+  # could he related to L7 policies: https://docs.cilium.io/en/stable/observability/visibility/#proxy-visibility
   metrics:
-    enabled:
-    - dns
-    - drop
-    - tcp
-    - flow
-    - port-distribution
-    - icmp
-    - httpV2:exemplars=true;labelsContext=source_ip
-    - source_namespace
-    - source_workload
-    - destination_ip
-    - destination_namespace
-    - destination_workload
-    - traffic_direction
-    enableOpenMetrics: true
+    enabled: ~
+    # enabled:
+    # # - dns:query;ignoreAAAA
+    # - drop
+    # - tcp
+    # - flow
+    # - icmp
+    # # - http
+    # # - source_namespace
+    # # - source_workload
+    # # - destination_ip
+    # # - destination_namespace
+    # # - destination_workload
+    # # - traffic_direction
+    # # - dns
+    # # - drop
+    # # - tcp
+    # # - flow
+    # # - port-distribution
+    # # - icmp
+    # # - http
+    # # - httpV2:exemplars=true;labelsContext=source_ip
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+    dynamic:
+      enabled: true
+      config:
+        # ---- Name of configmap with configuration that may be altered to reconfigure metric handlers within a running agent.
+        configMapName: cilium-dynamic-metrics-config
+        # ---- True if helm installer should create config map.
+        # Switch to false if you want to self maintain the file content.
+        createConfigMap: true
   securityContext:
     # -- User to run the pod with
     # runAsUser: 0
@@ -322,6 +371,7 @@ hubble:
     clusterDomain: cluster.local
   relay:
     enabled: true
+    rollOutPods: true
     securityContext:
       # readOnlyRootFilesystem: true
       runAsNonRoot: false
@@ -453,11 +503,11 @@ maglev:
 encryption:
 # -- Enable transparent network encryption.
   enabled: false
+  nodeEncryption: true
   # -- Encryption method. Can be either ipsec or wireguard.
   type: wireguard
   # -- Enable encryption for pure node to node traffic.
   # This option is only effective when encryption.type is set to "wireguard".
-  nodeEncryption: true
   # -- Configure the WireGuard Pod2Pod strict mode.
   strictMode:
     # -- Enable WireGuard Pod2Pod strict mode.
