@@ -51,7 +51,7 @@ optimize_dnf() {
 update_path() {
     local CURRENT_NODE=$1
 
-    local NEW_PATH="export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    local NEW_PATH=${2:-"export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
     local ENV_FILE="/etc/environment"
     local BASHRC_FILE="\$HOME/.bashrc"
 
@@ -356,7 +356,7 @@ configure_repos () {
 install_kubetools () {
     ##################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
-    ##################################################################
+    # ##################################################################
     local error_raised=0
     log -f ${CURRENT_FUNC} "WARNING" "cilium must be reinstalled as kubelet will be reinstalled"
     eval "sudo cilium uninstall > /dev/null 2>&1" || true
@@ -382,13 +382,13 @@ install_kubetools () {
         local ip=$(echo "$node" | jq -r '.ip')
         local role=$(echo "$node" | jq -r '.role')
         ##################################################################
-        log -f ${CURRENT_FUNC} "Removing prior installed versions for ${role} node ${hostname}"
+        log -f ${CURRENT_FUNC} "Removing prior installed versions on ${role} node ${hostname}"
         ssh -q ${hostname} <<< """
             sudo dnf remove -y kubelet kubeadm kubectl --disableexcludes=kubernetes > /dev/null 2>&1
             sudo rm -rf /etc/kubernetes
         """
         ##################################################################
-        log -f ${CURRENT_FUNC} "installing k8s tools for ${role} node ${hostname}"
+        log -f ${CURRENT_FUNC} "installing k8s tools on ${role} node ${hostname}"
         ssh -q ${hostname} bash -s <<< """
             set -euo pipefail  # Exit on error
             sudo dnf install -y kubelet-${K8S_MINOR_VERSION} kubeadm-${K8S_MINOR_VERSION} kubectl-${K8S_MINOR_VERSION} --disableexcludes=kubernetes ${VERBOSE}
@@ -402,7 +402,51 @@ install_kubetools () {
         ##################################################################
         log -f ${CURRENT_FUNC} "Adding Kubeadm bash completion"
         add_bashcompletion ${hostname} kubeadm $VERBOSE
+        log -f ${CURRENT_FUNC} "Adding kubectl bash completion"
         add_bashcompletion ${hostname} kubectl $VERBOSE
+        ##################################################################
+        log -f ${CURRENT_FUNC} "installing kubectl Krew on ${role} node ${hostname}"
+        ssh -q ${hostname} <<< """
+            sudo su
+
+            rm -rf /tmp/tmp.*
+            rm -rf \$HOME/.krew/
+
+            cd \"\$(mktemp -d)\"
+            ARCH=amd64
+            OS=\"\$(uname | tr '[:upper:]' '[:lower:]')\"
+            if [ \"\$(uname -m)\" = 'aarch64' ]; then ARCH=arm64; fi
+            KREW="krew-\${OS}_\${ARCH}"
+            curl -fsSLO \"https://github.com/kubernetes-sigs/krew/releases/download/$KREW_VERSION/\${KREW}.tar.gz\"
+            tar zxvf \"\${KREW}.tar.gz\" > /dev/null 2>&1
+            # install krew at local path:
+            export KREW_ROOT='/usr/local/krew'
+            ./\"\${KREW}\" install krew > /dev/null 2>&1
+        """
+        if [ $? -ne 0 ]; then
+            error_raised=1
+            log -f ${CURRENT_FUNC} "WARNING" "Error occurred while installing kubectl Krew on node ${hostname}..."
+            continue  # continue to next node and skip this one
+        else
+            ##################################################################
+            log -f ${CURRENT_FUNC} "updating path for kubectl krew on ${role} node ${hostname}"
+            update_path ${hostname} "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/krew/bin"
+            ##################################################################
+            log -f ${CURRENT_FUNC} "INFO" "Successfully installed kubectl Krew on node ${hostname}"
+        fi
+        # ##################################################################
+        log -f ${CURRENT_FUNC} "installing kubectx on ${role} node ${hostname}"
+        ssh -q ${hostname} <<< """
+            sudo git clone https://github.com/ahmetb/kubectx /opt/kubectx > /dev/null 2>&1
+            sudo ln -sf /opt/kubectx/kubectx /usr/local/bin/kubectx
+            sudo ln -sf /opt/kubectx/kubens /usr/local/bin/kubens
+
+            sudo cp /opt/kubectx/completion/kubectx.bash /etc/bash_completion.d/kubectx
+            sudo cp /opt/kubectx/completion/kubens.bash /etc/bash_completion.d/kubens
+            # with kubectl krew:
+            # kubectl krew install ctx
+            # kubectl krew install ns
+        """
         ##################################################################
     done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
     ##################################################################
@@ -1043,9 +1087,9 @@ cilium_cleanup () {
     # sudo ipvsadm --clear
 
     # echo "✅ Cleanup completed!"
-    log -f TODO WARNING "this must be in a ssh session to control plane"
+    # log -f TODO WARNING "this must be in a ssh session to control plane"
 
-    echo "cleaning up cluster from previous cilium installs"
+    # echo "cleaning up cluster from previous cilium installs"
     ssh -q $CONTROL_PLANE_NODE <<< """
         kubectl delete crd \$(kubectl get crd | grep cilium | awk '{print \$1}')  >/dev/null 2>&1 || true
         for ns in \$(kubectl get ns | grep cilium | awk '{print \$1}'); do
