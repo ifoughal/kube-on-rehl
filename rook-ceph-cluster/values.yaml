@@ -6,7 +6,7 @@ clusterName:
 # Installs a debugging toolbox deployment
 toolbox:
   # -- Enable Ceph debugging pod deployment. See [toolbox](../Troubleshooting/ceph-toolbox.md)
-  enabled: false
+  enabled: true
   # -- Toolbox image, defaults to the image used by the Ceph cluster
   image: #quay.io/ceph/ceph:v19.2.1
   # -- Toolbox tolerations
@@ -15,11 +15,11 @@ toolbox:
   affinity: {}
   # -- Toolbox container security context
   containerSecurityContext:
-    runAsNonRoot: true
-    runAsUser: 2016
-    runAsGroup: 2016
-    capabilities:
-      drop: ["ALL"]
+    runAsNonRoot: false
+    # runAsUser: 2016
+    # runAsGroup: 2016
+    # capabilities:
+    #   drop: ["ALL"]
   # -- Toolbox resources
   resources:
     limits:
