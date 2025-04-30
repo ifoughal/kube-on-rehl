@@ -2729,48 +2729,6 @@ install_rookceph(){
 }
 
 
-# deploy_helm_chart(){
-#     log -f ${CURRENT_FUNC} "Started ${chart_name} helm chart prerequisites"
-#     helm_chart_prerequisites "$CONTROL_PLANE_NODE" "${chart_name}" "${chart_url}" "$ROOKCEPH_NS" "false" "false"
-#     if [ $? -ne 0 ]; then
-#         log -f ${CURRENT_FUNC} "ERROR" "Failed to install ${chart_name} helm chart prerequisites"
-#         return 1
-#     fi
-#     log -f ${CURRENT_FUNC} "Finished ${chart_name} helm chart prerequisites"
-#     ##################################################################
-#     ssh -q ${CONTROL_PLANE_NODE} <<< """
-#         rm -rf /tmp/${chart_name} &&  mkdir -p /tmp/${chart_name}
-#     """
-#     ##################################################################
-#     log -f ${CURRENT_FUNC} "sending ${chart_name} values.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
-#     scp -q ./${chart_name}/values.yaml $CONTROL_PLANE_NODE:/tmp/${chart_name}/
-#     ##################################################################
-#     log -f ${CURRENT_FUNC} "Installing ${chart_name} cluster Helm chart"
-#     ssh -q ${CONTROL_PLANE_NODE} <<< """
-#         output=\$(helm install ${chart_name} ${chart_name}/${chart_name} \
-#             --namespace $ROOKCEPH_NS \
-#             --create-namespace \
-#             --set operatorNamespace=$ROOKCEPH_NS \
-#             --version $ROOKCEPH_VERSION \
-#             -f /tmp/${chart_name}/values.yaml \
-#             2>&1)
-#         echo output: \$output
-#         if [ ! \$? -eq 0 ]; then
-#             log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install ${chart_name}:\n\t\$(printf \"%s\n\" \"\$output\")\"
-#             exit 1
-#         fi
-#         echo \$output
-#     """
-#     if [ $? -eq 0 ]; then
-#         log -f "${CURRENT_FUNC}" "Finished installing ${chart_name} on namespace: '${ROOKCEPH_NS}'"
-#     else
-#         log -f "${CURRENT_FUNC}" "ERROR" "Failed to install ${chart_name}"
-#         return 1
-#     fi
-#     ##################################################################
-# }
-
-
 install_rookceph_cluster() {
     ###################################################################
     CURRENT_FUNC="${FUNCNAME[0]}"
@@ -2805,12 +2763,15 @@ install_rookceph_cluster() {
     """
 
     ssh -q ${CONTROL_PLANE_NODE} <<< """
+        kubectl delete -f https://github.com/csi-addons/kubernetes-csi-addons/releases/download/${CSI_ADDONS_VERSION}/crds.yaml > /dev/null 2>&1 || true
+        kubectl delete -f https://github.com/csi-addons/kubernetes-csi-addons/releases/download/${CSI_ADDONS_VERSION}/rbac.yaml > /dev/null 2>&1 || true
+        kubectl delete -f https://github.com/csi-addons/kubernetes-csi-addons/releases/download/${CSI_ADDONS_VERSION}/setup-controller.yaml > /dev/null 2>&1 || true
+
         kubectl create ns csi-addons-system
-        kubectl create -f https://github.com/csi-addons/kubernetes-csi-addons/releases/download/${CSI_ADDONS_VERSION}/crds.yaml
 
-        kubectl create -f https://github.com/csi-addons/kubernetes-csi-addons/releases/download/${CSI_ADDONS_VERSION}/rbac.yaml
-
-        kubectl create -f https://github.com/csi-addons/kubernetes-csi-addons/releases/download/${CSI_ADDONS_VERSION}/setup-controller.yaml
+        kubectl create -f https://github.com/csi-addons/kubernetes-csi-addons/releases/download/${CSI_ADDONS_VERSION}/crds.yaml ${VERBOSE}
+        kubectl create -f https://github.com/csi-addons/kubernetes-csi-addons/releases/download/${CSI_ADDONS_VERSION}/rbac.yaml ${VERBOSE}
+        kubectl create -f https://github.com/csi-addons/kubernetes-csi-addons/releases/download/${CSI_ADDONS_VERSION}/setup-controller.yaml ${VERBOSE}
     """
     ##################################################################
     # to be able to run ceph-rook on the control plane nodes:
@@ -2875,7 +2836,7 @@ install_rookceph_cluster() {
         exit 1
     """
     if [ $? -ne 0 ]; then
-        log -f "${CURRENT_FUNC}" "ERROR" "Failed to check the status of rook-ceph cluster"
+        log -f "${CURRENT_FUNC}" "ERROR" "rook-ceph cluster is not ready..."
         return 1
     else
         log -f "${CURRENT_FUNC}" "Applying http-route for rook-ceph ingress."
@@ -2883,12 +2844,63 @@ install_rookceph_cluster() {
 
         ssh -q ${CONTROL_PLANE_NODE} <<< """
             kubectl apply -f /tmp/rook-ceph-cluster/http-routes.yaml ${VERBOSE}
+            log -f ${CURRENT_FUNC} 'Removing completed pods'
+            kubectl delete pods -n ${ROOKCEPH_NS} --field-selector=status.phase=Succeeded > /dev/null 2>&1 || true
         """
 
-        log -f ${CURRENT_FUNC} "Removing completed pods"
-        kubectl delete pods -n ${ROOKCEPH_NS} --field-selector=status.phase=Succeeded
-
         log -f "${CURRENT_FUNC}" "Finished deploying rook-ceph cluster on the cluster."
+        return 0
+    fi
+    ##################################################################
+}
+
+
+deploy_helm_chart(){
+    local chart_url=$1
+    local repo_name=$2
+    local chart_name=$3
+    local chart_ns=$4
+    local chart_version=$5
+    local delete_ns=$6
+    local create_ns=$7
+
+    ###################################################################
+    log -f ${CURRENT_FUNC} "Started $chart_name helm chart prerequisites"
+    helm_chart_prerequisites "$CONTROL_PLANE_NODE" "$chart_name" "$repo_name" "$chart_url" "$chart_ns" "$delete_ns" "$create_ns"
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to install $chart_name helm chart prerequisites"
+        return 1
+    fi
+    log -f ${CURRENT_FUNC} "Finished $chart_name helm chart prerequisites"
+    ##################################################################
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        # create tmp dir for chart
+        sudo rm -rf /tmp/$chart_name
+        mkdir -p /tmp/$chart_name
+    """
+    ##################################################################
+    log -f ${CURRENT_FUNC} "sending $chart_name values.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    scp -q ./$chart_name/values.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Installing $chart_name Helm chart"
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        output=\$(helm install $chart_name $repo_name/$chart_name \
+            --version $chart_version \
+            --namespace $chart_ns \
+            --create-namespace \
+            -f /tmp/$chart_name/values.yaml \
+            2>&1)
+            # Check if the Helm install command was successful
+        if [ ! \$? -eq 0 ]; then
+            log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install $chart_name:\n\t\${output}\"
+            exit 1
+        fi
+    """
+    if [ $? -eq 0 ]; then
+        log -f "${CURRENT_FUNC}" "Finished installing $chart_name on namespace: '${chart_ns}'"
+    else
+        log -f "${CURRENT_FUNC}" "ERROR" "Failed to install $chart_name"
+        return 1
     fi
     ##################################################################
 }
@@ -2898,57 +2910,115 @@ install_kafka() {
     ###################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
     ###################################################################
-    log -f ${CURRENT_FUNC} "Started kafka helm chart prerequisites"
-    helm_chart_prerequisites "$CONTROL_PLANE_NODE" "kafka" "https://charts.bitnami.com/bitnami" "$KAFKA_NS" "true" "true"
+    # log -f ${CURRENT_FUNC} "Started Strimzi Cluster Operator installation"
+    # ssh -q ${CONTROL_PLANE_NODE} <<< """
+    # helm install strimzi-cluster-operator oci://quay.io/strimzi-helm/strimzi-kafka-operator
+    # """
+    # log -f ${CURRENT_FUNC} "Finished Strimzi Cluster Operator installation"
+    ###################################################################
+    local chart_url="https://strimzi.io/charts/"
+    local repo_name="strimzi"
+    local chart_name="strimzi-kafka-operator"
+    local chart_ns="$STRIMZI_KAFKA_OPERATOR_NS"
+    local chart_version=$STRIMZI_KAFKA_OPERATOR_VERSION
+    local delete_ns=true
+    local create_ns=false
+
+    ###################################################################
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        kubectl create ns $STRIMZI_KAFKA_NS > /dev/null 2>&1 || true
+    """
+    ###################################################################
+    log -f ${CURRENT_FUNC} "Started $chart_name helm chart prerequisites"
+    helm_chart_prerequisites "$CONTROL_PLANE_NODE" "$chart_name" "$repo_name" "$chart_url" "$chart_ns" "$delete_ns" "$create_ns"
     if [ $? -ne 0 ]; then
         log -f ${CURRENT_FUNC} "ERROR" "Failed to install kafka helm chart prerequisites"
         return 1
     fi
-    log -f ${CURRENT_FUNC} "Finished kafka helm chart prerequisites"
+    log -f ${CURRENT_FUNC} "Finished $chart_name helm chart prerequisites"
     ##################################################################
-    log -f ${CURRENT_FUNC} "removing kafka crds"
     ssh -q ${CONTROL_PLANE_NODE} <<< """
-        kubectl delete crd --selector app=kafka --now=true ${VERBOSE} || true
+        # create tmp dir for chart
+        sudo rm -rf /tmp/$chart_name
+        mkdir -p /tmp/$chart_name
     """
     ##################################################################
+    log -f ${CURRENT_FUNC} "sending $chart_name values.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    scp -q ./$chart_name/values.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
+    ##################################################################
     ssh -q ${CONTROL_PLANE_NODE} <<< """
-        # create tmp dir for kafka
-        rm -rf /tmp/kafka &&  mkdir -p /tmp/kafka
-    """
-    return 0
-    ##################################################################
-    log -f ${CURRENT_FUNC} "sending kafka values.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
-    scp -q ./kafka/values.yaml $CONTROL_PLANE_NODE:/tmp/kafka/
-    ##################################################################
-    log -f ${CURRENT_FUNC} "sending kafka http-routes.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
-    scp -q ./kafka/http-routes.yaml $CONTROL_PLANE_NODE:/tmp/kafka/
-    ##################################################################
-    log -f ${CURRENT_FUNC} "Installing bitnami kafka Helm chart"
-    ssh -q ${CONTROL_PLANE_NODE} <<< """
-        output=\$(helm install kafka kafka/kafka \
-            --namespace $KAFKA_NS \
+        output=\$(helm install $chart_name /tmp/$chart_name/strimzi-kafka-operator-4.0.0.tgz \
+            --version $chart_version \
+            --namespace $chart_ns \
             --create-namespace \
-            --version $KAFKA_VERSION \
-            -f /tmp/kafka/values.yaml \
+            -f /tmp/$chart_name/values.yaml \
             2>&1)
             # Check if the Helm install command was successful
         if [ ! \$? -eq 0 ]; then
-            log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install kafka:\n\t\${output}\"
+            log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install $chart_name:\n\t\${output}\"
             exit 1
         fi
     """
     if [ $? -eq 0 ]; then
-        log -f "${CURRENT_FUNC}" "Finished installing kafka on namespace: '${KAFKA_NS}'"
+        log -f "${CURRENT_FUNC}" "Finished installing $chart_name on namespace: '${chart_ns}'"
     else
-        log -f "${CURRENT_FUNC}" "ERROR" "Failed to install kafka"
+        log -f "${CURRENT_FUNC}" "ERROR" "Failed to install $chart_name"
         return 1
     fi
     ##################################################################
-    # log -f ${CURRENT_FUNC} "applying http-routes for kafka ingress"
+    return 0
+    ###################################################################
+    #  BITNAMI CHART
+    # log -f ${CURRENT_FUNC} "Started kafka helm chart prerequisites"
+    # helm_chart_prerequisites "$CONTROL_PLANE_NODE" "kafka" "https://charts.bitnami.com/bitnami" "$KAFKA_NS" "true" "true"
+    # if [ $? -ne 0 ]; then
+    #     log -f ${CURRENT_FUNC} "ERROR" "Failed to install kafka helm chart prerequisites"
+    #     return 1
+    # fi
+    # log -f ${CURRENT_FUNC} "Finished kafka helm chart prerequisites"
+    # ##################################################################
+    # log -f ${CURRENT_FUNC} "removing kafka crds"
     # ssh -q ${CONTROL_PLANE_NODE} <<< """
-    #     kubectl apply -f /tmp/kafka/http-routes.yaml ${VERBOSE}
+    #     kubectl delete crd --selector app=kafka --now=true ${VERBOSE} || true
     # """
-    ##################################################################
+    # ##################################################################
+    # ssh -q ${CONTROL_PLANE_NODE} <<< """
+    #     # create tmp dir for kafka
+    #     rm -rf /tmp/kafka &&  mkdir -p /tmp/kafka
+    # """
+    # ##################################################################
+    # log -f ${CURRENT_FUNC} "sending kafka values.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    # scp -q ./kafka/values.yaml $CONTROL_PLANE_NODE:/tmp/kafka/
+    # ##################################################################
+    # log -f ${CURRENT_FUNC} "sending kafka http-routes.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    # scp -q ./kafka/http-routes.yaml $CONTROL_PLANE_NODE:/tmp/kafka/
+    # ##################################################################
+    # log -f ${CURRENT_FUNC} "Installing bitnami kafka Helm chart"
+    # ssh -q ${CONTROL_PLANE_NODE} <<< """
+    #     output=\$(helm install kafka kafka/kafka \
+    #         --namespace $KAFKA_NS \
+    #         --create-namespace \
+    #         --version $KAFKA_VERSION \
+    #         -f /tmp/kafka/values.yaml \
+    #         2>&1)
+    #         # Check if the Helm install command was successful
+    #     if [ ! \$? -eq 0 ]; then
+    #         log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install kafka:\n\t\${output}\"
+    #         exit 1
+    #     fi
+    # """
+    # if [ $? -eq 0 ]; then
+    #     log -f "${CURRENT_FUNC}" "Finished installing kafka on namespace: '${KAFKA_NS}'"
+    # else
+    #     log -f "${CURRENT_FUNC}" "ERROR" "Failed to install kafka"
+    #     return 1
+    # fi
+    # ##################################################################
+    # # log -f ${CURRENT_FUNC} "applying http-routes for kafka ingress"
+    # # ssh -q ${CONTROL_PLANE_NODE} <<< """
+    # #     kubectl apply -f /tmp/kafka/http-routes.yaml ${VERBOSE}
+    # # """
+    # ##################################################################
     log -f ${CURRENT_FUNC} "Finished deploying kafka on the cluster."
 }
 
@@ -3260,7 +3330,6 @@ install_cilium_observability() {
 }
 
 
-
 #################################################################
 if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
     reset_cluster
@@ -3335,8 +3404,9 @@ if [ "$INSTALL_CLUSTER" = true ]; then
     if ! install_kyverno; then
          log -f "main" "WARNING" "Failed to deploy kyverno on the cluster, cluster pods wont be able to reach internet if nodes are behind a proxy..."
     fi
-    ################################################################
+    ###############################################################
     if ! install_cilium_observability; then
+        # https://github.com/cilium/cilium/tree/v1.17.3/examples/kubernetes/addons/prometheus
         log -f "main" "WARNING" "Failed to install cilium observability on the cluster"
     fi
     ################################################################
@@ -3344,11 +3414,12 @@ if [ "$INSTALL_CLUSTER" = true ]; then
         log -f "main" "ERROR" "Failed to start cilium service."
         exit 1
     fi
-    #############################################################
+    ############################################################
 fi
 
 
 if [ "$UPGRADE_CILIUM" = true ]; then
+    # TODO: https://docs.cilium.io/en/stable/operations/upgrade/
     if ! upgrade_cilium; then
         log -f "main" "ERROR" "Failed to upgrade cilium on the cluster"
         exit 1
@@ -3380,36 +3451,36 @@ fi
 ################################################################
 
 
-# if [ "$INSTALL_CLUSTER" = true ]; then
-#     ################################################################
-#     if [ "$PREREQUISITES" == "true" ]; then
-#         if ! install_certmanager_prerequisites; then
-#             log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
-#             exit 1
-#         fi
-#     fi
-#     if ! install_certmanager; then
-#         log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
-#         exit 1
-#     fi
-#     # ##################################################################
-#     # vault_uninstall
-#     # ##################################################################
-#     # ##################################################################
-#     # if ! install_vault; then
-#     #     log -f "main" "ERROR" "Failed to install longhorn on the cluster"
-#     #     exit 1
-#     # fi
-#     ##################################################################
-#     if ! install_kafka; then
-#         log -f "main" "ERROR" "Failed to install kafka on the cluster"
-#         exit 1
-#     fi
-#     ##################################################################
-#     # install_akhq
-#     install_kafka_ui
-#     ##################################################################
-# fi
+if [ "$INSTALL_CLUSTER" = true ]; then
+    # ################################################################
+    # if [ "$PREREQUISITES" == "true" ]; then
+    #     if ! install_certmanager_prerequisites; then
+    #         log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
+    #         exit 1
+    #     fi
+    # fi
+    # if ! install_certmanager; then
+    #     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
+    #     exit 1
+    # fi
+    # # ##################################################################
+    # # vault_uninstall
+    # # ##################################################################
+    # # ##################################################################
+    # if ! install_vault; then
+    #     log -f "main" "ERROR" "Failed to install longhorn on the cluster"
+    #     exit 1
+    # fi
+    ##################################################################
+    if ! install_kafka; then
+        log -f "main" "ERROR" "Failed to install kafka on the cluster"
+        exit 1
+    fi
+    ##################################################################
+    # install_akhq
+    # install_kafka_ui
+    ##################################################################
+fi
 
 log -f "main" "INFO" "Workload finished"
 exit 0
@@ -3417,10 +3488,15 @@ exit 0
 
 
 
+# TODO : kubetools to include:
+# https://www.portainer.io/
 
+# https://k8slens.dev/   > https://docs.k8slens.dev/getting-started/install-lens/#install-lens-desktop-from-the-rpm-repository
 
-
-
+# https://spacelift.io/blog/argocd
+# https://argoproj.github.io/rollouts/
+# https://github.com/stakater/Reloader
+# https://github.com/kubernetes/dashboard
 
 
 ################################################################
