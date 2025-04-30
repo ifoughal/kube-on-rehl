@@ -469,9 +469,8 @@ csi:
   # -- Retry period in seconds the LeaderElector clients should wait between tries of actions.
   # @default -- `26s`
   csiLeaderElectionRetryPeriod:
-
   csiAddons:
-    enabled: true
+    enabled: false
   nfs:
     enabled: true
   topology:
