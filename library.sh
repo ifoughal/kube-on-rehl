@@ -535,18 +535,19 @@ helm_chart_prerequisites () {
     ##################################################################
     local control_plane_host=$1
     local CHART_NAME=$2
-    local CHART_REPO=$3
-    local CHART_NS=${4:-"default"}
-    local DELETE_NS=${5:-"false"}
-    local CREATE_NS=${6:-"false"}
-    local timeout=${7:-"10s"}
-    local sleep_time=${8:-"15s"}
+    local REPO_NAME=$3
+    local CHART_URL=$4
+    local CHART_NS=${5:-"default"}
+    local DELETE_NS=${6:-"false"}
+    local CREATE_NS=${7:-"false"}
+    local timeout=${8:-"10s"}
+    local sleep_time=${9:-"15s"}
 
     ##################################################################
     ssh -q ${control_plane_host} <<< """
         set -euo pipefail
-        log -f \"${CURRENT_FUNC}\" \"Adding '$CHART_NAME' repo to Helm\"
-        helm repo add ${CHART_NAME} $CHART_REPO --force-update ${VERBOSE}
+        log -f \"${CURRENT_FUNC}\" \"Adding '$REPO_NAME' repo to Helm\"
+        helm repo add ${REPO_NAME} $CHART_URL --force-update ${VERBOSE}
         helm repo update ${VERBOSE}
         ##################################################################
         log -f \"${CURRENT_FUNC}\" \"uninstalling and ensuring the cluster is cleaned from $CHART_NAME\"
