@@ -1362,7 +1362,7 @@ install_cilium () {
         cilium uninstall --namespace $CILIUM_NS > /dev/null 2>&1 || true
         helm uninstall --namespace $CILIUM_NS cilium > /dev/null 2>&1 || true
     """
-    helm_chart_prerequisites ${CONTROL_PLANE_NODE} "cilium" "https://helm.cilium.io" "$CILIUM_NS" "false" "false"
+    helm_chart_prerequisites ${CONTROL_PLANE_NODE} "cilium" "cilium" "https://helm.cilium.io" "$CILIUM_NS" "false" "false"
     if [ $? -ne 0 ]; then
         log -f ${CURRENT_FUNC} "ERROR" "Failed to install cilium helm chart prerequisites"
         return 1
@@ -1683,8 +1683,36 @@ restart_cilium() {
                     > /dev/null 2>&1 || true
             """
             #################################################################
+            echo refactor this:
+            exit 1
+            # Live polling loop: max $sleep_total seconds
+            log -f $CURRENT_FUNC "Waiting up to ${sleep_total}s for Cilium to recover (polling every ${sleep_interval}s)..."
+            local waited=0
+            while [ $waited -lt $sleep_total ]; do
+                ssh -q ${CONTROL_PLANE_NODE} <<< """
+                    CILIUM_STATUS=\$(cilium status | tr -d '\0')
+
+                    if echo "\$CILIUM_STATUS" | grep -qi 'error'; then
+                        exit 1
+                    else
+                        exit 0
+                    fi
+                """
+                if [ $? -eq 0 ]; then
+                    log -f ${CURRENT_FUNC} "Cilium became ready after ${waited}s"
+                    return 0
+                fi
+
+                sleep $sleep_interval
+                waited=$((waited + sleep_interval))
+            done
+            log -f ${CURRENT_FUNC} "Cilium still not ready after ${sleep_total}s"
+
         fi
         #################################################################
+        echo "refactor this"
+        exit 1
+        # to be repalced with live probe
         log -f $CURRENT_FUNC "Sleeping for $sleep_timer seconds to allow cilium to scale up..."
         sleep $sleep_timer
         #################################################################
@@ -1849,7 +1877,7 @@ install_certmanager () {
     CURRENT_FUNC=${FUNCNAME[0]}
     ##################################################################
     log -f ${CURRENT_FUNC} "Started cert-manager helm chart prerequisites"
-    helm_chart_prerequisites "$CONTROL_PLANE_NODE" "cert-manager" "https://charts.jetstack.io" "$CERTMANAGER_NS" "true" "true"
+    helm_chart_prerequisites "$CONTROL_PLANE_NODE" "cert-manager" "jetstack" "https://charts.jetstack.io" "$CERTMANAGER_NS" "true" "true"
     if [ $? -ne 0 ]; then
         log -f ${CURRENT_FUNC} "ERROR" "Failed to install cert-manager helm chart prerequisites"
         return 1
@@ -1952,7 +1980,7 @@ install_longhorn_prerequisites() {
     fi
     ##################################################################
     log -f ${CURRENT_FUNC} "Started longhorn helm chart prerequisites"
-    helm_chart_prerequisites "$CONTROL_PLANE_NODE" "longhorn" " https://charts.longhorn.io" "$LONGHORN_NS" "true" "true"
+    helm_chart_prerequisites "$CONTROL_PLANE_NODE" "longhorn" "longhorn" "https://charts.longhorn.io" "$LONGHORN_NS" "true" "true"
     if [ $? -ne 0 ]; then
         log -f ${CURRENT_FUNC} "ERROR" "Failed to install longhorn helm chart prerequisites"
         return 1
@@ -2285,7 +2313,7 @@ install_longhorn () {
     CURRENT_FUNC=${FUNCNAME[0]}
     ##################################################################
     log -f ${CURRENT_FUNC} "Started longhorn helm chart prerequisites"
-    helm_chart_prerequisites "${CONTROL_PLANE_NODE}" "longhorn" " https://charts.longhorn.io" "$LONGHORN_NS" "true" "true"
+    helm_chart_prerequisites "${CONTROL_PLANE_NODE}" "longhorn" "longhorn" " https://charts.longhorn.io" "$LONGHORN_NS" "true" "true"
     if [ $? -ne 0 ]; then
         log -f ${CURRENT_FUNC} "ERROR" "Failed to install longhorn helm chart prerequisites"
         return 1
@@ -2379,7 +2407,7 @@ install_consul() {
     CURRENT_FUNC=${FUNCNAME[0]}
     ##################################################################
     log -f ${CURRENT_FUNC} "Started consul helm chart prerequisites"
-    helm_chart_prerequisites "$CONTROL_PLANE_NODE" "hashicorp" " https://helm.releases.hashicorp.com" "$CONSUL_NS" "true" "true"
+    helm_chart_prerequisites "$CONTROL_PLANE_NODE" "consul" "hashicorp" " https://helm.releases.hashicorp.com" "$CONSUL_NS" "true" "true"
     if [ $? -ne 0 ]; then
         log -f ${CURRENT_FUNC} "ERROR" "Failed to install consul helm chart prerequisites"
         return 1
@@ -2435,7 +2463,7 @@ vault_uninstall() {
     CURRENT_FUNC=${FUNCNAME[0]}
     ##################################################################
     log -f ${CURRENT_FUNC} "Started uninstalling vault helm chart"
-    helm_chart_prerequisites "$CONTROL_PLANE_NODE" "hashicorp" " https://helm.releases.hashicorp.com" "$VAULT_NS" "true"
+    helm_chart_prerequisites "$CONTROL_PLANE_NODE" "vault" "hashicorp" " https://helm.releases.hashicorp.com" "$VAULT_NS" "true"
     if [ $? -ne 0 ]; then
         log -f ${CURRENT_FUNC} "ERROR" "Failed to install vault helm chart prerequisites"
         return 1
@@ -2454,7 +2482,7 @@ install_vault () {
     CURRENT_FUNC=${FUNCNAME[0]}
     ##################################################################
     log -f ${CURRENT_FUNC} "Started vault helm chart prerequisites"
-    helm_chart_prerequisites "$CONTROL_PLANE_NODE" "hashicorp" " https://helm.releases.hashicorp.com" "$VAULT_NS" "true" "true"
+    helm_chart_prerequisites "$CONTROL_PLANE_NODE" "vault" "hashicorp" " https://helm.releases.hashicorp.com" "$VAULT_NS" "true" "true"
     if [ $? -ne 0 ]; then
         log -f ${CURRENT_FUNC} "ERROR" "Failed to install vault helm chart prerequisites"
         return 1
@@ -2515,7 +2543,7 @@ install_rancher () {
     CURRENT_FUNC=${FUNCNAME[0]}
     ##################################################################
     log -f ${CURRENT_FUNC} "Started rancher-${RANCHER_BRANCH} helm chart prerequisites"
-    helm_chart_prerequisites "$CONTROL_PLANE_NODE" "rancher-${RANCHER_BRANCH}" "https://releases.rancher.com/server-charts/${RANCHER_BRANCH}" "$RANCHER_NS" "true" "true"
+    helm_chart_prerequisites "$CONTROL_PLANE_NODE" "rancher-${RANCHER_BRANCH}" "rancher" "https://releases.rancher.com/server-charts/${RANCHER_BRANCH}" "$RANCHER_NS" "true" "true"
     if [ $? -ne 0 ]; then
         log -f ${CURRENT_FUNC} "ERROR" "Failed to install rancher-${RANCHER_BRANCH} helm chart prerequisites"
         return 1
@@ -2690,7 +2718,7 @@ install_rookceph(){
     local chart_url="https://charts.rook.io/release"
     ###################################################################
     log -f ${CURRENT_FUNC} "Started ${chart_name} helm chart prerequisites"
-    helm_chart_prerequisites "$CONTROL_PLANE_NODE" "${chart_name}" "${chart_url}" "$ROOKCEPH_NS" "true" "true"
+    helm_chart_prerequisites "$CONTROL_PLANE_NODE" "${chart_name}" "rook-ceph" "${chart_url}" "$ROOKCEPH_NS" "true" "true"
     if [ $? -ne 0 ]; then
         log -f ${CURRENT_FUNC} "ERROR" "Failed to install ${chart_name} helm chart prerequisites"
         return 1
@@ -2736,7 +2764,7 @@ install_rookceph_cluster() {
     local chart_name="rook-ceph-cluster"
     local chart_url="https://charts.rook.io/release"
     log -f ${CURRENT_FUNC} "Started ${chart_name} helm chart prerequisites"
-    helm_chart_prerequisites "$CONTROL_PLANE_NODE" "${chart_name}" "${chart_url}" "$ROOKCEPH_NS" "false" "false"
+    helm_chart_prerequisites "$CONTROL_PLANE_NODE" "${chart_name}" "rook-ceph" "${chart_url}" "$ROOKCEPH_NS" "false" "false"
     if [ $? -ne 0 ]; then
         log -f ${CURRENT_FUNC} "ERROR" "Failed to install ${chart_name} helm chart prerequisites"
         return 1
@@ -2945,9 +2973,19 @@ install_kafka() {
     ##################################################################
     log -f ${CURRENT_FUNC} "sending $chart_name values.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
     scp -q ./$chart_name/values.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
+
+    log -f ${CURRENT_FUNC} "sending $chart_name kafka-cluster.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    scp -q ./$chart_name/kafka-cluster.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
     ##################################################################
+    log -f ${CURRENT_FUNC} "Installing $chart_name Helm chart from source"
     ssh -q ${CONTROL_PLANE_NODE} <<< """
-        output=\$(helm install $chart_name /tmp/$chart_name/strimzi-kafka-operator-4.0.0.tgz \
+
+        cd /tmp/$chart_name
+
+        wget -q https://github.com/strimzi/strimzi-kafka-operator/releases/download/$chart_version/strimzi-kafka-operator-helm-3-chart-$chart_version.tgz
+
+
+        output=\$(helm install $chart_name /tmp/$chart_name/strimzi-kafka-operator-helm-3-chart-$chart_version.tgz \
             --version $chart_version \
             --namespace $chart_ns \
             --create-namespace \
@@ -2958,13 +2996,39 @@ install_kafka() {
             log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install $chart_name:\n\t\${output}\"
             exit 1
         fi
+
+        log -f ${CURRENT_FUNC} 'WARNING' \"Initiating workaround to force the install on kubenerete 1.33\"
+        kubectl -n $chart_ns set env deployment/strimzi-cluster-operator STRIMZI_KUBERNETES_VERSION=\"major=1,minor=33\" > /dev/null 2>&1 || true
+
+        kubectl -n $chart_ns rollout restart deployment strimzi-cluster-operator > /dev/null 2>&1 || true
+
+        log -f ${CURRENT_FUNC} 'INFO' 'Waiting for the strimzi-cluster-operator to be ready...'
+        sleep 60
+        kubectl apply -f /tmp/$chart_name/kafka-cluster.yaml
     """
-    if [ $? -eq 0 ]; then
-        log -f "${CURRENT_FUNC}" "Finished installing $chart_name on namespace: '${chart_ns}'"
-    else
-        log -f "${CURRENT_FUNC}" "ERROR" "Failed to install $chart_name"
-        return 1
-    fi
+
+    # kubectl get kafka kafka-cluster -o=jsonpath='{.status.listeners[?(@.name=="external")].bootstrapServers}{"\n"}'
+    # kafka-cluster-kafka-external-bootstrap.strimzi-kafka.svc:9094
+    exit 0
+    # ssh -q ${CONTROL_PLANE_NODE} <<< """
+    #     output=\$(helm install $chart_name $repo_name/$chart_name \
+    #         --version $chart_version \
+    #         --namespace $chart_ns \
+    #         --create-namespace \
+    #         -f /tmp/$chart_name/values.yaml \
+    #         2>&1)
+    #         # Check if the Helm install command was successful
+    #     if [ ! \$? -eq 0 ]; then
+    #         log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install $chart_name:\n\t\${output}\"
+    #         exit 1
+    #     fi
+    # """
+    # if [ $? -eq 0 ]; then
+    #     log -f "${CURRENT_FUNC}" "Finished installing $chart_name on namespace: '${chart_ns}'"
+    # else
+    #     log -f "${CURRENT_FUNC}" "ERROR" "Failed to install $chart_name"
+    #     return 1
+    # fi
     ##################################################################
     return 0
     ###################################################################
@@ -3029,7 +3093,7 @@ install_akhq() {
     ###################################################################
     local chart_name="kafka-akhq"
     log -f ${CURRENT_FUNC} "Started $chart_name helm chart prerequisites"
-    helm_chart_prerequisites ${CONTROL_PLANE_NODE} $chart_name "https://akhq.io/" "$KAFKA_NS"
+    helm_chart_prerequisites ${CONTROL_PLANE_NODE} $chart_name "akhq" "https://akhq.io/" "$STRIMZI_KAFKA_NS"
     if [ $? -ne 0 ]; then
         log -f ${CURRENT_FUNC} "ERROR" "Failed to install $chart_name helm chart prerequisites"
         return 1
@@ -3050,7 +3114,7 @@ install_akhq() {
     log -f ${CURRENT_FUNC} "Installing $chart_name Helm chart"
     ssh -q ${CONTROL_PLANE_NODE} <<< """
         output=\$(helm install $chart_name $chart_name/akhq \
-            --namespace $KAFKA_NS \
+            --namespace $STRIMZI_KAFKA_NS \
             --create-namespace \
             --version $KAFKA_AKHQ_VERSION \
             -f /tmp/$chart_name/values.yaml \
@@ -3062,7 +3126,7 @@ install_akhq() {
         fi
     """
     if [ $? -eq 0 ]; then
-        log -f "${CURRENT_FUNC}" "Finished installing $chart_name on namespace: '${KAFKA_NS}'"
+        log -f "${CURRENT_FUNC}" "Finished installing $chart_name on namespace: '${STRIMZI_KAFKA_NS}'"
     else
         log -f "${CURRENT_FUNC}" "ERROR" "Failed to install $chart_name"
         return 1
@@ -3084,7 +3148,7 @@ install_kafka_ui() {
     local chart_name="kafka-ui"
     ###################################################################
     log -f ${CURRENT_FUNC} "Started $chart_name helm chart prerequisites"
-    helm_chart_prerequisites ${CONTROL_PLANE_NODE} $chart_name "https://ui.charts.kafbat.io/" "$KAFKA_NS"
+    helm_chart_prerequisites ${CONTROL_PLANE_NODE} $chart_name "kafbat" "https://ui.charts.kafbat.io/" "$STRIMZI_KAFKA_NS"
     if [ $? -ne 0 ]; then
         log -f ${CURRENT_FUNC} "ERROR" "Failed to install $chart_name helm chart prerequisites"
         return 1
@@ -3105,7 +3169,7 @@ install_kafka_ui() {
     log -f ${CURRENT_FUNC} "Installing $chart_name Helm chart"
     ssh -q ${CONTROL_PLANE_NODE} <<< """
         output=\$(helm install $chart_name $chart_name/$chart_name \
-            --namespace $KAFKA_NS \
+            --namespace $STRIMZI_KAFKA_NS \
             --create-namespace \
             --version $KAFKA_UI_VERSION \
             -f /tmp/$chart_name/values.yaml \
@@ -3117,7 +3181,7 @@ install_kafka_ui() {
         fi
     """
     if [ $? -eq 0 ]; then
-        log -f "${CURRENT_FUNC}" "Finished installing $chart_name on namespace: '${KAFKA_NS}'"
+        log -f "${CURRENT_FUNC}" "Finished installing $chart_name on namespace: '${STRIMZI_KAFKA_NS}'"
     else
         log -f "${CURRENT_FUNC}" "ERROR" "Failed to install $chart_name"
         return 1
@@ -3139,7 +3203,7 @@ install_kyverno() {
     local chart_url=" https://kyverno.github.io/kyverno/"
     ###################################################################
     log -f ${CURRENT_FUNC} "Started $chart_name helm chart prerequisites"
-    helm_chart_prerequisites ${CONTROL_PLANE_NODE} "${chart_name}" "${chart_url}" "$KYVERNO_NS"
+    helm_chart_prerequisites ${CONTROL_PLANE_NODE} "${chart_name}" "kyverno" "${chart_url}" "$KYVERNO_NS"
     if [ $? -ne 0 ]; then
         log -f ${CURRENT_FUNC} "ERROR" "Failed to install $chart_name helm chart prerequisites"
         return 1
@@ -3330,125 +3394,125 @@ install_cilium_observability() {
 }
 
 
-#################################################################
-if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
-    reset_cluster
-    rook_ceph_cleanup
-    log -f "main" "Cluster reset completed."
-    exit 0
-fi
+# # #################################################################
+# # if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
+# #     reset_cluster
+# #     rook_ceph_cleanup
+# #     log -f "main" "Cluster reset completed."
+# #     exit 0
+# # fi
 
 
-#################################################################
-if [ "$INSTALL_CLUSTER" = true ]; then
-    if [ "$PREREQUISITES" = true ]; then
-        #################################################################
-        if ! provision_deployer; then
-            log -f "main" "ERROR" "An error occurred while provisioning the deployer node."
-            exit 1
-        fi
-        log -f "main" "Deployer node provisioned successfully."
-        #################################################################
-        if ! deploy_hostsfile; then
-            log -f "main" "ERROR" "An error occured while updating the hosts files."
-            exit 1
-        fi
-        log -f "main" "Hosts files updated successfully."
-        #################################################################
-    fi
-fi
+# # #################################################################
+# # if [ "$INSTALL_CLUSTER" = true ]; then
+# #     if [ "$PREREQUISITES" = true ]; then
+# #         #################################################################
+# #         if ! provision_deployer; then
+# #             log -f "main" "ERROR" "An error occurred while provisioning the deployer node."
+# #             exit 1
+# #         fi
+# #         log -f "main" "Deployer node provisioned successfully."
+# #         #################################################################
+# #         if ! deploy_hostsfile; then
+# #             log -f "main" "ERROR" "An error occured while updating the hosts files."
+# #             exit 1
+# #         fi
+# #         log -f "main" "Hosts files updated successfully."
+# #         #################################################################
+# #     fi
+# # fi
 
 
-if [ "$INSTALL_CLUSTER" = true ]; then
-    ################################################################
-    if [ "$PREREQUISITES" == "true" ]; then
-        #################################################################
-        if ! prerequisites_requirements; then
-            log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
-            exit 1
-        fi
-        #################################################################
-    else
-        log -f "main" "Cluster prerequisites have been skipped"
-    fi
-    ################################################################
-    if ! install_cluster; then
-        log -f main "ERROR" "An error occurred while deploying the cluster"
-        exit 1
-    fi
-    ################################################################
-    join_cluster
-    ################################################################
-    if ! install_gateway_CRDS; then
-        log -f main "ERROR" "An error occurred while deploying gateway CRDS"
-        exit 1
-    fi
-    ################################################################
-    if [ "$PREREQUISITES" == "true" ]; then
-        if ! install_cilium_prerequisites; then
-            log -f main "ERROR" "An error occurred while installing cilium prerequisites"
-            exit 1
-        fi
-    fi
-    ################################################################
-    if ! install_cilium; then
-        log -f main "ERROR" "An error occurred while installing cilium"
-        exit 1
-    fi
-    #################################################################
-    if ! install_gateway; then
-        log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
-        exit 1
-    fi
-    #################################################################
-    if ! install_kyverno; then
-         log -f "main" "WARNING" "Failed to deploy kyverno on the cluster, cluster pods wont be able to reach internet if nodes are behind a proxy..."
-    fi
-    ###############################################################
-    if ! install_cilium_observability; then
-        # https://github.com/cilium/cilium/tree/v1.17.3/examples/kubernetes/addons/prometheus
-        log -f "main" "WARNING" "Failed to install cilium observability on the cluster"
-    fi
-    ################################################################
-    if ! restart_cilium; then
-        log -f "main" "ERROR" "Failed to start cilium service."
-        exit 1
-    fi
-    ############################################################
-fi
+# if [ "$INSTALL_CLUSTER" = true ]; then
+#     # ################################################################
+#     # if [ "$PREREQUISITES" == "true" ]; then
+#     #     #################################################################
+#     #     if ! prerequisites_requirements; then
+#     #         log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
+#     #         exit 1
+#     #     fi
+#     #     #################################################################
+#     # else
+#     #     log -f "main" "Cluster prerequisites have been skipped"
+#     # fi
+#     # ################################################################
+#     # if ! install_cluster; then
+#     #     log -f main "ERROR" "An error occurred while deploying the cluster"
+#     #     exit 1
+#     # fi
+#     # ################################################################
+#     # join_cluster
+#     # ################################################################
+#     # if ! install_gateway_CRDS; then
+#     #     log -f main "ERROR" "An error occurred while deploying gateway CRDS"
+#     #     exit 1
+#     # fi
+#     # ################################################################
+#     # if [ "$PREREQUISITES" == "true" ]; then
+#     #     if ! install_cilium_prerequisites; then
+#     #         log -f main "ERROR" "An error occurred while installing cilium prerequisites"
+#     #         exit 1
+#     #     fi
+#     # fi
+#     ################################################################
+#     if ! install_cilium; then
+#         log -f main "ERROR" "An error occurred while installing cilium"
+#         exit 1
+#     fi
+#     #################################################################
+#     if ! install_gateway; then
+#         log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
+#         exit 1
+#     fi
+#     #################################################################
+#     if ! install_kyverno; then
+#          log -f "main" "WARNING" "Failed to deploy kyverno on the cluster, cluster pods wont be able to reach internet if nodes are behind a proxy..."
+#     fi
+#     ###############################################################
+#     if ! install_cilium_observability; then
+#         # https://github.com/cilium/cilium/tree/v1.17.3/examples/kubernetes/addons/prometheus
+#         log -f "main" "WARNING" "Failed to install cilium observability on the cluster"
+#     fi
+#     ################################################################
+#     if ! restart_cilium; then
+#         log -f "main" "ERROR" "Failed to start cilium service."
+#         exit 1
+#     fi
+#     ############################################################
+# fi
 
 
-if [ "$UPGRADE_CILIUM" = true ]; then
-    # TODO: https://docs.cilium.io/en/stable/operations/upgrade/
-    if ! upgrade_cilium; then
-        log -f "main" "ERROR" "Failed to upgrade cilium on the cluster"
-        exit 1
-    fi
-fi
+# if [ "$UPGRADE_CILIUM" = true ]; then
+#     # TODO: https://docs.cilium.io/en/stable/operations/upgrade/
+#     if ! upgrade_cilium; then
+#         log -f "main" "ERROR" "Failed to upgrade cilium on the cluster"
+#         exit 1
+#     fi
+# fi
 
-if [ "$INSTALL_CLUSTER" = true ]; then
-    ##################################################################
-    if ! install_rookceph; then
-        log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
-        exit 1
-    fi
-    ##################################################################
-    if ! install_rookceph_cluster; then
-        log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
-        exit 1
-    fi
-fi
+# if [ "$INSTALL_CLUSTER" = true ]; then
+#     ##################################################################
+#     if ! install_rookceph; then
+#         log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
+#         exit 1
+#     fi
+#     ##################################################################
+#     if ! install_rookceph_cluster; then
+#         log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
+#         exit 1
+#     fi
+# fi
 
 
-################################################################
-if [ "$PRINT_ROOK_PASSWORD" == "true" ]; then
-    log -f "rook-ceph" "Generating admin password for rook-ceph dashboard"
-    rook_ceph_dasbharod_password=$(ssh -q "${CONTROL_PLANE_NODE}" <<< """
-        kubectl -n $ROOKCEPH_NS get secret rook-ceph-dashboard-password -o jsonpath=\"{['data']['password']}\" | base64 --decode && echo
-    """)
-    log -f "rook-ceph" "admin password for rook-ceph dashboard password is: '$rook_ceph_dasbharod_password'"
-fi
-################################################################
+# ################################################################
+# if [ "$PRINT_ROOK_PASSWORD" == "true" ]; then
+#     log -f "rook-ceph" "Generating admin password for rook-ceph dashboard"
+#     rook_ceph_dasbharod_password=$(ssh -q "${CONTROL_PLANE_NODE}" <<< """
+#         kubectl -n $ROOKCEPH_NS get secret rook-ceph-dashboard-password -o jsonpath=\"{['data']['password']}\" | base64 --decode && echo
+#     """)
+#     log -f "rook-ceph" "admin password for rook-ceph dashboard password is: '$rook_ceph_dasbharod_password'"
+# fi
+# ################################################################
 
 
 if [ "$INSTALL_CLUSTER" = true ]; then
@@ -3472,13 +3536,13 @@ if [ "$INSTALL_CLUSTER" = true ]; then
     #     exit 1
     # fi
     ##################################################################
-    if ! install_kafka; then
-        log -f "main" "ERROR" "Failed to install kafka on the cluster"
-        exit 1
-    fi
+    # if ! install_kafka; then
+    #     log -f "main" "ERROR" "Failed to install kafka on the cluster"
+    #     exit 1
+    # fi
     ##################################################################
     # install_akhq
-    # install_kafka_ui
+    install_kafka_ui
     ##################################################################
 fi
 
