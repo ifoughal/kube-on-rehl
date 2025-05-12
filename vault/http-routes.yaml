@@ -31,10 +31,10 @@ spec:
   hostnames:
   - vault-dashboard.pfs.pack
   rules:
-  - matches:
-    - path:
-        type: PathPrefix
-        value: "/ui/"
-    backendRefs:
+  - backendRefs:
     - name: vault-ui
       port: 8200
+    # matches:
+    # - path:
+    #     type: PathPrefix
+    #     value: "/ui/"

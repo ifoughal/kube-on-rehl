@@ -31,9 +31,20 @@ spec:
       certificateRefs:
       - kind: Secret
         name: shared-tls
-  - name: https-passthrough
+  - name: kafka-plain-listener
+    protocol: TCP
+    port: 9092
+    allowedRoutes:
+      namespaces:
+        from: All
+  - name: kafka-tls-passthrough
     protocol: TLS
-    port: 443
+    port: 9093
+    # tls:
+    #   mode: Terminate
+    #   certificateRefs:
+    #   - kind: Secret
+    #     name: shared-tls
     tls:
       mode: Passthrough
     allowedRoutes:

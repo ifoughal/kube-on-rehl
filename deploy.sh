@@ -19,6 +19,7 @@ CLUSTER_NODES=
 INSTALL_CLUSTER=false
 PRINT_ROOK_PASSWORD=false
 UPGRADE_CILIUM=false
+STABILIZE_CLUSTER=false
 set -u # fail on unset variables
 
 ####################################################################
@@ -65,6 +66,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --print-rookceph-password)
             PRINT_ROOK_PASSWORD=true
+            shift
+            ;;
+        --stabilize)
+            STABILIZE_CLUSTER=true
             shift
             ;;
         -v)
@@ -1901,7 +1906,6 @@ install_certmanager () {
         output=\$(helm install cert-manager cert-manager/cert-manager  \
             --version ${CERTMANAGER_VERSION} \
             --namespace ${CERTMANAGER_NS} \
-            --set namespace=${CERTMANAGER_NS} \
             --create-namespace \
             -f /tmp/certmanager/values.yaml \
             2>&1 || true)
@@ -2908,7 +2912,13 @@ deploy_helm_chart(){
     """
     ##################################################################
     log -f ${CURRENT_FUNC} "sending $chart_name values.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
-    scp -q ./$chart_name/values.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
+    scp -q ./$chart_name/values.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/ > /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "values.yaml file not found, generating default values..."
+        ssh -q ${CONTROL_PLANE_NODE} <<< """
+            helm show values $repo_name/$chart_name --version $chart_version > /tmp/$chart_name/values.yaml
+        """
+    fi
     ##################################################################
     log -f ${CURRENT_FUNC} "Installing $chart_name Helm chart"
     ssh -q ${CONTROL_PLANE_NODE} <<< """
@@ -2931,10 +2941,197 @@ deploy_helm_chart(){
         return 1
     fi
     ##################################################################
+    scp -q ./$chart_name/routes.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/ > /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        log -f ${CURRENT_FUNC} "Applying routes for $chart_name on control-plane node: ${CONTROL_PLANE_NODE}"
+        ssh -q ${CONTROL_PLANE_NODE} <<< """
+            kubectl apply -f /tmp/$chart_name/routes.yaml ${VERBOSE}
+        """
+    fi
+    ##################################################################
 }
 
 
-install_kafka() {
+install_kafka_cluster() {
+    ###################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ###################################################################
+    # log -f ${CURRENT_FUNC} "Started Strimzi Cluster Operator installation"
+    # ssh -q ${CONTROL_PLANE_NODE} <<< """
+    # helm install strimzi-cluster-operator oci://quay.io/strimzi-helm/strimzi-kafka-operator
+    # """
+    # log -f ${CURRENT_FUNC} "Finished Strimzi Cluster Operator installation"
+    ###################################################################
+    local chart_url="https://strimzi.io/charts/"
+    local repo_name="strimzi"
+    local chart_name="strimzi-kafka-operator"
+    local chart_ns="$STRIMZI_KAFKA_OPERATOR_NS"
+    local chart_version=$STRIMZI_KAFKA_OPERATOR_VERSION
+    local create_ns=false
+    local delete_ns=false
+
+    if [ "$RESET_KAFKA_STORAGE" == "true" ]; then
+        local delete_ns=true
+    fi
+    ###################################################################
+    log -f ${CURRENT_FUNC} "sending $chart_name cluster-crd.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    scp -q ./$chart_name/cluster-crd.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
+
+    log -f ${CURRENT_FUNC} "sending $chart_name routes.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    scp -q ./$chart_name/routes.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
+
+    log -f ${CURRENT_FUNC} "sending $chart_name cert-issuer.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    scp -q ./$chart_name/cert-issuer.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
+
+    log -f ${CURRENT_FUNC} "sending $chart_name kafka-bridge.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    scp -q ./$chart_name/kafka-bridge.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
+
+    log -f ${CURRENT_FUNC} "sending $chart_name users.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    scp -q ./$chart_name/users.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
+    ##################################################################
+    # cleanup kafka PV/PVC
+    if [ "$RESET_KAFKA_STORAGE" == "true" ]; then
+        log -f ${CURRENT_FUNC} "Uninstalling previous Kafka-cluster in namespace $STRIMZI_KAFKA_NS..."
+        ssh -q ${CONTROL_PLANE_NODE} <<< """
+            kubectl delete -f /tmp/$chart_name/cluster-crd.yaml > /dev/null 2>&1
+        """
+        log -f ${CURRENT_FUNC} "Deleting Kafka-related PVCs in namespace $STRIMZI_KAFKA_NS..."
+
+        ssh -q ${CONTROL_PLANE_NODE} <<< """
+            kubectl get pvc -n $STRIMZI_KAFKA_NS --no-headers -o custom-columns=\":metadata.name\" | grep '^data-' | while read pvc; do
+                log -f ${CURRENT_FUNC} \"Deleting PVC: \$pvc\"
+
+                kubectl delete pvc -n $STRIMZI_KAFKA_NS \"\$pvc\" --timeout=3s || {
+                    log -f ${CURRENT_FUNC} \"Timed out waiting for \$pvc deletion, removing finalizers...\"
+                    kubectl patch pvc -n $STRIMZI_KAFKA_NS \"\$pvc\" -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge ${VERBOSE}
+                }
+            done
+
+            log -f ${CURRENT_FUNC} 'Waiting for PVs to be released and deleted...'
+            sleep 5
+
+            log -f ${CURRENT_FUNC} 'Deleting orphaned PVs (if any)...'
+            kubectl get pv --no-headers | awk '/$STRIMZI_KAFKA_NS/ {print \$1}' | while read pv; do
+                log -f ${CURRENT_FUNC} \"Deleting PV: \$pv\"
+                kubectl delete pv \"\$pv\" --timeout 3s ${VERBOSE}  || {
+                    log -f ${CURRENT_FUNC} \"Timed out waiting for \$pv deletion, removing finalizers...\"
+                    kubectl patch pv \"\$pv\" -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge ${VERBOSE}
+                }
+            done
+        """
+        if [ $? -ne 0 ]; then
+            return 1
+        fi
+    fi
+    ###################################################################
+    log -f ${CURRENT_FUNC} "Started deploying kafka-cluster CRDS"
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+
+        kubectl apply -f /tmp/$chart_name/cert-issuer.yaml
+        kubectl apply -f /tmp/$chart_name/routes.yaml
+
+        kubectl apply -f /tmp/$chart_name/cluster-crd.yaml
+        kubectl apply -f /tmp/$chart_name/users.yaml
+    """
+    log -f ${CURRENT_FUNC} "Finished deploying kafka-cluster CRDS"
+    ###################################################################
+#     # TODO:
+#     # once the user and topic are created, print the generated password:
+#     local cert_name="kafka-cluster-tls-cert"
+#     kubectl get secrets $kafka_user
+
+#     sudo dnf install java-17-openjdk-headless  # > to get key tool
+    ###################################################################
+#     kubectl apply -f strimzi-kafka-operator/kafkaUser.yaml
+#     local cert_name="kafka-cluster-tls-cert"
+#     local kafka_user_1=ifoughali
+#     local kafka_user_2=kafka-ui
+#     local store_pass="arakeen"
+
+#     kubectl get secret $cert_name -o json | jq '.data."ca.crt"' | tr -d '"' | base64 --decode > /tmp/ca.crt
+#     log -f ${CURRENT_FUNC} "Generating truststore.jks from $cert_name for user: $kafka_user_1"
+
+
+
+
+    return 0
+    rm -f /tmp/strimzi-kafka-truststore-$kafka_user_2.jks
+    keytool -delete -alias ca -keystore /tmp/strimzi-kafka-truststore-$kafka_user_2.jks -storepass $store_pass
+
+
+
+    keytool -importcert -alias ca -file /tmp/ca.crt -keystore /tmp/truststore-$kafka_user_2.jks -storepass $store_pass -noprompt
+
+    keytool -import -trustcacerts -alias kafka-ca-$store_pass -file /tmp/ca.crt -keystore /tmp/truststore-$kafka_user_2.jks -storepass $store_pass -noprompt
+
+    kubectl delete secret ssl-$kafka_user_2 -n $STRIMZI_KAFKA_NS
+    kubectl create secret generic ssl-$kafka_user_2 --from-file=truststore.jks=/tmp/truststore-$kafka_user_2.jks -n $STRIMZI_KAFKA_NS
+
+    # kubectl create configmap ssl-$kafka_user_2 --from-file=truststore.jks=/tmp/truststore-$kafka_user_2.jks -n $STRIMZI_KAFKA_NS
+
+
+
+    openssl s_client -connect kafka-bootstrap.pfs.pack:9092 -showcerts </dev/null   | openssl x509 -outform PEM > /tmp/kafka-server.crt
+
+    rm /tmp/truststore-$kafka_user_2.jks
+
+    keytool -import -trustcacerts -alias kafka-ca-$store_pass -file /tmp/kafka-server.crt -keystore /tmp/truststore-$kafka_user_2.jks -storepass $store_pass -noprompt
+
+    kubectl delete secret ssl-$kafka_user_2 -n $STRIMZI_KAFKA_NS
+    kubectl create secret generic ssl-$kafka_user_2 --from-file=truststore.jks=/tmp/truststore-$kafka_user_2.jks -n $STRIMZI_KAFKA_NS
+
+
+
+    ########################################################
+
+
+    JAAS_CONFIG=$(kubectl get secret $kafka_user_2 -o json | jq '.data."sasl.jaas.config"' | tr -d '"' | base64 --decode)
+#     cat <<EOF > /tmp/kafka-user-$kafka_user_2-config.properties
+# bootstrap.servers=kafka-bootstrap.pfs.pack:9092
+# sasl.jaas.config=$JAAS_CONFIG
+# security.protocol=SSL
+# sasl.mechanism=SCRAM-SHA-512
+# ssl.truststore.location=/tmp/strimzi-kafka-truststore.jks
+# ssl.truststore.password=$store_pass
+# EOF
+
+    cat <<EOF > /tmp/kafka-user-$kafka_user_2-config.properties
+bootstrap.servers=kafka-bootstrap.pfs.pack:9092
+enable.ssl.certificate.verification=false
+sasl.jaas.config=$JAAS_CONFIG
+security.protocol=SASL_SSL
+sasl.mechanism=SCRAM-SHA-512
+ssl.truststore.location=/tmp/kafka-truststore/truststore.jks
+ssl.truststore.password=$store_pass
+EOF
+# #     ########################################################
+    kubectl delete configmap kafka-user-$kafka_user_2-config -n $STRIMZI_KAFKA_NS
+    kubectl create configmap kafka-user-$kafka_user_2-config --from-file=kafka-client-config.properties=/tmp/kafka-user-$kafka_user_2-config.properties -n $STRIMZI_KAFKA_NS
+
+
+
+
+
+#     kubectl delete -f strimzi-kafka-operator/kafka-prodcon-test.yaml
+#     kubectl apply -f strimzi-kafka-operator/kafka-prodcon-test.yaml
+
+    ###################################################################
+    # TS:
+    # openssl s_client -debug -connect kafka-bootstrap.pfs.pack:9092 -tls1_3
+    # test if port and fqdn is reachable
+    # from host: nc -zv kafka-broker-0.pfs.pack 9092
+    # kubectl exec -ti deployments/producer -- nc -zv kafka-cluster-kafka-external1-bootstrap 9092
+    ###################################################################
+
+
+
+    # TODO: CHECK FOR KAFKA CLUSTER STATUS in a loop....
+    #  kubectl get kafka kafka-cluster -o=jsonpath='{.spec.kafka.listeners[?(@.name=="external")].bootstrapServers}{"\n"}'
+    # kafka-cluster-kafka-external-bootstrap.strimzi-kafka.svc:9094
+}
+
+
+install_kafka_operator() {
     ###################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
     ###################################################################
@@ -2952,10 +3149,87 @@ install_kafka() {
     local delete_ns=true
     local create_ns=false
 
-    ###################################################################
+    if [ "$RESET_KAFKA_STORAGE" == "true" ]; then
+        local delete_ns=true
+    fi
+    ##################################################################
+    # cleanup kafka PV/PVC
+    if [ "$RESET_KAFKA_STORAGE" == "true" ]; then
+        log -f ${CURRENT_FUNC} "Uninstalling previous Kafka-cluster in namespace $STRIMZI_KAFKA_NS..."
+        ssh -q ${CONTROL_PLANE_NODE} <<< """
+            kubectl delete -f /tmp/$chart_name/cluster-crd.yaml > /dev/null 2>&1
+        """
+        log -f ${CURRENT_FUNC} "Deleting Kafka-related PVCs in namespace $STRIMZI_KAFKA_NS..."
+
+        ssh -q ${CONTROL_PLANE_NODE} <<< """
+            kubectl get pvc -n $STRIMZI_KAFKA_NS --no-headers -o custom-columns=\":metadata.name\" | grep '^data-' | while read pvc; do
+                log -f ${CURRENT_FUNC} \"Deleting PVC: \$pvc\"
+
+                kubectl delete pvc -n $STRIMZI_KAFKA_NS \"\$pvc\" --timeout=3s || {
+                    log -f ${CURRENT_FUNC} \"Timed out waiting for \$pvc deletion, removing finalizers...\"
+                    kubectl patch pvc -n $STRIMZI_KAFKA_NS \"\$pvc\" -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge ${VERBOSE}
+                }
+            done
+
+            log -f ${CURRENT_FUNC} 'Waiting for PVs to be released and deleted...'
+            sleep 5
+
+            log -f ${CURRENT_FUNC} 'Deleting orphaned PVs (if any)...'
+            kubectl get pv --no-headers | awk '/$STRIMZI_KAFKA_NS/ {print \$1}' | while read pv; do
+                log -f ${CURRENT_FUNC} \"Deleting PV: \$pv\"
+                kubectl delete pv \"\$pv\" --timeout 3s ${VERBOSE}  || {
+                    log -f ${CURRENT_FUNC} \"Timed out waiting for \$pv deletion, removing finalizers...\"
+                    kubectl patch pv \"\$pv\" -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge ${VERBOSE}
+                }
+            done
+
+            log -f ${CURRENT_FUNC} 'Deleting KafkaTopics (if any)...'
+            kubectl get kafkatopics.kafka.strimzi.io -n \"$STRIMZI_KAFKA_NS\" -o jsonpath='{range .items[*]}{.metadata.name}{\"\n\"}{end}' | while read topic; do
+                kubectl delete kafkatopic.kafka.strimzi.io \"\$topic\" -n \"$STRIMZI_KAFKA_NS\" --timeout 3s ${VERBOSE}  || {
+                    log -f ${CURRENT_FUNC} \"Timed out waiting for \$topic deletion, removing finalizers...\"
+                    kubectl patch kafkatopic.kafka.strimzi.io \"\$topic\" -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge ${VERBOSE}
+                }
+            done
+        """
+        if [ $? -ne 0 ]; then
+            return 1
+        fi
+    fi
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Uninstalling and removing previous Kafka-cluster in namespace $STRIMZI_KAFKA_NS..."
     ssh -q ${CONTROL_PLANE_NODE} <<< """
-        kubectl create ns $STRIMZI_KAFKA_NS > /dev/null 2>&1 || true
+        set +euo pipefail
+
+        kubectl delete all --all -n $STRIMZI_KAFKA_NS --timeout 3s --force --grace-period=0 > /dev/null 2>&1
+        kubectl delete pods --all -n $STRIMZI_KAFKA_NS --timeout 3s --force --grace-period=0 > /dev/null 2>&1
+
+        kubectl delete pods -l strimzi.io/name=kafka-cluster-kafka -n $STRIMZI_KAFKA_NS --force --grace-period=0 > /dev/null 2>&1
+
+        log -f ${CURRENT_FUNC} 'Deleting namespace $STRIMZI_KAFKA_NS...'
+        output=\$(kubectl delete ns $STRIMZI_KAFKA_NS --timeout 3s 2>&1)
+        if [ \$? -ne 0 ]; then
+            log -f ${CURRENT_FUNC} 'Failed to delete namespace $STRIMZI_KAFKA_NS...Attempting to remove finalizers...'            kubectl patch namespace $STRIMZI_KAFKA_NS -p '{\"metadata\":{\"finalizers\":null}}' --type=merge > /dev/null 2>&1 || true
+
+            kubectl patch namespace $STRIMZI_KAFKA_NS -p '{\"spec\":{\"finalizers\":[]}}' --type=merge > /dev/null 2>&1 || true
+
+            kubectl get namespace $STRIMZI_KAFKA_NS -o json > /tmp/strimzi-ns.json > /dev/null 2>&1 || true
+
+            jq 'del(.spec.finalizers)' /tmp/strimzi-ns.json > /tmp/strimzi-ns-clean.json > /dev/null 2>&1 || true
+
+            kubectl replace --raw '/api/v1/namespaces/$STRIMZI_KAFKA_NS/finalize' -f strimzi-ns-clean.json > /dev/null 2>&1 || true
+        fi
+
+        log -f ${CURRENT_FUNC} 'Creating namespace $STRIMZI_KAFKA_NS...'
+        output=\$(kubectl create ns $STRIMZI_KAFKA_NS 2>&1)
+        if [ \$? -ne 0 ]; then
+            log -f ${CURRENT_FUNC} 'ERROR' \"Failed to create namespace $STRIMZI_KAFKA_NS...\n\t\$output\"
+            exit 1
+        fi
     """
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to uninstall and remove previous Kafka-cluster in namespace $STRIMZI_KAFKA_NS"
+        return 1
+    fi
     ###################################################################
     log -f ${CURRENT_FUNC} "Started $chart_name helm chart prerequisites"
     helm_chart_prerequisites "$CONTROL_PLANE_NODE" "$chart_name" "$repo_name" "$chart_url" "$chart_ns" "$delete_ns" "$create_ns"
@@ -2971,25 +3245,48 @@ install_kafka() {
         mkdir -p /tmp/$chart_name
     """
     ##################################################################
-    log -f ${CURRENT_FUNC} "sending $chart_name values.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
-    scp -q ./$chart_name/values.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
-
-    log -f ${CURRENT_FUNC} "sending $chart_name kafka-cluster.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
-    scp -q ./$chart_name/kafka-cluster.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
+    log -f ${CURRENT_FUNC} "sending $chart_name values-$chart_version.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    scp -q ./$chart_name/values-$chart_version.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
     ##################################################################
-    log -f ${CURRENT_FUNC} "Installing $chart_name Helm chart from source"
+
+    ##################################################################
+    # log -f ${CURRENT_FUNC} "Installing $chart_name Helm chart from source"
+    # ssh -q ${CONTROL_PLANE_NODE} <<< """
+
+    #     cd /tmp/$chart_name
+
+    #     wget -q https://github.com/strimzi/strimzi-kafka-operator/releases/download/$chart_version/strimzi-kafka-operator-helm-3-chart-$chart_version.tgz
+
+
+    #     output=\$(helm install $chart_name /tmp/$chart_name/strimzi-kafka-operator-helm-3-chart-$chart_version.tgz \
+    #         --version $chart_version \
+    #         --namespace $chart_ns \
+    #         --create-namespace \
+    #         -f /tmp/$chart_name/values.yaml \
+    #         2>&1)
+    #         # Check if the Helm install command was successful
+    #     if [ ! \$? -eq 0 ]; then
+    #         log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install $chart_name:\n\t\${output}\"
+    #         exit 1
+    #     fi
+
+    #     log -f ${CURRENT_FUNC} 'WARNING' \"Initiating workaround to force the install on kubenerete 1.33\"
+    #     kubectl -n $chart_ns set env deployment/strimzi-cluster-operator STRIMZI_KUBERNETES_VERSION=\"major=1,minor=33\" > /dev/null 2>&1 || true
+
+    #     kubectl -n $chart_ns rollout restart deployment strimzi-cluster-operator > /dev/null 2>&1 || true
+
+    #     log -f ${CURRENT_FUNC} 'INFO' 'Waiting for the strimzi-cluster-operator to be ready...'
+    #     sleep 60
+    #     kubectl apply -f /tmp/$chart_name/cluster-crd.yaml
+    # """
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Installing $chart_name Helm chart"
     ssh -q ${CONTROL_PLANE_NODE} <<< """
-
-        cd /tmp/$chart_name
-
-        wget -q https://github.com/strimzi/strimzi-kafka-operator/releases/download/$chart_version/strimzi-kafka-operator-helm-3-chart-$chart_version.tgz
-
-
-        output=\$(helm install $chart_name /tmp/$chart_name/strimzi-kafka-operator-helm-3-chart-$chart_version.tgz \
+        output=\$(helm install $chart_name $repo_name/$chart_name \
             --version $chart_version \
             --namespace $chart_ns \
             --create-namespace \
-            -f /tmp/$chart_name/values.yaml \
+            -f /tmp/$chart_name/values-$chart_version.yaml \
             2>&1)
             # Check if the Helm install command was successful
         if [ ! \$? -eq 0 ]; then
@@ -2997,19 +3294,19 @@ install_kafka() {
             exit 1
         fi
 
-        log -f ${CURRENT_FUNC} 'WARNING' \"Initiating workaround to force the install on kubenerete 1.33\"
-        kubectl -n $chart_ns set env deployment/strimzi-cluster-operator STRIMZI_KUBERNETES_VERSION=\"major=1,minor=33\" > /dev/null 2>&1 || true
+        # log -f ${CURRENT_FUNC} 'WARNING' \"Initiating workaround to force the install on kubenerete 1.33\"
+        # kubectl -n $chart_ns set env deployment/strimzi-cluster-operator STRIMZI_KUBERNETES_VERSION=\"major=1,minor=33\" > /dev/null 2>&1 || true
 
-        kubectl -n $chart_ns rollout restart deployment strimzi-cluster-operator > /dev/null 2>&1 || true
+        # kubectl -n $chart_ns rollout restart deployment strimzi-cluster-operator > /dev/null 2>&1 || true
 
         log -f ${CURRENT_FUNC} 'INFO' 'Waiting for the strimzi-cluster-operator to be ready...'
         sleep 60
-        kubectl apply -f /tmp/$chart_name/kafka-cluster.yaml
     """
-
-    # kubectl get kafka kafka-cluster -o=jsonpath='{.status.listeners[?(@.name=="external")].bootstrapServers}{"\n"}'
-    # kafka-cluster-kafka-external-bootstrap.strimzi-kafka.svc:9094
-    exit 0
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to install kafka helm chart"
+        return 1
+    fi
+    return 0
     # ssh -q ${CONTROL_PLANE_NODE} <<< """
     #     output=\$(helm install $chart_name $repo_name/$chart_name \
     #         --version $chart_version \
@@ -3029,6 +3326,20 @@ install_kafka() {
     #     log -f "${CURRENT_FUNC}" "ERROR" "Failed to install $chart_name"
     #     return 1
     # fi
+    #############################################################################
+    # TODO:
+    log -f ${CURRENT_FUNC} "Installing kafkacat for TS"
+    return 1
+    sudo dnf update -y
+    sudo dnf install librdkafka-devel -y
+
+    cd /tmp
+    git clone https://github.com/edenhill/kcat.git -b 1.7.1
+    cd kcat
+    ./configure
+    make
+    sudo make install
+
     ##################################################################
     return 0
     ###################################################################
@@ -3140,7 +3451,6 @@ install_akhq() {
 }
 
 
-
 install_kafka_ui() {
     ###################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
@@ -3191,6 +3501,23 @@ install_kafka_ui() {
     ssh -q ${CONTROL_PLANE_NODE} <<< """
         kubectl apply -f /tmp/$chart_name/http-routes.yaml ${VERBOSE}
     """
+    ##################################################################
+    log -f ${CURRENT_FUNC} "applying dnsPolicy and dnsConfig for $chart_name deployment"
+    kubectl patch deployment kafka-ui -n $STRIMZI_KAFKA_NS --type='json' -p='
+    [
+        {
+            "op": "add",
+            "path": "/spec/template/spec/dnsPolicy",
+            "value": "ClusterFirstWithHostNet"
+        },
+        {
+            "op": "add",
+            "path": "/spec/template/spec/dnsConfig",
+            "value": {
+                "nameservers": ["10.37.224.6", "10.12.180.71"]
+            }
+        }
+    ]'
     ##################################################################
 }
 
@@ -3394,7 +3721,125 @@ install_cilium_observability() {
 }
 
 
-# # #################################################################
+install_neo4j() {
+    ###################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ###################################################################
+    local chart_url="https://helm.neo4j.com/neo4j"
+    local repo_name=neo4j
+    local chart_name=neo4j
+    local chart_ns=neo4j
+    local chart_version=5.26.5
+    local delete_ns=true
+    local create_ns=true
+
+    deploy_helm_chart $chart_url $repo_name $chart_name $chart_ns $chart_version $delete_ns $create_ns
+}
+
+
+stabilise_cluster() {
+    ###################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ###################################################################
+    while read -r node; do
+        local hostname=$(echo "$node" | jq -r '.hostname')
+        local ip=$(echo "$node" | jq -r '.ip')
+        local role=$(echo "$node" | jq -r '.role')
+
+        log -f ${CURRENT_FUNC} "Restarting cilium PIDs on $role node ${hostname}"
+        ssh -q ${hostname} <<< """
+            sudo rm -f /var/run/cilium/cilium.pid
+            sudo rm -f /var/run/cilium/cilium-envoy.pid
+        """
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
+    ###################################################################
+    ssh -q $CONTROL_PLANE_NODE <<< """
+        kubectl -n $CILIUM_NS rollout restart deployment/coredns deployment/hubble-relay deployment/hubble-ui deployment/snapshot-controller daemonset/cilium daemonset/cilium-envoy deployment/snapshot-controller deployment/cilium-operator
+
+        LABEL_SELECTORS=(
+          \"app=rook-ceph-mon\"
+          \"app=rook-ceph-mgr\"
+          \"app=rook-ceph-exporter\"
+          \"app=rook-ceph-crashcollector\"
+          \"app.kubernetes.io/name=ceph-mds\"
+          \"app.kubernetes.io/name=ceph-mgr\"
+          \"app.kubernetes.io/name=ceph-mon\"
+          \"app.kubernetes.io/name=ceph-osd\"
+          \"operator=rook\"
+          \"app=rook-ceph-osd\"
+          \"app=csi-cephfsplugin-provisioner\"
+        )
+
+        log -f $CURRENT_FUNC  \"Restarting Rook-Ceph deployments in namespace '$ROOKCEPH_NS'...\"
+
+        for label in \"\${LABEL_SELECTORS[@]}\"; do
+          deployments=\$(kubectl -n \"$ROOKCEPH_NS\" get deployments -l \"\$label\" -o jsonpath='{range .items[*]}{.metadata.name}{\"\n\"}{end}')
+          for deploy in \$deployments; do
+            echo \"Rolling out restart for deployment: \$deploy\"
+            kubectl -n \"$ROOKCEPH_NS\" rollout restart deployment \"\$deploy\"
+          done
+        done
+
+
+
+        kubectl -n \"$ROOKCEPH_NS\" rollout restart deployment csi-cephfsplugin-provisioner  csi-nfsplugin-provisioner   csi-rbdplugin-provisioner
+
+        kubectl -n \"$ROOKCEPH_NS\" rollout restart daemonset csi-cephfsplugin csi-nfsplugin csi-rbdplugin
+
+        # cleanup all unused / replaced replicaset:
+        kubectl get rs -A --no-headers \
+          | awk '\$3 == 0 {print \$1, \$2}' \
+          | while read namespace rsname; do
+            kubectl delete rs \"\$rsname\" -n \"\$namespace\"
+        done
+
+        sleep 30
+        log -f $CURRENT_FUNC \"✅ Done.\"
+        kubectl delete pods -n ${ROOKCEPH_NS} --field-selector=status.phase=Succeeded
+    """
+}
+
+
+install_prometheus() {
+    ###################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ###################################################################
+    local chart_url="https://prometheus-community.github.io/helm-charts"
+    local repo_name=prometheus-community
+    local chart_name=kube-prometheus-stack
+    local chart_ns=monitoring
+    local chart_version=72.0.1
+    local delete_ns=true
+    local create_ns=true
+
+    deploy_helm_chart $chart_url $repo_name $chart_name $chart_ns $chart_version $delete_ns $create_ns
+    ###################################################################
+    grafana_password=$(ssh -q $CONTROL_PLANE_NODE """
+        kubectl --namespace $chart_ns get secrets kube-prometheus-stack-grafana -o jsonpath='{.data.admin-password}' | base64 -d ; echo
+    """)
+    log -f ${CURRENT_FUNC} "Login to grafana dashboard with: 'admin/${grafana_password}'"
+    ###################################################################
+}
+
+
+install_metrics_server() {
+    ###################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ###################################################################
+    local chart_url="https://kubernetes-sigs.github.io/metrics-server/"
+    local repo_name=kubernetes-sigs
+    local chart_name=metrics-server
+    local chart_ns=monitoring
+    local chart_version=3.12.2
+    local delete_ns=false
+    local create_ns=false
+
+    deploy_helm_chart $chart_url $repo_name $chart_name $chart_ns $chart_version $delete_ns $create_ns
+    ###################################################################
+}
+#############################################################
+CURRENT_FUNC=main
+#############################################################
 # # if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
 # #     reset_cluster
 # #     rook_ceph_cleanup
@@ -3479,6 +3924,16 @@ install_cilium_observability() {
 #         exit 1
 #     fi
 #     ############################################################
+#     # apply metrics-server:
+#     https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.7.2/components.yaml
+#     helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
+#     if ! install_prometheus; then
+#         log -f "main" "WARNING" "Failed to install kube-prometheus server, metrics won't be installed"
+#     else
+#         if ! install_metrics_server; then
+#             log -f "main" "WARNING" "Failed to install metrics server, metrics won't be available"
+#         fi
+#     fi
 # fi
 
 
@@ -3489,6 +3944,7 @@ install_cilium_observability() {
 #         exit 1
 #     fi
 # fi
+
 
 # if [ "$INSTALL_CLUSTER" = true ]; then
 #     ##################################################################
@@ -3504,47 +3960,61 @@ install_cilium_observability() {
 # fi
 
 
-# ################################################################
-# if [ "$PRINT_ROOK_PASSWORD" == "true" ]; then
-#     log -f "rook-ceph" "Generating admin password for rook-ceph dashboard"
-#     rook_ceph_dasbharod_password=$(ssh -q "${CONTROL_PLANE_NODE}" <<< """
-#         kubectl -n $ROOKCEPH_NS get secret rook-ceph-dashboard-password -o jsonpath=\"{['data']['password']}\" | base64 --decode && echo
-#     """)
-#     log -f "rook-ceph" "admin password for rook-ceph dashboard password is: '$rook_ceph_dasbharod_password'"
-# fi
-# ################################################################
+################################################################
+if [ "$PRINT_ROOK_PASSWORD" == "true" ]; then
+    log -f "rook-ceph" "Generating admin password for rook-ceph dashboard"
+    rook_ceph_dasbharod_password=$(ssh -q "${CONTROL_PLANE_NODE}" <<< """
+        kubectl -n $ROOKCEPH_NS get secret rook-ceph-dashboard-password -o jsonpath=\"{['data']['password']}\" | base64 --decode && echo
+    """)
+    log -f "rook-ceph" "admin password for rook-ceph dashboard password is: '$rook_ceph_dasbharod_password'"
+fi
+################################################################
 
 
 if [ "$INSTALL_CLUSTER" = true ]; then
-    # ################################################################
-    # if [ "$PREREQUISITES" == "true" ]; then
-    #     if ! install_certmanager_prerequisites; then
-    #         log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
-    #         exit 1
-    #     fi
-    # fi
-    # if ! install_certmanager; then
-    #     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
-    #     exit 1
-    # fi
-    # # ##################################################################
-    # # vault_uninstall
-    # # ##################################################################
-    # # ##################################################################
-    # if ! install_vault; then
-    #     log -f "main" "ERROR" "Failed to install longhorn on the cluster"
-    #     exit 1
-    # fi
-    ##################################################################
-    # if ! install_kafka; then
-    #     log -f "main" "ERROR" "Failed to install kafka on the cluster"
-    #     exit 1
-    # fi
-    ##################################################################
-    # install_akhq
-    install_kafka_ui
-    ##################################################################
+#     # ################################################################
+#     # if [ "$PREREQUISITES" == "true" ]; then
+#     #     if ! install_certmanager_prerequisites; then
+#     #         log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
+#     #         exit 1
+#     #     fi
+#     # fi
+#     # if ! install_certmanager; then
+#     #     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
+#     #     exit 1
+#     # fi
+#     # # ##################################################################
+#     # # vault_uninstall
+#     # # ##################################################################
+#     # # ##################################################################
+#     # if ! install_vault; then
+#     #     log -f "main" "ERROR" "Failed to install longhorn on the cluster"
+#     #     exit 1
+#     # fi
+#     ##################################################################
+        if ! install_kafka_operator; then
+            log -f "main" "ERROR" "Failed to install kafka on the cluster"
+            exit 1
+        fi
+        if ! install_kafka_cluster; then
+            log -f "main" "ERROR" "Failed to install kafka on the cluster"
+            exit 1
+        fi
+#     ##################################################################
+#     # install_akhq
+    # install_kafka_ui
+#     ##################################################################
+#     # install_neo4j
 fi
+
+
+
+##################################################################
+# restabilize the cluster:
+if [ "$STABILIZE_CLUSTER" == "true" ]; then
+    stabilise_cluster
+fi
+##################################################################
 
 log -f "main" "INFO" "Workload finished"
 exit 0
@@ -3628,6 +4098,16 @@ exit 0
 
 # kubectl delete -f https://raw.githubusercontent.com/longhorn/longhorn/v1.8.1/examples/storageclass.yaml
 # kubectl delete -f https://raw.githubusercontent.com/longhorn/longhorn/v1.8.1/examples/pod_with_pvc.yaml
+
+
+
+# for some reason, the cluster is instable, the logs show nothing unusual, I suspect something is wrong with the SFR image...
+
+
+# check cephcluster status: kubectl -n rook-ceph get cephcluster
+# kubectl delete pods -l 'app in (csi-rbdplugin-provisioner, csi-cephfsplugin-provisioner)'
+# kubectl get pods -l 'app in (csi-rbdplugin-provisioner, csi-cephfsplugin-provisioner)'
+# kubectl get pods -l app.kubernetes.io/instance=kafka-cluster
 
 
 

@@ -311,7 +311,7 @@ cephClusterSpec:
 
   storage: # cluster level storage configuration and selection
     useAllNodes: true
-    useAllDevices: true
+    useAllDevices: false
     # TODO make it dynamic:
     nodes:
     - name: lorioncp01vel
