@@ -542,7 +542,7 @@ helm_chart_prerequisites () {
     local CREATE_NS=${7:-"false"}
     local timeout=${8:-"10s"}
     local sleep_time=${9:-"15s"}
-
+    local uninstall_timeout=${10:-"30"}
     ##################################################################
     ssh -q ${control_plane_host} <<< """
         set -euo pipefail
@@ -551,7 +551,24 @@ helm_chart_prerequisites () {
         helm repo update ${VERBOSE}
         ##################################################################
         log -f \"${CURRENT_FUNC}\" \"uninstalling and ensuring the cluster is cleaned from $CHART_NAME\"
-        helm uninstall -n $CHART_NS $CHART_NAME > /dev/null 2>&1 || true
+
+        helm uninstall -n $CHART_NS $CHART_NAME > /dev/null 2>&1
+        # Record the start time
+        start_time=\$(date +%s)
+
+        log -f '${CURRENT_FUNC}' 'Waiting for the chart to be completely uninstalled'
+        until ! helm list -n '$CHART_NS' | grep -q '$CHART_NAME'; do
+            elapsed_time=\$(( \$(date +%s) - start_time ))
+            # Check if timeout has been reached
+            if [ \"\$elapsed_time\" -ge \"\$TIMEOUT\" ]; then
+                log -f '${CURRENT_FUNC}' 'ERROR' 'Timeout reached. The chart $CHART_NAME could not be uninstalled within $uninstall_timeout seconds.'
+                exit 1  # Return with an error code
+            fi
+
+            log -f '${CURRENT_FUNC}' 'Waiting for the chart $CHART_NAME to be uninstalled...'
+
+            sleep 5  # Sleep for 5 seconds before checking again
+        done
         ##################################################################
         if [ \"$DELETE_NS\" == \"true\" ] || [ \"$DELETE_NS\" == \"1\" ]; then
             log -f \"${CURRENT_FUNC}\" \"deleting '$CHART_NS' namespace\"
