@@ -531,28 +531,23 @@ add_bashcompletion () {
 }
 
 
-helm_chart_prerequisites () {
-    ##################################################################
+helm_uninstall_chart(){
     local control_plane_host=$1
     local CHART_NAME=$2
-    local REPO_NAME=$3
-    local CHART_URL=$4
-    local CHART_NS=${5:-"default"}
-    local DELETE_NS=${6:-"false"}
-    local CREATE_NS=${7:-"false"}
-    local timeout=${8:-"10s"}
-    local sleep_time=${9:-"15s"}
-    local uninstall_timeout=${10:-"30"}
+    local CHART_NS=${3:-"default"}
+    local DELETE_NS=${4:-"false"}
+    local CREATE_NS=${5:-"false"}
+    local timeout=${6:-"10s"}
+    local sleep_time=${7:-"15s"}
+    local uninstall_timeout=${8:-"30"}
+
     ##################################################################
     ssh -q ${control_plane_host} <<< """
         set -euo pipefail
-        log -f \"${CURRENT_FUNC}\" \"Adding '$REPO_NAME' repo to Helm\"
-        helm repo add ${REPO_NAME} $CHART_URL --force-update ${VERBOSE}
-        helm repo update ${VERBOSE}
-        ##################################################################
-        log -f \"${CURRENT_FUNC}\" \"uninstalling and ensuring the cluster is cleaned from $CHART_NAME\"
 
-        helm uninstall -n $CHART_NS $CHART_NAME > /dev/null 2>&1
+        log -f '${CURRENT_FUNC}' 'uninstalling and ensuring the cluster is cleaned from $CHART_NAME'
+
+        helm uninstall -n $CHART_NS $CHART_NAME > /dev/null 2>&1 || true
         # Record the start time
         start_time=\$(date +%s)
 
@@ -597,6 +592,37 @@ helm_chart_prerequisites () {
         fi
         ##################################################################
     """
+    return $?
+    ##################################################################
+}
+
+
+helm_chart_prerequisites () {
+    ##################################################################
+    local control_plane_host=$1
+    local CHART_NAME=$2
+    local REPO_NAME=$3
+    local CHART_URL=$4
+    local CHART_NS=${5:-"default"}
+    local DELETE_NS=${6:-"false"}
+    local CREATE_NS=${7:-"false"}
+    local timeout=${8:-"10s"}
+    local sleep_time=${9:-"15s"}
+    local uninstall_timeout=${10:-"30"}
+    ##################################################################
+    ssh -q ${control_plane_host} <<< """
+        set -euo pipefail
+        log -f '${CURRENT_FUNC}' \"Adding '$REPO_NAME' repo to Helm\"
+        # Add the repo only if it's not already in the list
+        if ! helm repo list | awk '{print \$1}' | grep -Fxq '${REPO_NAME}'; then
+            helm repo add '${REPO_NAME}' '$CHART_URL' ${VERBOSE}
+        else
+            log -f '${CURRENT_FUNC}' \"Helm repo '${REPO_NAME}' already exists. Skipping 'helm repo add'.\"
+        fi
+
+        helm repo update ${VERBOSE}
+    """
+    helm_uninstall_chart ${control_plane_host} $CHART_NAME $CHART_NS $DELETE_NS $CREATE_NS $timeout $sleep_time $uninstall_timeout
     return $?
     ##################################################################
 }
