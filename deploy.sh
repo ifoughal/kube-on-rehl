@@ -2895,6 +2895,7 @@ deploy_helm_chart(){
     local chart_version=$5
     local delete_ns=$6
     local create_ns=$7
+    local extra_args=$8
 
     ###################################################################
     log -f ${CURRENT_FUNC} "Started $chart_name helm chart prerequisites"
@@ -2922,13 +2923,26 @@ deploy_helm_chart(){
     ##################################################################
     log -f ${CURRENT_FUNC} "Installing $chart_name Helm chart"
     ssh -q ${CONTROL_PLANE_NODE} <<< """
-        output=\$(helm install $chart_name $repo_name/$chart_name \
-            --version $chart_version \
-            --namespace $chart_ns \
-            --create-namespace \
-            -f /tmp/$chart_name/values.yaml \
-            2>&1)
-            # Check if the Helm install command was successful
+        # Construct the Helm command with optional extra_args
+        helm_cmd=\"helm install $chart_name $repo_name/$chart_name \\
+            --version $chart_version \\
+            --namespace $chart_ns \\
+            --create-namespace \\
+            -f /tmp/$chart_name/values.yaml\"
+
+        # Append extra_args if provided
+        if [ -n \"$extra_args\" ]; then
+            echo \"Deploying with extra_args: $extra_args\"
+            helm_cmd=\"\$helm_cmd $extra_args\"
+        else
+            echo \"Deploying without extra_args\"
+        fi
+
+        echo \"helm_cmd: \$helm_cmd\"
+
+        # Execute the command and capture output
+        output=\$(eval \$helm_cmd 2>&1)
+
         if [ ! \$? -eq 0 ]; then
             log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install $chart_name:\n\t\${output}\"
             exit 1
@@ -3837,6 +3851,94 @@ install_metrics_server() {
     deploy_helm_chart $chart_url $repo_name $chart_name $chart_ns $chart_version $delete_ns $create_ns
     ###################################################################
 }
+
+
+upgrade_keycloak() {
+    local chart_name=keycloak
+    # Define secret names
+    local postgresql_secret_name="keycloak-postgresql-auth"
+
+    local admin_secret_name="keycloak-admin-auth"
+
+
+    export PASSWORD=$(kubectl get secret --namespace "$chart_name" "$postgresql_secret_name" -o jsonpath="{.data.password}" | base64 -d)
+
+    export ADMIN_PASSWORD=$(kubectl get secret --namespace "$chart_name" "$admin_secret_name" -o jsonpath="{.data.admin-password}" | base64 -d)
+
+    helm upgrade -n keycloak keycloak bitnami/keycloak \
+        --reuse-values -f keycloak/values.yaml \
+        --set postgresql.auth.existingSecret=$postgresql_secret_name \
+        --set postgresql.auth.secretKeys.userPasswordKey=postgres-password \
+        --set auth.existingSecret=$admin_secret_name \
+        --set auth.passwordSecretKey=admin-password
+
+
+         --set global.postgresql.auth.password=$PASSWORD \
+        --set auth.adminPassword=$ADMIN_PASSWORD
+}
+
+
+install_keycloak() {
+    ###################################################################
+    CURRENT_FUNC=${FUNCNAME[0]}
+    ###################################################################
+    local chart_url="https://charts.bitnami.com/bitnami"
+    local repo_name=bitnami
+    local chart_name=keycloak
+    local chart_ns=keycloak
+    local chart_version=24.6.6
+    local delete_ns=false
+    local create_ns=false
+    local extra_args=""
+
+
+    # Define secret names
+    local postgresql_secret_name="keycloak-postgresql-auth"
+    local postgre_secret_password="postgres-password"
+    local postgre_password="postgres-secret"
+
+
+    local admin_secret_name="keycloak-admin-auth"
+    local admin_password="admin-password"  # The password you want to use
+
+    local auth_admin="admin"
+
+
+    helm_uninstall_chart ${CONTROL_PLANE_NODE} $chart_name $chart_ns true true
+
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        # Generate PostgreSQL auth secret
+        kubectl create secret generic '$postgresql_secret_name' \
+            --namespace '$chart_ns' \
+            --from-literal=postgres-password='$postgre_secret_password' \
+            --from-literal=password='$postgre_password' \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+        # Generate admin auth secret
+        kubectl create secret generic '$admin_secret_name' \
+        --namespace '$chart_ns' \
+        --from-literal=admin-password='$admin_password' \
+        --dry-run=client -o yaml | kubectl apply -f -
+    """
+
+
+    # Set extra arguments for Helm deployment
+    local extra_args=""
+    extra_args+="--set postgresql.auth.existingSecret=$postgresql_secret_name "
+    extra_args+="--set postgresql.auth.secretKeys.userPasswordKey=postgres-password "
+
+    extra_args+="--set auth.adminUser=$auth_admin "
+    extra_args+="--set auth.existingSecret=$admin_secret_name "
+    extra_args+="--set auth.passwordSecretKey=admin-password "
+
+    # Remove trailing comma if needed
+    extra_args="${extra_args%,}"
+
+    deploy_helm_chart "$chart_url" "$repo_name" "$chart_name" "$chart_ns" "$chart_version" "$delete_ns" "$create_ns" "$extra_args"
+
+    ###################################################################
+}
+
 #############################################################
 CURRENT_FUNC=main
 #############################################################
@@ -3991,15 +4093,20 @@ if [ "$INSTALL_CLUSTER" = true ]; then
 #     #     log -f "main" "ERROR" "Failed to install longhorn on the cluster"
 #     #     exit 1
 #     # fi
+
+    if ! install_keycloak; then
+        log -f "main" "ERROR" "Failed to install keycloak on the cluster"
+        exit 1
+    fi
 #     ##################################################################
-        if ! install_kafka_operator; then
-            log -f "main" "ERROR" "Failed to install kafka on the cluster"
-            exit 1
-        fi
-        if ! install_kafka_cluster; then
-            log -f "main" "ERROR" "Failed to install kafka on the cluster"
-            exit 1
-        fi
+        # if ! install_kafka_operator; then
+        #     log -f "main" "ERROR" "Failed to install kafka on the cluster"
+        #     exit 1
+        # fi
+        # if ! install_kafka_cluster; then
+        #     log -f "main" "ERROR" "Failed to install kafka on the cluster"
+        #     exit 1
+        # fi
 #     ##################################################################
 #     # install_akhq
     # install_kafka_ui
