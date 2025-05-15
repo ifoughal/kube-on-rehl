@@ -2994,8 +2994,8 @@ install_kafka_cluster() {
     log -f ${CURRENT_FUNC} "sending $chart_name routes.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
     scp -q ./$chart_name/routes.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
 
-    log -f ${CURRENT_FUNC} "sending $chart_name cert-issuer.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
-    scp -q ./$chart_name/cert-issuer.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
+    # log -f ${CURRENT_FUNC} "sending $chart_name cert-issuer.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    # scp -q ./$chart_name/cert-issuer.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
 
     log -f ${CURRENT_FUNC} "sending $chart_name kafka-bridge.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
     scp -q ./$chart_name/kafka-bridge.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
@@ -3008,6 +3008,8 @@ install_kafka_cluster() {
         log -f ${CURRENT_FUNC} "Uninstalling previous Kafka-cluster in namespace $STRIMZI_KAFKA_NS..."
         ssh -q ${CONTROL_PLANE_NODE} <<< """
             kubectl delete -f /tmp/$chart_name/cluster-crd.yaml > /dev/null 2>&1
+            kubectl delete -f /tmp/$chart_name/users.yaml > /dev/null 2>&1
+            kubectl delete -f /tmp/$chart_name/routes.yaml > /dev/null 2>&1
         """
         log -f ${CURRENT_FUNC} "Deleting Kafka-related PVCs in namespace $STRIMZI_KAFKA_NS..."
 
@@ -3032,23 +3034,158 @@ install_kafka_cluster() {
                     kubectl patch pv \"\$pv\" -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge ${VERBOSE}
                 }
             done
+
+            sleep 30
         """
         if [ $? -ne 0 ]; then
             return 1
         fi
     fi
+    #############################################################
+    # tls_secret=cluster-ca
+    local ca_password="kafka_ca_password"
+    local secrets_path=/tmp/secrets
+
+    generate_certs cluster-ca $ca_password $secrets_path
+
+    generate_certs clients-ca $ca_password $secrets_path true
     ###################################################################
     log -f ${CURRENT_FUNC} "Started deploying kafka-cluster CRDS"
     ssh -q ${CONTROL_PLANE_NODE} <<< """
 
-        kubectl apply -f /tmp/$chart_name/cert-issuer.yaml
         kubectl apply -f /tmp/$chart_name/routes.yaml
-
         kubectl apply -f /tmp/$chart_name/cluster-crd.yaml
         kubectl apply -f /tmp/$chart_name/users.yaml
     """
     log -f ${CURRENT_FUNC} "Finished deploying kafka-cluster CRDS"
     ###################################################################
+    sleep 60
+    log -f ${CURRENT_FUNC} "Started testing kafka-cluster"
+
+
+    local broker_svc=$(kubectl get svc -n "$STRIMZI_KAFKA_NS" -o json | jq -r '.items[] | select(.metadata.name | test("kafka-cluster-broker-.*")) | .metadata.name' | head -n1)
+
+    if [ -z "$broker_svc" ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Kafka-cluster test failed! Failed to get broker service name"
+        return 1
+    fi
+
+    # Get the NodePort for port 9095
+    local node_port=$(kubectl get svc "$broker_svc" -n "$STRIMZI_KAFKA_NS" -o json | jq -r ".spec.ports[] | select(.port==$KAFKA_BROKERS_TLS_PORT) | .nodePort")
+    if [ -z "$node_port" ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Kafka-cluster test failed! Failed to get node_port from broker service: '$broker_svc'"
+        return 1
+    fi
+
+
+    # Get an IP address of a ready node (replace this with your preferred node if needed)
+    local node_ip=$(kubectl get nodes -o wide | awk '/ Ready / {print $6; exit}')
+
+    log -f ${CURRENT_FUNC} "Selected Broker SVC: $broker_svc"
+    log -f ${CURRENT_FUNC} "NodePort: $node_port"
+    log -f ${CURRENT_FUNC} "Node IP: $node_ip"
+
+
+    log -f ${CURRENT_FUNC} "Exporting broker_secrets for testing..."
+    export broker_secret=ifoughali
+    export client_secrets_dir=/tmp/kafka-client/secrets
+
+    rm -rf $client_secrets_dir && mkdir -p $client_secrets_dir
+
+    kubectl get secret $broker_secret  \
+        -n $STRIMZI_KAFKA_NS \
+        -o jsonpath='{.data.user\.key}' | base64 -d \
+        > $client_secrets_dir/$broker_secret.key
+
+    kubectl get secret $broker_secret  \
+        -n $STRIMZI_KAFKA_NS \
+        -o jsonpath='{.data.user\.crt}' | base64 -d \
+        > $client_secrets_dir/$broker_secret.crt
+
+    kubectl get secret kafka-cluster-cluster-ca \
+        -n $STRIMZI_KAFKA_NS \
+        -o jsonpath='{.data.ca\.crt}' | base64 -d  \
+        > $client_secrets_dir/cluster-ca.crt
+
+    kubectl get secret kafka-cluster-clients-ca \
+        -n $STRIMZI_KAFKA_NS \
+        -o jsonpath='{.data.ca\.crt}' | base64 -d  \
+        > $client_secrets_dir/clients-ca.crt
+
+    log -f ${CURRENT_FUNC} "Finished exporting broker_secrets."
+
+
+    openssl verify -CAfile "$client_secrets_dir/cluster-ca.crt" "$client_secrets_dir/$broker_secret.crt"
+
+    openssl verify -CAfile "$client_secrets_dir/clients-ca.crt" "$client_secrets_dir/$broker_secret.crt"
+
+
+    # Optional: test connectivity with openssl
+    log -f ${CURRENT_FUNC} "Testing TLS connection to $node_ip:$node_port..."
+
+    node_ip=10.66.65.10
+    node_port=30862
+    kcat -b "$node_ip:$node_port" -L \
+        -X security.protocol=ssl \
+        -X ssl.key.location="$client_secrets_dir/$broker_secret.key" \
+        -X ssl.certificate.location="$client_secrets_dir/$broker_secret.crt" \
+        -X ssl.ca.location="$client_secrets_dir/cluster-ca.crt"
+
+    kcat -b "$node_ip:$node_port" -L \
+        -X security.protocol=ssl \
+        -X ssl.key.location="$client_secrets_dir/$broker_secret.key" \
+        -X ssl.certificate.location="$client_secrets_dir/$broker_secret.crt" \
+        -X ssl.ca.location="$client_secrets_dir/clients-ca.crt"
+
+    output=$(openssl s_client -connect "$node_ip:$node_port" -CAfile "$client_secrets_dir/cluster-ca.crt" 2>&1)
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Kafka-cluster connection test failed! Failed to connect to $node_ip:$node_port"
+        log -f ${CURRENT_FUNC} "ERROR" "output: $output"
+        # rm -rf $client_secrets_dir
+        return 1
+    fi
+    log -f ${CURRENT_FUNC} "TLS connection to $node_ip:$node_port was successful!"
+    # rm -rf $client_secrets_dir
+    return 0
+
+    kcat -b "$broker_address:$broker_port" -L \
+        -X security.protocol=ssl \
+        -X ssl.key.location="$client_secrets_dir/$broker_secret.key" \
+        -X ssl.certificate.location="$client_secrets_dir/$broker_secret.crt" \
+        -X ssl.ca.location="$client_secrets_dir/clients-ca.crt" \
+        -X enable.ssl.certificate.verification=false
+
+    return 0
+    export broker_address=10.66.65.10
+    export broker_port=31698
+
+    # export broker_secret=brokers-tls-cert
+    export broker_secret=ifoughali
+    export client_secrets_dir=/tmp/kafka-client/secrets/
+
+    mkdir -p $client_secrets_dir
+    kubectl get secret $broker_secret -o jsonpath='{.data.user\.key}' | base64 -d > $client_secrets_dir/$broker_secret.key
+
+    kubectl get secret $broker_secret -o jsonpath='{.data.user\.crt}' | base64 -d > $client_secrets_dir/$broker_secret.crt
+
+    kubectl get secret $broker_secret -o jsonpath='{.data.ca\.crt}' | base64 -d  > $client_secrets_dir/$broker_secret-ca.crt
+
+
+    kcat -b "$broker_address:$broker_port" -L \
+        -X security.protocol=ssl \
+        -X ssl.key.location="$client_secrets_dir/$broker_secret.key" \
+        -X ssl.certificate.location="$client_secrets_dir/$broker_secret.crt" \
+        -X ssl.ca.location="$client_secrets_dir/$broker_secret-ca.crt"
+
+    kcat -b "$broker_address:$broker_port" -L \
+        -X security.protocol=ssl \
+        -X ssl.key.location="$client_secrets_dir/$broker_secret.key" \
+        -X ssl.certificate.location="$client_secrets_dir/$broker_secret.crt" \
+        -X ssl.ca.location="$client_secrets_dir/clients-ca.crt" \
+        -X enable.ssl.certificate.verification=false
+
+    log -f ${CURRENT_FUNC} "Finished testing kafka-cluster"
+
 #     # TODO:
 #     # once the user and topic are created, print the generated password:
 #     local cert_name="kafka-cluster-tls-cert"
@@ -3069,79 +3206,589 @@ install_kafka_cluster() {
 
 
     return 0
-    rm -f /tmp/strimzi-kafka-truststore-$kafka_user_2.jks
-    keytool -delete -alias ca -keystore /tmp/strimzi-kafka-truststore-$kafka_user_2.jks -storepass $store_pass
+    KAFKA_CLUSTER_NAME=kafka-cluster
+    ca_password=kafka_ca_password
+
+    org="orion"
+    org_unit="orion"
+    #############################################################
+    rm -rf pki && mkdir -p pki && cd pki
+    #############################################################
+    broker_cert_chain=broker-cert-chain
+
+    # openssl genrsa -out $tls_secret.key 4096
+
+    # openssl req -x509 -new -nodes -key $tls_secret.key -sha256 -days 365 -out $tls_secret.crt -subj "/CN=ClusterCA"
+
+    openssl req -x509 -new -nodes \
+        -keyout $broker_cert_chain.key \
+        -out  $broker_cert_chain.crt -days 365 \
+        -subj "/CN=$KAFKA_CLUSTER_NAME" \
+        -reqexts SAN \
+        -extensions SAN \
+        -config <(cat <<EOF
+[req]
+distinguished_name=req_distinguished_name
+req_extensions=SAN
+[req_distinguished_name]
+CN = $KAFKA_CLUSTER_NAME-$broker_cert_chain
+O = $org
+OU = $org_unit
+C = FR
+ST = Île-de-France
+L = Paris
+[SAN]
+subjectAltName=DNS:*.kafka,DNS:*.$STRIMZI_KAFKA_NS.svc,DNS:*.$STRIMZI_KAFKA_NS.svc.cluster.local,DNS:kafka-broker-0.pfs.pack,DNS:kafka-broker-1.pfs.pack,DNS:kafka-broker-2.pfs.pack,DNS:kafka-bootstrap.pfs.pack,IP:10.66.65.10,IP:10.66.65.11,IP:10.66.65.12
+EOF
+)
+    kubectl delete secret $broker_cert_chain --ignore-not-found
+    kubectl create secret generic $broker_cert_chain \
+        --from-file=tls.crt=./${broker_cert_chain}.crt \
+        --from-file=tls.key=./${broker_cert_chain}.key
+    #############################################################
+    # tls_secret=cluster-ca
+    tls_secret=clients-ca
+
+    # 1. Generate private key
+    openssl genrsa -out ${tls_secret}.key 4096
+
+    # 2. Generate CSR with SANs (using process substitution)
+    openssl req -new \
+    -key ${tls_secret}.key \
+    -out ${tls_secret}.csr \
+    -subj "/CN=$KAFKA_CLUSTER_NAME-$tls_secret/O=$org/OU=$org_unit/C=FR/ST=Île-de-France/L=Paris" \
+    -reqexts SAN \
+    -config <(cat <<EOF
+[req]
+distinguished_name = req_distinguished_name
+req_extensions = SAN
+
+[req_distinguished_name]
+CN = $KAFKA_CLUSTER_NAME-$tls_secret
+O = $org
+OU = $org_unit
+C = FR
+ST = Île-de-France
+L = Paris
+
+[SAN]
+subjectAltName=DNS:*.kafka,DNS:*.$STRIMZI_KAFKA_NS.svc,DNS:*.$STRIMZI_KAFKA_NS.svc.cluster.local,DNS:kafka-broker-0.pfs.pack,DNS:kafka-broker-1.pfs.pack,DNS:kafka-broker-2.pfs.pack,DNS:kafka-bootstrap.pfs.pack,IP:10.66.65.10,IP:10.66.65.11,IP:10.66.65.12
+EOF
+)
+
+    # 3. Sign CSR with the broker CA cert and key
+    openssl x509 -req -in ${tls_secret}.csr \
+    -CA $broker_cert_chain.crt -CAkey $broker_cert_chain.key \
+    -CAcreateserial -out ${tls_secret}.crt -days 365 -sha256 \
+    -extensions SAN \
+    -extfile <(cat <<EOF
+[SAN]
+subjectAltName=DNS:*.kafka,DNS:*.$STRIMZI_KAFKA_NS.svc,DNS:*.$STRIMZI_KAFKA_NS.svc.cluster.local,DNS:kafka-broker-0.pfs.pack,DNS:kafka-broker-1.pfs.pack,DNS:kafka-broker-2.pfs.pack,DNS:kafka-bootstrap.pfs.pack,IP:10.66.65.10,IP:10.66.65.11,IP:10.66.65.12
+EOF
+)
+
+    # 4. Generate PKCS#12 bundle (Java-friendly)
+    openssl pkcs12 -export -in ${tls_secret}.crt \
+    -inkey ${tls_secret}.key  \
+    -out ${tls_secret}.p12 \
+    -certfile $broker_cert_chain.crt \
+    -password pass:${ca_password}
+
+    # openssl pkcs12 -export -in  ${tls_secret}.crt \
+    #     -nokeys -out -out ${tls_secret}.p12 \
+    #     -password pass:${ca_password} \
+    #     -caname ca.crt
+
+
+    # Replace the cluster CA cert secret in Kubernetes
+    kubectl delete secret ${KAFKA_CLUSTER_NAME}-$tls_secret-cert --ignore-not-found
+    kubectl create secret generic ${KAFKA_CLUSTER_NAME}-$tls_secret-cert \
+    --from-file=ca.crt=${tls_secret}.crt \
+    --from-file=ca.p12=${tls_secret}.p12 \
+    --from-literal=ca.password=${ca_password}
+
+
+    kubectl label secret  $KAFKA_CLUSTER_NAME-$tls_secret-cert strimzi.io/kind=Kafka strimzi.io/cluster="$KAFKA_CLUSTER_NAME" --overwrite
+
+
+    kubectl annotate secret  $KAFKA_CLUSTER_NAME-$tls_secret-cert strimzi.io/ca-cert-generation="0" --overwrite
+
+    kubectl delete secret $KAFKA_CLUSTER_NAME-$tls_secret
+    kubectl create secret generic $KAFKA_CLUSTER_NAME-$tls_secret \
+        --from-file=ca.crt=./${tls_secret}.crt \
+        --from-file=ca.key=./${tls_secret}.key
+
+    kubectl label secret $KAFKA_CLUSTER_NAME-$tls_secret strimzi.io/kind=Kafka strimzi.io/cluster="$KAFKA_CLUSTER_NAME" --overwrite
+
+    kubectl annotate secret $KAFKA_CLUSTER_NAME-$tls_secret strimzi.io/ca-key-generation="0" --overwrite
+    #############################################################
 
 
 
-    keytool -importcert -alias ca -file /tmp/ca.crt -keystore /tmp/truststore-$kafka_user_2.jks -storepass $store_pass -noprompt
-
-    keytool -import -trustcacerts -alias kafka-ca-$store_pass -file /tmp/ca.crt -keystore /tmp/truststore-$kafka_user_2.jks -storepass $store_pass -noprompt
-
-    kubectl delete secret ssl-$kafka_user_2 -n $STRIMZI_KAFKA_NS
-    kubectl create secret generic ssl-$kafka_user_2 --from-file=truststore.jks=/tmp/truststore-$kafka_user_2.jks -n $STRIMZI_KAFKA_NS
-
-    # kubectl create configmap ssl-$kafka_user_2 --from-file=truststore.jks=/tmp/truststore-$kafka_user_2.jks -n $STRIMZI_KAFKA_NS
 
 
 
-    openssl s_client -connect kafka-bootstrap.pfs.pack:9092 -showcerts </dev/null   | openssl x509 -outform PEM > /tmp/kafka-server.crt
-
-    rm /tmp/truststore-$kafka_user_2.jks
-
-    keytool -import -trustcacerts -alias kafka-ca-$store_pass -file /tmp/kafka-server.crt -keystore /tmp/truststore-$kafka_user_2.jks -storepass $store_pass -noprompt
-
-    kubectl delete secret ssl-$kafka_user_2 -n $STRIMZI_KAFKA_NS
-    kubectl create secret generic ssl-$kafka_user_2 --from-file=truststore.jks=/tmp/truststore-$kafka_user_2.jks -n $STRIMZI_KAFKA_NS
 
 
 
-    ########################################################
 
 
-    JAAS_CONFIG=$(kubectl get secret $kafka_user_2 -o json | jq '.data."sasl.jaas.config"' | tr -d '"' | base64 --decode)
+
+
+
+
+
+
+
+
+
+
+
+    return 0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+
+
+generate_certs(){
+    local tls_secret=$1
+    local ca_password=$2
+    local secrets_path=$3
+    local sign_cert=${4:-false}
+    mkdir -p $secrets_path
+    # local org=$3
+    # local org_unit=$4
+    # local broker_cert_chain=$5
+
+    # if [ "$tls_secret" = "clients-ca" ]; then
+    #     local sign_cert=true
+    # fi
+    # 1. Generate private key
+    # openssl genrsa -out ${tls_secret}.key 4096
+
+    if [ "$sign_cert" = true ]; then
+        log -f ${CURRENT_FUNC} "Generating private key and CSR for $tls_secret..."
+        openssl genrsa -out "$secrets_path/$tls_secret.key" 4096
+
+        openssl req -new -key "$secrets_path/$tls_secret.key" -out "$secrets_path/$tls_secret.csr" -subj "/CN=$tls_secret"
+
+        log -f ${CURRENT_FUNC} "Signing $tls_secret CSR with cluster-ca..."
+        # Assumes cluster-ca.key and cluster-ca.crt exist in $secrets_path
+        openssl x509 -req -in "$secrets_path/$tls_secret.csr" \
+            -CA "$secrets_path/cluster-ca.crt" \
+            -CAkey "$secrets_path/cluster-ca.key" \
+            -CAcreateserial \
+            -out "$secrets_path/$tls_secret.crt" \
+            -days 365
+
+        # Clean up CSR and serial
+        rm -f "$secrets_path/$tls_secret.csr" "$secrets_path/cluster-ca.srl"
+    else
+        log -f ${CURRENT_FUNC} "Generating self-signed cert for $tls_secret..."
+        openssl req -x509 -new -nodes -keyout "$secrets_path/$tls_secret.key" \
+            -out "$secrets_path/$tls_secret.crt" -days 365 -subj "/CN=$tls_secret"
+    fi
+
+
+
+    log -f ${CURRENT_FUNC} "Generating PKCS12 for $tls_secret..."
+    openssl pkcs12 -export \
+        -in "$secrets_path/$tls_secret.crt" \
+        -inkey "$secrets_path/$tls_secret.key" \
+        -out "$secrets_path/$tls_secret.p12" \
+        -caname ca.crt \
+        -password pass:"$ca_password"
+
+
+    log -f ${CURRENT_FUNC} "Creating Kubernetes secrets for $tls_secret..."
+    kubectl delete secret ${KAFKA_CLUSTER_NAME}-$tls_secret-cert -n $STRIMZI_KAFKA_NS --ignore-not-found
+    kubectl create secret generic ${KAFKA_CLUSTER_NAME}-$tls_secret-cert \
+        -n $STRIMZI_KAFKA_NS \
+        --from-file=ca.crt="$secrets_path/${tls_secret}.crt" \
+        --from-file=ca.p12="$secrets_path/${tls_secret}.p12" \
+        --from-literal=ca.password="$ca_password"
+
+    kubectl label secret ${KAFKA_CLUSTER_NAME}-$tls_secret-cert -n $STRIMZI_KAFKA_NS \
+        strimzi.io/kind=Kafka strimzi.io/cluster="$KAFKA_CLUSTER_NAME" --overwrite
+    kubectl annotate secret ${KAFKA_CLUSTER_NAME}-$tls_secret-cert -n $STRIMZI_KAFKA_NS \
+        strimzi.io/ca-cert-generation="0" --overwrite
+
+    kubectl delete secret ${KAFKA_CLUSTER_NAME}-$tls_secret -n $STRIMZI_KAFKA_NS --ignore-not-found
+    kubectl create secret generic ${KAFKA_CLUSTER_NAME}-$tls_secret \
+        -n $STRIMZI_KAFKA_NS \
+        --from-file=ca.crt="$secrets_path/${tls_secret}.crt" \
+        --from-file=ca.key="$secrets_path/${tls_secret}.key"
+
+    kubectl label secret ${KAFKA_CLUSTER_NAME}-$tls_secret -n $STRIMZI_KAFKA_NS \
+        strimzi.io/kind=Kafka strimzi.io/cluster="$KAFKA_CLUSTER_NAME" --overwrite
+    kubectl annotate secret ${KAFKA_CLUSTER_NAME}-$tls_secret \
+        -n $STRIMZI_KAFKA_NS \
+        strimzi.io/ca-key-generation="0" --overwrite
+    #############################################################
+    return 0
+    ###########################################################
+    export broker_address=10.66.65.10
+    export broker_port=31698
+
+    # export broker_secret=brokers-tls-cert
+    export broker_secret=ifoughali
+    export client_secrets_dir=/tmp/kafka-client/secrets/
+
+    mkdir -p $client_secrets_dir
+    kubectl get secret $broker_secret -o jsonpath='{.data.user\.key}' | base64 -d > $client_secrets_dir/$broker_secret.key
+
+    kubectl get secret $broker_secret -o jsonpath='{.data.user\.crt}' | base64 -d > $client_secrets_dir/$broker_secret.crt
+
+    kubectl get secret $broker_secret -o jsonpath='{.data.ca\.crt}' | base64 -d  > $client_secrets_dir/$broker_secret-ca.crt
+
+
+    kcat -b "$broker_address:$broker_port" -L \
+        -X security.protocol=ssl \
+        -X ssl.key.location="$client_secrets_dir/$broker_secret.key" \
+        -X ssl.certificate.location="$client_secrets_dir/$broker_secret.crt" \
+        -X ssl.ca.location="$client_secrets_dir/$broker_secret-ca.crt"
+
+    kcat -b "$broker_address:$broker_port" -L \
+        -X security.protocol=ssl \
+        -X ssl.key.location="$client_secrets_dir/$broker_secret.key" \
+        -X ssl.certificate.location="$client_secrets_dir/$broker_secret.crt" \
+        -X ssl.ca.location="clients-ca.crt" \
+        -X enable.ssl.certificate.verification=false
+    ###########################################################
+    return 0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#     # 2. Generate CSR with SANs (using process substitution)
+#     openssl req -new \
+#     -key ${tls_secret}.key \
+#     -out ${tls_secret}.csr \
+#     -subj "/CN=$KAFKA_CLUSTER_NAME-$tls_secret/O=$org/OU=$org_unit/C=FR/ST=Île-de-France/L=Paris" \
+#     -reqexts SAN \
+#     -config <(cat <<EOF
+# [req]
+# distinguished_name = req_distinguished_name
+# req_extensions = SAN
+
+# [req_distinguished_name]
+# CN = $KAFKA_CLUSTER_NAME-$tls_secret
+# O = $org
+# OU = $org_unit
+# C = FR
+# ST = Île-de-France
+# L = Paris
+
+# [SAN]
+# subjectAltName=DNS:*.kafka,DNS:*.$STRIMZI_KAFKA_NS.svc,DNS:*.$STRIMZI_KAFKA_NS.svc.cluster.local,DNS:kafka-broker-0.pfs.pack,DNS:kafka-broker-1.pfs.pack,DNS:kafka-broker-2.pfs.pack,DNS:kafka-bootstrap.pfs.pack,IP:10.66.65.10,IP:10.66.65.11,IP:10.66.65.12
+# EOF
+# )
+
+#     # 3. Sign CSR with the broker CA cert and key
+#     openssl x509 -req -in ${tls_secret}.csr \
+#     -CA $broker_cert_chain.crt -CAkey $broker_cert_chain.key \
+#     -CAcreateserial -out ${tls_secret}.crt -days 365 -sha256 \
+#     -extensions SAN \
+#     -extfile <(cat <<EOF
+# [SAN]
+# subjectAltName=DNS:*.kafka,DNS:*.$STRIMZI_KAFKA_NS.svc,DNS:*.$STRIMZI_KAFKA_NS.svc.cluster.local,DNS:kafka-broker-0.pfs.pack,DNS:kafka-broker-1.pfs.pack,DNS:kafka-broker-2.pfs.pack,DNS:kafka-bootstrap.pfs.pack,IP:10.66.65.10,IP:10.66.65.11,IP:10.66.65.12
+# EOF
+# )
+
+#     # 4. Generate PKCS#12 bundle (Java-friendly)
+#     openssl pkcs12 -export -in ${tls_secret}.crt \
+#     -inkey ${tls_secret}.key  \
+#     -out ${tls_secret}.p12 \
+#     -certfile $broker_cert_chain.crt \
+#     -password pass:${ca_password}
+
+#     # openssl pkcs12 -export -in  ${tls_secret}.crt \
+#     #     -nokeys -out -out ${tls_secret}.p12 \
+#     #     -password pass:${ca_password} \
+#     #     -caname ca.crt
+
+
+#     # Replace the cluster CA cert secret in Kubernetes
+#     kubectl delete secret ${KAFKA_CLUSTER_NAME}-$tls_secret-cert --ignore-not-found
+#     kubectl create secret generic ${KAFKA_CLUSTER_NAME}-$tls_secret-cert \
+#     --from-file=ca.crt=${tls_secret}.crt \
+#     --from-file=ca.p12=${tls_secret}.p12 \
+#     --from-literal=ca.password=${ca_password}
+
+
+#     kubectl label secret  $KAFKA_CLUSTER_NAME-$tls_secret-cert strimzi.io/kind=Kafka strimzi.io/cluster="$KAFKA_CLUSTER_NAME" --overwrite
+
+
+#     kubectl annotate secret  $KAFKA_CLUSTER_NAME-$tls_secret-cert strimzi.io/ca-cert-generation="0" --overwrite
+
+#     kubectl delete secret $KAFKA_CLUSTER_NAME-$tls_secret
+#     kubectl create secret generic $KAFKA_CLUSTER_NAME-$tls_secret \
+#         --from-file=ca.crt=./${tls_secret}.crt \
+#         --from-file=ca.key=./${tls_secret}.key
+
+#     kubectl label secret $KAFKA_CLUSTER_NAME-$tls_secret strimzi.io/kind=Kafka strimzi.io/cluster="$KAFKA_CLUSTER_NAME" --overwrite
+
+#     kubectl annotate secret $KAFKA_CLUSTER_NAME-$tls_secret strimzi.io/ca-key-generation="0" --overwrite
+#     #############################################################
+
+
+
+#     tls_secret=clients-ca
+
+#     openssl genrsa -out $tls_secret.key 4096
+
+#     openssl req -x509 -new -nodes -key $tls_secret.key -sha256 -days 365 -out $tls_secret.crt -subj "/CN=$KAFKA_CLUSTER_NAME-$tls_secret"
+#     #############################################################
+#     kubectl delete secret $KAFKA_CLUSTER_NAME-$tls_secret-cert
+#     kubectl create secret generic $KAFKA_CLUSTER_NAME-$tls_secret-cert --from-file=ca.crt=$tls_secret.crt
+
+
+
+#     kubectl label secret  $KAFKA_CLUSTER_NAME-$tls_secret-cert strimzi.io/kind=Kafka strimzi.io/cluster="$KAFKA_CLUSTER_NAME" --overwrite
+
+#     kubectl annotate secret $KAFKA_CLUSTER_NAME-$tls_secret-cert strimzi.io/ca-cert-generation="0" --overwrite
+
+#     kubectl delete secret $KAFKA_CLUSTER_NAME-$tls_secret
+#     kubectl create secret generic $KAFKA_CLUSTER_NAME-$tls_secret \
+#         --from-file=ca.crt=./$tls_secret.crt \
+#         --from-file=ca.key=./$tls_secret.key
+
+#     kubectl label secret $KAFKA_CLUSTER_NAME-$tls_secret strimzi.io/kind=Kafka strimzi.io/cluster="$KAFKA_CLUSTER_NAME" --overwrite
+
+#     kubectl annotate secret $KAFKA_CLUSTER_NAME-$tls_secret strimzi.io/ca-key-generation="0" --overwrite
+
+
+
+
+
+
+
+#     ###########################################################
+#     export broker_address=10.66.65.10
+#     export broker_port=32084
+
+#     # export broker_secret=brokers-tls-cert
+#     export broker_secret=ifoughali
+#     export client_secrets_dir=/tmp/kafka-client/secrets/
+
+#     mkdir -p $client_secrets_dir
+#     kubectl get secret $broker_secret -o jsonpath='{.data.user\.key}' | base64 -d > $client_secrets_dir/$broker_secret.key
+
+#     kubectl get secret $broker_secret -o jsonpath='{.data.user\.crt}' | base64 -d > $client_secrets_dir/$broker_secret.crt
+
+#     kubectl get secret $broker_secret -o jsonpath='{.data.ca\.crt}' | base64 -d  > $client_secrets_dir/$broker_secret-ca.crt
+
+
+#     kcat -b "$broker_address:$broker_port" -L \
+#         -X security.protocol=ssl \
+#         -X ssl.key.location="$client_secrets_dir/$broker_secret.key" \
+#         -X ssl.certificate.location="$client_secrets_dir/$broker_secret.crt" \
+#         -X ssl.ca.location="$client_secrets_dir/$broker_secret-ca.crt"
+
+#     kcat -b "$broker_address:$broker_port" -L \
+#         -X security.protocol=ssl \
+#         -X ssl.key.location="$client_secrets_dir/$broker_secret.key" \
+#         -X ssl.certificate.location="$client_secrets_dir/$broker_secret.crt" \
+#         -X ssl.ca.location="$client_secrets_dir/$broker_secret-ca.crt" \
+#         -X enable.ssl.certificate.verification=false
+
+
+
+#     # TODO: make sure they match :
+#     openssl rsa -noout -modulus -in "$client_secrets_dir/$broker_secret.key" | openssl md5
+#     openssl rsa -noout -modulus -in "$client_secrets_dir/$broker_secret.key" | openssl md5
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#     kubectl create secret generic <ca_key_secret> --from-file=ca.key=ca.key
+
+
+
+#     kubectl delete -f strimzi-kafka-operator/cluster-crd.yaml
+
+#     kubectl delete -f strimzi-kafka-operator/pki/clients.yaml
+#     kubectl delete -f strimzi-kafka-operator/pki/cluster.yaml
+#     kubectl delete -f strimzi-kafka-operator/pki/kafka-issuer.yaml
+#     kubectl delete -f strimzi-kafka-operator/brokers.yaml
+
+#     kubectl delete secret -n $STRIMZI_KAFKA_NS \
+#         kafka-cluster-clients-ca \
+#         kafka-cluster-clients-ca-cert \
+#         kafka-cluster-cluster-ca  \
+#         kafka-cluster-cluster-ca-cert \
+#         kafka-cluster-cluster-operator-certs \
+#         kafka-root-ca \
+#         brokers-tls-cert
+
+#     # kubectl delete -f strimzi-kafka-operator/pki/role-binding.yaml
+
+#     kubectl apply -f strimzi-kafka-operator/pki/kafka-issuer.yaml
+
+#     kubectl apply -f strimzi-kafka-operator/pki/clients.yaml
+#     kubectl apply -f strimzi-kafka-operator/pki/cluster.yaml
+#     kubectl apply -f strimzi-kafka-operator/pki/brokers.yaml
+
+#     sleep 10
+
+#     kubectl delete pod -n ${STRIMZI_KAFKA_NS}  --field-selector=status.phase=Succeeded > /dev/null 2>&1 || true
+
+#     kubectl apply -f strimzi-kafka-operator/cluster-crd.yaml
+
+
+
+
+
+
+#         secret=kafka-cluster-controller-0
+
+#         kubectl get secrets $secret  -o yaml > secrets/$secret.yaml
+
+
+
+
+
+
+
+
+
+#     rm -f /tmp/strimzi-kafka-truststore-$kafka_user_2.jks
+#     keytool -delete -alias ca -keystore /tmp/strimzi-kafka-truststore-$kafka_user_2.jks -storepass $store_pass
+
+
+
+#     keytool -importcert -alias ca -file /tmp/ca.crt -keystore /tmp/truststore-$kafka_user_2.jks -storepass $store_pass -noprompt
+
+#     keytool -import -trustcacerts -alias kafka-ca-$store_pass -file /tmp/ca.crt -keystore /tmp/truststore-$kafka_user_2.jks -storepass $store_pass -noprompt
+
+#     kubectl delete secret ssl-$kafka_user_2 -n $STRIMZI_KAFKA_NS
+#     kubectl create secret generic ssl-$kafka_user_2 --from-file=truststore.jks=/tmp/truststore-$kafka_user_2.jks -n $STRIMZI_KAFKA_NS
+
+#     # kubectl create configmap ssl-$kafka_user_2 --from-file=truststore.jks=/tmp/truststore-$kafka_user_2.jks -n $STRIMZI_KAFKA_NS
+
+
+
+#     openssl s_client -connect kafka-bootstrap.pfs.pack:9092 -showcerts </dev/null   | openssl x509 -outform PEM > /tmp/kafka-server.crt
+
+#     rm /tmp/truststore-$kafka_user_2.jks
+
+#     keytool -import -trustcacerts -alias kafka-ca-$store_pass -file /tmp/kafka-server.crt -keystore /tmp/truststore-$kafka_user_2.jks -storepass $store_pass -noprompt
+
+#     kubectl delete secret ssl-$kafka_user_2 -n $STRIMZI_KAFKA_NS
+#     kubectl create secret generic ssl-$kafka_user_2 --from-file=truststore.jks=/tmp/truststore-$kafka_user_2.jks -n $STRIMZI_KAFKA_NS
+
+
+
+#     ########################################################
+
+
+#     JAAS_CONFIG=$(kubectl get secret $kafka_user_2 -o json | jq '.data."sasl.jaas.config"' | tr -d '"' | base64 --decode)
+# #     cat <<EOF > /tmp/kafka-user-$kafka_user_2-config.properties
+# # bootstrap.servers=kafka-bootstrap.pfs.pack:9092
+# # sasl.jaas.config=$JAAS_CONFIG
+# # security.protocol=SSL
+# # sasl.mechanism=SCRAM-SHA-512
+# # ssl.truststore.location=/tmp/strimzi-kafka-truststore.jks
+# # ssl.truststore.password=$store_pass
+# # EOF
+
 #     cat <<EOF > /tmp/kafka-user-$kafka_user_2-config.properties
 # bootstrap.servers=kafka-bootstrap.pfs.pack:9092
+# enable.ssl.certificate.verification=false
 # sasl.jaas.config=$JAAS_CONFIG
-# security.protocol=SSL
+# security.protocol=SASL_SSL
 # sasl.mechanism=SCRAM-SHA-512
-# ssl.truststore.location=/tmp/strimzi-kafka-truststore.jks
+# ssl.truststore.location=/tmp/kafka-truststore/truststore.jks
 # ssl.truststore.password=$store_pass
 # EOF
-
-    cat <<EOF > /tmp/kafka-user-$kafka_user_2-config.properties
-bootstrap.servers=kafka-bootstrap.pfs.pack:9092
-enable.ssl.certificate.verification=false
-sasl.jaas.config=$JAAS_CONFIG
-security.protocol=SASL_SSL
-sasl.mechanism=SCRAM-SHA-512
-ssl.truststore.location=/tmp/kafka-truststore/truststore.jks
-ssl.truststore.password=$store_pass
-EOF
-# #     ########################################################
-    kubectl delete configmap kafka-user-$kafka_user_2-config -n $STRIMZI_KAFKA_NS
-    kubectl create configmap kafka-user-$kafka_user_2-config --from-file=kafka-client-config.properties=/tmp/kafka-user-$kafka_user_2-config.properties -n $STRIMZI_KAFKA_NS
+# # #     ########################################################
+#     kubectl delete configmap kafka-user-$kafka_user_2-config -n $STRIMZI_KAFKA_NS
+#     kubectl create configmap kafka-user-$kafka_user_2-config --from-file=kafka-client-config.properties=/tmp/kafka-user-$kafka_user_2-config.properties -n $STRIMZI_KAFKA_NS
 
 
 
 
 
-#     kubectl delete -f strimzi-kafka-operator/kafka-prodcon-test.yaml
-#     kubectl apply -f strimzi-kafka-operator/kafka-prodcon-test.yaml
+# #     kubectl delete -f strimzi-kafka-operator/kafka-prodcon-test.yaml
+# #     kubectl apply -f strimzi-kafka-operator/kafka-prodcon-test.yaml
 
-    ###################################################################
-    # TS:
-    # openssl s_client -debug -connect kafka-bootstrap.pfs.pack:9092 -tls1_3
-    # test if port and fqdn is reachable
-    # from host: nc -zv kafka-broker-0.pfs.pack 9092
-    # kubectl exec -ti deployments/producer -- nc -zv kafka-cluster-kafka-external1-bootstrap 9092
-    ###################################################################
+#     ###################################################################
+#     # TS:
+#     # openssl s_client -debug -connect kafka-bootstrap.pfs.pack:9092 -tls1_3
+#     # test if port and fqdn is reachable
+#     # from host: nc -zv kafka-broker-0.pfs.pack 9092
+#     # kubectl exec -ti deployments/producer -- nc -zv kafka-cluster-kafka-external1-bootstrap 9092
+#     ###################################################################
 
 
 
-    # TODO: CHECK FOR KAFKA CLUSTER STATUS in a loop....
-    #  kubectl get kafka kafka-cluster -o=jsonpath='{.spec.kafka.listeners[?(@.name=="external")].bootstrapServers}{"\n"}'
-    # kafka-cluster-kafka-external-bootstrap.strimzi-kafka.svc:9094
+#     # TODO: CHECK FOR KAFKA CLUSTER STATUS in a loop....
+#     #  kubectl get kafka kafka-cluster -o=jsonpath='{.spec.kafka.listeners[?(@.name=="external")].bootstrapServers}{"\n"}'
+#     # kafka-cluster-kafka-external-bootstrap.strimzi-kafka.svc:9094
 }
 
 
@@ -4094,19 +4741,19 @@ if [ "$INSTALL_CLUSTER" = true ]; then
 #     #     exit 1
 #     # fi
 
-    if ! install_keycloak; then
-        log -f "main" "ERROR" "Failed to install keycloak on the cluster"
-        exit 1
-    fi
+    # if ! install_keycloak; then
+    #     log -f "main" "ERROR" "Failed to install keycloak on the cluster"
+    #     exit 1
+    # fi
 #     ##################################################################
         # if ! install_kafka_operator; then
         #     log -f "main" "ERROR" "Failed to install kafka on the cluster"
         #     exit 1
         # fi
-        # if ! install_kafka_cluster; then
-        #     log -f "main" "ERROR" "Failed to install kafka on the cluster"
-        #     exit 1
-        # fi
+        if ! install_kafka_cluster; then
+            log -f "main" "ERROR" "Failed to install kafka on the cluster"
+            exit 1
+        fi
 #     ##################################################################
 #     # install_akhq
     # install_kafka_ui
