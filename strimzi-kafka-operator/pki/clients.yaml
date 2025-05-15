@@ -1,0 +1,161 @@
+# ---
+# apiVersion: cert-manager.io/v1
+# kind: Certificate
+# metadata:
+#   name: kafka-cluster-clients-ca
+#   namespace: strimzi-kafka
+# spec:
+#   isCA: true
+#   commonName: kafka-cluster-clients-ca
+#   secretName: kafka-cluster-clients-ca
+#   duration: 8760h # 1 years
+#   renewBefore: 720h # 30 days before expiry
+#   # keystores:
+#   #   jks:
+#   #     create: true
+#   #     password: "abc123"
+#   #   pkcs12:
+#   #     create: true
+#   #     password: "password"
+#   privateKey:
+#     algorithm: RSA
+#     encoding: PKCS8
+#     size: 4096
+#   dnsNames:
+#   # External (Optional)
+#   - kafka-broker-0.pfs.pack
+#   - kafka-broker-1.pfs.pack
+#   - kafka-broker-2.pfs.pack
+#   - kafka-bootstrap.pfs.pack
+#   # Internal (optional)
+#   # - kafka-bootstrap.strimzi-kafka.svc
+#   # - kafka-broker-0.strimzi-kafka.svc
+#   # - kafka-broker-1.strimzi-kafka.svc
+#   # - kafka-broker-2.strimzi-kafka.svc
+#   - "*.kafka-cluster-kafka-brokers"
+#   - "*.kafka-cluster-kafka-brokers.strimzi-kafka.svc"
+#   - kafka-cluster-kafka-bootstrap
+#   - kafka-cluster-kafka-bootstrap.strimzi-kafka.svc
+#   issuerRef:
+#     name:  kafka-ca-issuer
+#     # name: kafka-cluster-ca-issuer
+#     kind: Issuer
+#   secretTemplate:
+#     labels:
+#       strimzi.io/kind: Kafka
+#       strimzi.io/cluster: kafka-cluster
+#     annotations:
+#       strimzi.io/ca-cert-generation: "0"
+#       strimzi.io/ca-key-generation: "0"
+
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: kafka-cluster-clients-ca
+  namespace: strimzi-kafka
+spec:
+  secretName: kafka-cluster-clients-ca
+  isCA: true
+  commonName: kafka-cluster-clients-ca
+  duration: 8760h  # 1 years
+  renewBefore: 720h # 30 days
+  privateKey:
+    algorithm: RSA
+    size: 2048
+  issuerRef:
+    name: kafka-ca-issuer
+    kind: Issuer
+  # usages:
+  #   - cert sign
+  #   - crl sign
+  secretTemplate:
+    labels:
+      strimzi.io/cluster: kafka-cluster
+      strimzi.io/kind: Kafka
+      app.kubernetes.io/instance: kafka-cluster
+      app.kubernetes.io/name: certificate-authority
+      app.kubernetes.io/part-of: strimzi-kafka-cluster
+      strimzi.io/component-type: certificate-authority
+      strimzi.io/name: strimzi
+    annotations:
+      # strimzi.io/cluster-ca-cert: "true"
+      # strimzi.io/ca-cert-generation: "0"
+      # strimzi.io/ca-key-generation: "0"
+      strimzi.io/clients-ca-cert-generation: "0"
+      strimzi.io/cluster-ca-cert-generation: "0"
+    # ownerReferences:
+    # - apiVersion: kafka.strimzi.io/v1beta2
+    #   # blockOwnerDeletion: false
+    #   # controller: false
+    #   kind: Kafka
+    #   name: kafka-cluster
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: generate-strimzi-clients-ca-secrets
+  namespace: strimzi-kafka
+spec:
+  template:
+    spec:
+      serviceAccountName: ca-job-sa
+      containers:
+      - name: generate
+        image: bitnami/kubectl:latest
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          PASSWORD=$(openssl rand -base64 32)
+          mkdir /tmp/out
+
+          cp /tls/tls.crt /tmp/out/ca.crt
+          cp /tls/tls.key /tmp/out/ca.key
+
+          openssl pkcs12 -export \
+            -in /tls/tls.crt \
+            -inkey /tls/tls.key \
+            -out /tmp/out/ca.p12 \
+            -passout pass:$PASSWORD
+
+          echo -n "$PASSWORD" > /tmp/out/ca.password
+
+          # Create CA certificate + P12 secret
+          kubectl create secret generic kafka-cluster-clients-ca-cert \
+            --from-file=ca.crt=/tmp/out/ca.crt \
+            --from-file=ca.p12=/tmp/out/ca.p12 \
+            --from-file=ca.password=/tmp/out/ca.password \
+            -n strimzi-kafka --dry-run=client -o yaml | \
+            kubectl apply -f -
+
+          # Create CA key secret
+          kubectl create secret generic kafka-cluster-clients-ca \
+            --from-file=ca.key=/tmp/out/ca.key \
+            -n strimzi-kafka --dry-run=client -o yaml | \
+            kubectl apply -f -
+
+          # Label + annotate
+          kubectl annotate secret kafka-cluster-clients-ca-cert \
+            -n strimzi-kafka --overwrite \
+            strimzi.io/clients-ca-cert-generation="0" \
+            strimzi.io/cluster-ca-cert-generation="0"
+
+          kubectl label secret kafka-cluster-clients-ca-cert \
+            -n strimzi-kafka --overwrite \
+            strimzi.io/kind=Kafka \
+            strimzi.io/cluster=kafka-cluster \
+            app.kubernetes.io/managed-by=strimzi-cluster-operator \
+            app.kubernetes.io/name=certificate-authority \
+            app.kubernetes.io/part-of=strimzi-kafka-cluster \
+            strimzi.io/component-type=certificate-authority \
+            strimzi.io/name=strimzi
+        volumeMounts:
+        - name: tls
+          mountPath: /tls
+      restartPolicy: OnFailure
+      volumes:
+      - name: tls
+        secret:
+          secretName: kafka-cluster-clients-ca

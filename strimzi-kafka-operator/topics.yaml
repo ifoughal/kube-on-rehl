@@ -1,0 +1,25 @@
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: test-topic
+  namespace: strimzi-kafka
+  labels:
+    strimzi.io/cluster: kafka-cluster
+spec:
+  config:
+    retention.ms: 604800000
+    segment.bytes: 1073741824
+    # producerByteRate: 1048576 # (1)
+    # consumerByteRate: 2097152 # (2)
+    # requestPercentage: 55 # (3)
+    # controllerMutationRate: 10 # (4)
+#     Byte-per-second quota on the amount of data the user can push to a Kafka broker.
+
+# Byte-per-second quota on the amount of data the user can fetch from a Kafka broker.
+
+# CPU utilization limit as a percentage of time for a client group.
+
+# Number of concurrent partition creation and deletion operations (mutations) allowed per second.
+  partitions: 12
+  replicas: 3

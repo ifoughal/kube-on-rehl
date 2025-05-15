@@ -1,0 +1,31 @@
+# ---
+# # generate kafka cluster root ca to be used by the kafka issuer
+# apiVersion: cert-manager.io/v1
+# kind: Certificate
+# metadata:
+#   name: kafka-root-ca
+#   namespace: strimzi-kafka
+# spec:
+#   isCA: true
+#   commonName: kafka-root-ca
+#   secretName: kafka-root-ca
+#   duration: 8760h # 1 years
+#   renewBefore: 720h # 30 days before expiry
+#   privateKey:
+#     algorithm: RSA
+#     size: 2048
+#     encoding: PKCS8
+#   issuerRef:
+#     name: selfsigned-bootstrap
+#     kind: ClusterIssuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: kafka-ca-issuer
+  namespace: strimzi-kafka
+spec:
+  ca:
+    # secretName: kafka-root-ca
+    secretName: kafka-cluster-cluster-ca-cert
+---
