@@ -40,11 +40,6 @@ spec:
   - name: kafka-tls-passthrough
     protocol: TLS
     port: 9093
-    # tls:
-    #   mode: Terminate
-    #   certificateRefs:
-    #   - kind: Secret
-    #     name: shared-tls
     tls:
       mode: Passthrough
     allowedRoutes:
