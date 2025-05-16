@@ -976,8 +976,8 @@ update_firewall() {
 generate_http_gateway() {
     set -euo pipefail
 
-    local template_file="./cilium/http-gateway.jinja"
-    local output_file="/tmp/http-gateway.yaml"
+    local template_file="./cilium/gateway.jinja"
+    local output_file="/tmp/gateway.yaml"
 
     local addresses=()
     while read -r node; do
