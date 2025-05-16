@@ -82,9 +82,9 @@ spec:
     #       # loadBalancerIP: 10.66.65.10
 
     - name: tls
-      port: 9095
-      # type: cluster-ip
-      type: nodeport
+      port: 9093
+      type: cluster-ip
+      # type: nodeport
       tls: true
       authentication:
         # type: scram-sha-512
@@ -107,32 +107,34 @@ spec:
         # - secretName: brokers-tls-cert
         #   pattern: "*.crt"
       configuration:
-        # brokerCertChainAndKey:
-        #   # secretName: kafka-cluster-cluster-ca
-        #   secretName: broker-cert-chain
-        #   certificate: ca.crt
-        #   key: ca.key
+        # useServiceDnsDomain: true # internal or cluster-ip only
+        brokerCertChainAndKey:
+          # secretName: kafka-cluster-cluster-ca
+          secretName: brokers-tls-cert
+          certificate: ca.crt
+          key: tls.key
         brokers:
         - broker: 10
-          # annotations:
-          #   external-dns.alpha.kubernetes.io/hostname: kafka-broker-0.pfs.pack.
-          #   external-dns.alpha.kubernetes.io/ttl: "60"
-          # host: kafka-broker-0.pfs.pack
-          advertisedHost: kafka-broker-0.pfs.pack
-          advertisedPort: 9095
+          # nodePort: 32010
+          # host: kafka-broker-0.pfs.pack # for route & ingress listeners only!
+          # advertisedHost: kafka-broker-0.pfs.pack
+          advertisedHost: broker-0-kafka-cluster.pfs.pack
+          advertisedPort: 9093
         - broker: 11
-          advertisedHost: kafka-broker-1.pfs.pack
-          advertisedPort: 9095
+          # nodePort: 32011
+          # advertisedHost: kafka-broker-1.pfs.pack
+          advertisedHost: broker-1-kafka-cluster.pfs.pack
+          advertisedPort: 9093
         - broker: 12
-          advertisedHost: kafka-broker-2.pfs.pack
-          advertisedPort: 9095
-        bootstrap:
-          alternativeNames:
-          - kafka-bootstrap.pfs.pack
-          # annotations:
-          #    external-dns.alpha.kubernetes.io/hostname: kafka-bootstrap.pfs.pack.
-          #    external-dns.alpha.kubernetes.io/ttl: "60"
-          # host: kafka-bootstrap.pfs.pack
+          # nodePort: 32012
+          # advertisedHostTemplate: kafka-broker-{nodeId}.pfs.pack
+          # advertisedHost: kafka-broker-2.pfs.pack
+          advertisedHost: broker-2-kafka-cluster.pfs.pack
+          advertisedPort: 9093
+        # bootstrap:
+        #   nodePort: 32100
+        #   alternativeNames:
+        #   - kafka-bootstrap.pfs.pack
         createBootstrapService: true
 
   entityOperator:
@@ -368,7 +370,7 @@ metadata:
 spec:
   replicas: 1
   roles:
-    - broker
+  - broker
   template:
     pod:
       securityContext:
@@ -413,7 +415,7 @@ metadata:
 spec:
   replicas: 1
   roles:
-    - broker
+  - broker
   template:
     pod:
       securityContext:

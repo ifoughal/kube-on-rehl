@@ -11,74 +11,97 @@ metadata:
 spec:
   hostnames:
   - kafka-broker-0.pfs.pack
+  - broker-0-kafka-cluster.pfs.pack
   parentRefs:
-  - name: shared-https-gateway
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: shared-https-gateway
     namespace: kube-system
     sectionName: kafka-tls-passthrough
+    # name: kafka-gateway
+    # namespace: strimzi-kafka
+    # sectionName: kafka-listener
   rules:
   - backendRefs:
-    - name: kafka-cluster-broker-a-sasltls-10
+    - name: kafka-cluster-broker-a-tls-10
       namespace: strimzi-kafka
-      port: 9095
-# ---
-# apiVersion: gateway.networking.k8s.io/v1alpha2
-# kind: TLSRoute
-# metadata:
-#   name: kafka-cluster-broker-11
-#   namespace: strimzi-kafka
-# spec:
-#   hostnames:
-#   - kafka-broker-1.pfs.pack
-#   parentRefs:
-#   - name: shared-https-gateway
-#     namespace: kube-system
-#     sectionName: kafka-tls-passthrough
-#   rules:
-#   - backendRefs:
-#     - group: gateway.networking.k8s.io
-#       kind: Service
-#       name: kafka-cluster-broker-externaltls-11
-#       namespace: strimzi-kafka
-#       port: 9093
-# ---
-# apiVersion: gateway.networking.k8s.io/v1alpha2
-# kind: TLSRoute
-# metadata:
-#   name: kafka-cluster-broker-12
-#   namespace: strimzi-kafka
-# spec:
-#   hostnames:
-#   - kafka-broker-2.pfs.pack
-#   parentRefs:
-#   - name: shared-https-gateway
-#     namespace: kube-system
-#     sectionName: kafka-tls-passthrough
-#   rules:
-#   - backendRefs:
-#     - group: gateway.networking.k8s.io
-#       kind: Service
-#       name: kafka-cluster-broker-externaltls-12
-#       namespace: strimzi-kafka
-#       port: 9093
-# ---
-# apiVersion: gateway.networking.k8s.io/v1alpha2
-# kind: TLSRoute
-# metadata:
-#   name: kafka-cluster-bootstrap
-#   namespace: strimzi-kafka
-# spec:
-#   hostnames:
-#   - kafka-bootstrap.pfs.pack
-#   parentRefs:
-#   - name: shared-https-gateway
-#     namespace: kube-system
-#     sectionName: kafka-tls-passthrough
-#   rules:
-#   - backendRefs:
-#     - group: gateway.networking.k8s.io
-#       kind: Service
-#       name: kafka-cluster-kafka-externaltls-bootstrap
-#       namespace: strimzi-kafka
-#       port: 9093
-
-# nc -zv kafka-broker-0.pfs.pack 9092
+      port: 9093
+---
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TLSRoute
+metadata:
+  name: kafka-cluster-broker-11
+  namespace: strimzi-kafka
+spec:
+  hostnames:
+  - kafka-broker-1.pfs.pack
+  - broker-1-kafka-cluster.pfs.pack
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: shared-https-gateway
+    namespace: kube-system
+    sectionName: kafka-tls-passthrough
+    # name: kafka-gateway
+    # namespace: strimzi-kafka
+    # sectionName: kafka-listener
+  rules:
+  - backendRefs:
+    - group: gateway.networking.k8s.io
+      kind: Service
+      name: kafka-cluster-broker-b-tls-11
+      namespace: strimzi-kafka
+      port: 9093
+---
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TLSRoute
+metadata:
+  name: kafka-cluster-broker-12
+  namespace: strimzi-kafka
+spec:
+  hostnames:
+  - kafka-broker-2.pfs.pack
+  - broker-2-kafka-cluster.pfs.pack
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: shared-https-gateway
+    namespace: kube-system
+    sectionName: kafka-tls-passthrough
+    # name: kafka-gateway
+    # namespace: strimzi-kafka
+    # sectionName: kafka-listener
+  rules:
+  - backendRefs:
+    - group: gateway.networking.k8s.io
+      kind: Service
+      name: kafka-cluster-broker-c-tls-12
+      namespace: strimzi-kafka
+      port: 9093
+---
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TLSRoute
+metadata:
+  name: kafka-cluster-bootstrap
+  namespace: strimzi-kafka
+spec:
+  hostnames:
+  - kafka-bootstrap.pfs.pack
+  - bkafka-cluster-bootstrap.pfs.pack
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: shared-https-gateway
+    namespace: kube-system
+    sectionName: kafka-tls-passthrough
+    # name: kafka-gateway
+    # namespace: strimzi-kafka
+    # sectionName: kafka-listener
+  rules:
+  - backendRefs:
+    - group: gateway.networking.k8s.io
+      kind: Service
+      name: kafka-cluster-kafka-tls-bootstrap
+      namespace: strimzi-kafka
+      port: 9093
+---
