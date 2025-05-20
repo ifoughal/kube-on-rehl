@@ -4542,124 +4542,122 @@ install_keycloak() {
 #############################################################
 CURRENT_FUNC=main
 #############################################################
-# # if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
-# #     reset_cluster
-# #     rook_ceph_cleanup
-# #     log -f "main" "Cluster reset completed."
-# #     exit 0
-# # fi
+if [ "$RESET_CLUSTER_ARG" -eq 1 ]; then
+    reset_cluster
+    rook_ceph_cleanup
+    log -f "main" "Cluster reset completed."
+    exit 0
+fi
 
 
-# # #################################################################
-# # if [ "$INSTALL_CLUSTER" = true ]; then
-# #     if [ "$PREREQUISITES" = true ]; then
-# #         #################################################################
-# #         if ! provision_deployer; then
-# #             log -f "main" "ERROR" "An error occurred while provisioning the deployer node."
-# #             exit 1
-# #         fi
-# #         log -f "main" "Deployer node provisioned successfully."
-# #         #################################################################
-# #         if ! deploy_hostsfile; then
-# #             log -f "main" "ERROR" "An error occured while updating the hosts files."
-# #             exit 1
-# #         fi
-# #         log -f "main" "Hosts files updated successfully."
-# #         #################################################################
-# #     fi
-# # fi
+#################################################################
+if [ "$INSTALL_CLUSTER" = true ]; then
+    if [ "$PREREQUISITES" = true ]; then
+        #################################################################
+        if ! provision_deployer; then
+            log -f "main" "ERROR" "An error occurred while provisioning the deployer node."
+            exit 1
+        fi
+        log -f "main" "Deployer node provisioned successfully."
+        #################################################################
+        if ! deploy_hostsfile; then
+            log -f "main" "ERROR" "An error occured while updating the hosts files."
+            exit 1
+        fi
+        log -f "main" "Hosts files updated successfully."
+        #################################################################
+    fi
+fi
 
 
-# if [ "$INSTALL_CLUSTER" = true ]; then
-#     # ################################################################
-#     # if [ "$PREREQUISITES" == "true" ]; then
-#     #     #################################################################
-#     #     if ! prerequisites_requirements; then
-#     #         log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
-#     #         exit 1
-#     #     fi
-#     #     #################################################################
-#     # else
-#     #     log -f "main" "Cluster prerequisites have been skipped"
-#     # fi
-#     # ################################################################
-#     # if ! install_cluster; then
-#     #     log -f main "ERROR" "An error occurred while deploying the cluster"
-#     #     exit 1
-#     # fi
-#     # ################################################################
-#     # join_cluster
-#     # ################################################################
-#     # if ! install_gateway_CRDS; then
-#     #     log -f main "ERROR" "An error occurred while deploying gateway CRDS"
-#     #     exit 1
-#     # fi
-#     # ################################################################
-#     # if [ "$PREREQUISITES" == "true" ]; then
-#     #     if ! install_cilium_prerequisites; then
-#     #         log -f main "ERROR" "An error occurred while installing cilium prerequisites"
-#     #         exit 1
-#     #     fi
-#     # fi
-#     ################################################################
-#     if ! install_cilium; then
-#         log -f main "ERROR" "An error occurred while installing cilium"
-#         exit 1
-#     fi
-#     #################################################################
-#     if ! install_gateway; then
-#         log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
-#         exit 1
-#     fi
-#     #################################################################
-#     if ! install_kyverno; then
-#          log -f "main" "WARNING" "Failed to deploy kyverno on the cluster, cluster pods wont be able to reach internet if nodes are behind a proxy..."
-#     fi
-#     ###############################################################
-#     if ! install_cilium_observability; then
-#         # https://github.com/cilium/cilium/tree/v1.17.3/examples/kubernetes/addons/prometheus
-#         log -f "main" "WARNING" "Failed to install cilium observability on the cluster"
-#     fi
-#     ################################################################
-#     if ! restart_cilium; then
-#         log -f "main" "ERROR" "Failed to start cilium service."
-#         exit 1
-#     fi
-#     ############################################################
-#     # apply metrics-server:
-#     https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.7.2/components.yaml
-#     helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
-#     if ! install_prometheus; then
-#         log -f "main" "WARNING" "Failed to install kube-prometheus server, metrics won't be installed"
-#     else
-#         if ! install_metrics_server; then
-#             log -f "main" "WARNING" "Failed to install metrics server, metrics won't be available"
-#         fi
-#     fi
-# fi
+if [ "$INSTALL_CLUSTER" = true ]; then
+    ################################################################
+    if [ "$PREREQUISITES" == "true" ]; then
+        #################################################################
+        if ! prerequisites_requirements; then
+            log -f "main" "ERROR" "Failed the prerequisites requirements for the cluster installation."
+            exit 1
+        fi
+        #################################################################
+    else
+        log -f "main" "Cluster prerequisites have been skipped"
+    fi
+    ################################################################
+    if ! install_cluster; then
+        log -f main "ERROR" "An error occurred while deploying the cluster"
+        exit 1
+    fi
+    ################################################################
+    join_cluster
+    ################################################################
+    if ! install_gateway_CRDS; then
+        log -f main "ERROR" "An error occurred while deploying gateway CRDS"
+        exit 1
+    fi
+    ################################################################
+    if [ "$PREREQUISITES" == "true" ]; then
+        if ! install_cilium_prerequisites; then
+            log -f main "ERROR" "An error occurred while installing cilium prerequisites"
+            exit 1
+        fi
+    fi
+    ################################################################
+    if ! install_cilium; then
+        log -f main "ERROR" "An error occurred while installing cilium"
+        exit 1
+    fi
+    #################################################################
+    if ! install_gateway; then
+        log -f "main" "ERROR" "Failed to deploy ingress gateway API on the cluster, services might be unreachable..."
+        exit 1
+    fi
+    #################################################################
+    if ! install_kyverno; then
+         log -f "main" "WARNING" "Failed to deploy kyverno on the cluster, cluster pods wont be able to reach internet if nodes are behind a proxy..."
+    fi
+    ###############################################################
+    if ! install_cilium_observability; then
+        # https://github.com/cilium/cilium/tree/v1.17.3/examples/kubernetes/addons/prometheus
+        log -f "main" "WARNING" "Failed to install cilium observability on the cluster"
+    fi
+    ################################################################
+    if ! restart_cilium; then
+        log -f "main" "ERROR" "Failed to start cilium service."
+        exit 1
+    fi
+    ############################################################
+    # apply metrics-server:
+    if ! install_prometheus; then
+        log -f "main" "WARNING" "Failed to install kube-prometheus server, metrics won't be installed"
+    else
+        if ! install_metrics_server; then
+            log -f "main" "WARNING" "Failed to install metrics server, metrics won't be available"
+        fi
+    fi
+fi
 
 
-# if [ "$UPGRADE_CILIUM" = true ]; then
-#     # TODO: https://docs.cilium.io/en/stable/operations/upgrade/
-#     if ! upgrade_cilium; then
-#         log -f "main" "ERROR" "Failed to upgrade cilium on the cluster"
-#         exit 1
-#     fi
-# fi
+if [ "$UPGRADE_CILIUM" = true ]; then
+    # TODO: https://docs.cilium.io/en/stable/operations/upgrade/
+    if ! upgrade_cilium; then
+        log -f "main" "ERROR" "Failed to upgrade cilium on the cluster"
+        exit 1
+    fi
+fi
 
 
-# if [ "$INSTALL_CLUSTER" = true ]; then
-#     ##################################################################
-#     if ! install_rookceph; then
-#         log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
-#         exit 1
-#     fi
-#     ##################################################################
-#     if ! install_rookceph_cluster; then
-#         log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
-#         exit 1
-#     fi
-# fi
+if [ "$INSTALL_CLUSTER" = true ]; then
+    ##################################################################
+    if ! install_rookceph; then
+        log -f "main" "ERROR" "Failed to install ceph-rook on the cluster"
+        exit 1
+    fi
+    ##################################################################
+    if ! install_rookceph_cluster; then
+        log -f "main" "ERROR" "Failed to install ceph-rook cluster on the cluster"
+        exit 1
+    fi
+fi
 
 
 ################################################################
@@ -4674,30 +4672,30 @@ fi
 
 
 if [ "$INSTALL_CLUSTER" = true ]; then
-#     # ################################################################
-#     # if [ "$PREREQUISITES" == "true" ]; then
-#     #     if ! install_certmanager_prerequisites; then
-#     #         log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
-#     #         exit 1
-#     #     fi
-#     # fi
-#     # if ! install_certmanager; then
-#     #     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
-#     #     exit 1
-#     # fi
-#     # # ##################################################################²
-#     # # vault_uninstall
-#     # # ##################################################################
-#     # # ##################################################################
-#     # if ! install_vault; then
-#     #     log -f "main" "ERROR" "Failed to install longhorn on the cluster"
-#     #     exit 1
-#     # fi
+    ################################################################
+    if [ "$PREREQUISITES" == "true" ]; then
+        if ! install_certmanager_prerequisites; then
+            log -f "main" "ERROR" "Failed to installed cert-manager prerequisites"
+            exit 1
+        fi
+    fi
+    if ! install_certmanager; then
+        log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
+        exit 1
+    fi
+    # ##################################################################²
+    # vault_uninstall
+    # ##################################################################
+    # ##################################################################
+    if ! install_vault; then
+        log -f "main" "ERROR" "Failed to install longhorn on the cluster"
+        exit 1
+    fi
 
-    # if ! install_keycloak; then
-    #     log -f "main" "ERROR" "Failed to install keycloak on the cluster"
-    #     exit 1
-    # fi
+    if ! install_keycloak; then
+        log -f "main" "ERROR" "Failed to install keycloak on the cluster"
+        exit 1
+    fi
 #     ##################################################################
         # if ! install_kafka_operator; then
         #     log -f "main" "ERROR" "Failed to install kafka on the cluster"
@@ -4707,14 +4705,20 @@ if [ "$INSTALL_CLUSTER" = true ]; then
             log -f "main" "ERROR" "Failed to install kafka on the cluster"
             exit 1
         fi
-#     ##################################################################
-#     # install_akhq
+    ##################################################################
+    # if ! install_akhq; then
+    #     log -f "main" "ERROR" "Failed to install kafka-akhq gui on the cluster"
+    #     exit 1
+    # fi
     if ! install_kafka_ui; then
         log -f "main" "ERROR" "Failed to install kafka-ui on the cluster"
         exit 1
     fi
-#     ##################################################################
-#     # install_neo4j
+    ##################################################################
+    if ! install_neo4j; then
+        log -f "main" "ERROR" "Failed to install Neo4J on the cluster"
+        exit 1
+    fi
 fi
 
 
