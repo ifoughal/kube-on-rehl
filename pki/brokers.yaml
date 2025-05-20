@@ -9,7 +9,7 @@ spec:
   commonName: brokers-tls-cert
   subject:
     organizations:
-    - kafka-brokers-corp
+    - kafka-brokers
   privateKey:
     algorithm: RSA
     encoding: PKCS8
@@ -24,6 +24,13 @@ spec:
   - kafka-broker-0.pfs.pack
   - kafka-broker-1.pfs.pack
   - kafka-broker-2.pfs.pack
+
+  - kafka-bootstrap.pfs.pack
+  - kafka-cluster-bootstrap.pfs.pack
+
+  - broker-0-kafka-cluster.pfs.pack
+  - broker-1-kafka-cluster.pfs.pack
+  - broker-2-kafka-cluster.pfs.pack
 
   - kafka-cluster-broker-a-tls-10
   - kafka-cluster-broker-a-tls-10.svc
