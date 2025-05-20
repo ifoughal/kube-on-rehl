@@ -8,24 +8,16 @@ yamlApplicationConfig:
   kafka:
     clusters:
     - name: kafka-cluster
-      bootstrapServers: kafka-bootstrap.pfs.pack:9092
-      # bootstrapServers: kafka-cluster-kafka-externaltls-bootstrap.strimzi-kafka.svc:9092
+      bootstrapServers: broker-0-kafka-cluster.pfs.pack:9093
       properties:
-        security.protocol: SASL_SSL
-        sasl.mechanism: SCRAM-SHA-512
-        sasl.jaas.config: org.apache.kafka.common.security.scram.ScramLoginModule required username="kafka-ui" password="C6ka45zRYyus50hcEFFvNaDDHOFFVF4D";
-        ssl.truststore.location: /tmp/kafka-truststore/truststore.jks
-        ssl.truststore.password: arakeen
+        security.protocol: SSL
+        ssl.truststore.type: JKS
+        ssl.truststore.location: /truststore/truststore.jks
+        ssl.truststore.password: atreides
+        ssl.keystore.type: PKCS12
+        ssl.keystore.location: /keystore/keystore.p12
+        ssl.keystore.password: arakeen
         ssl.protocol: TLSv1.3
-  # spring:
-  #   security:
-  #     oauth2:
-  # auth:
-  #   type: disabled
-  # management:
-  #   health:
-  #     ldap:
-  #       enabled: false
 ## @param yamlApplicationConfigConfigMap Map with name and keyName keys, name refers to the existing ConfigMap, keyName refers to the ConfigMap key with Kafbat-UI config in Yaml format
 yamlApplicationConfigConfigMap:
   {}
@@ -38,8 +30,6 @@ yamlApplicationConfigSecret:
   # name: secretName
 ## @param existingSecret Name of the existing Secret with Kafbat-UI environment variables
 # existingSecret: ""
-# existingSecret: "ssl-kafka-ui"
-existingSecret: ssl-secret
 ### @section Environment variables from
 envs:
   ## @param envs.secret Set of the sensitive environment variables to pass to Kafbat-UI
@@ -65,68 +55,21 @@ env:
   value: >
     -Xms1G -Xmx4G
     -Djavax.net.debug=ssl,handshake,trustmanager
-# -Djdk.tls.client.protocols=TLSv1.2
-
-# -Djavax.net.ssl.trustStore=/mnt/truststore/truststore.jks
-# -Djavax.net.ssl.trustStorePassword=arakeens
-
-# -Djavax.net.ssl.trustStore=/mnt/truststore/truststore.jks -Djavax.net.ssl.trustStorePassword=arakeen"
-
-- name: KAFKA_CLUSTERS_0_NAME
-  value: kafka-cluster
-
-- name: KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS
-  value: kafka-bootstrap.pfs.pack:9092
-  # value: kafka-cluster-kafka-externaltls-bootstrap.strimzi-kafka.svc:9092
-
-- name: KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL
-  # value: SASL_PLAINTEXT
-  value: SASL_SSL
-
-# - name: KAFKA_CLUSTERS_0_PROPERTIES_SASL_MECHANISM
-#   value: PLAIN
-
-- name: KAFKA_CLUSTERS_0_PROPERTIES_SASL_MECHANISM
-  value: SCRAM-SHA-512
-
-- name: KAFKA_CLUSTERS_0_PROPERTIES_SASL_JAAS_CONFIG
-  value: org.apache.kafka.common.security.scram.ScramLoginModule required username="kafka-ui" password="C6ka45zRYyus50hcEFFvNaDDHOFFVF4D";
-
-- name: KAFKA_CLUSTERS_0_PROPERTIES_SSL_TRUSTSTORE_LOCATION
-  value: /tmp/kafka-truststore/truststore.jks
-
-- name: KAFKA_CLUSTERS_0_PROPERTIES_SSL_TRUSTSTORE_PASSWORD
-  value: arakeen
-
-- name: KAFKA_CLUSTERS_0_PROPERTIES_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM
-  value: ""
-
-# - name: DYNAMIC_CONFIG_ENABLED
-#   value: true
-
-
-# - name: KAFKA_CLUSTERS_0_PROPERTIES_SSL_TRUSTSTORE_LOCATION
-#   value: /ssl/truststore.jks
-# # - name: KAFKA_CLUSTERS_0_PROPERTIES_SSL_KEYSTORE_LOCATION  # TLS ONLY
-# #   value: /ssl/kafka.keystore.jks
-
 
 volumeMounts:
-- name: kafka-client-config
-  mountPath: /tmp/kafka-properties/
-  # subPath: kafka-client-config.properties
-- name: kafka-truststore
-  mountPath: /tmp/kafka-truststore/
-  # subPath: truststore.jks
-  # readOnly: true
+- name: kafka-ui-truststore
+  mountPath: /truststore
+  readOnly: true
+- name: kafka-ui-keystore
+  mountPath: /keystore
+  readOnly: true
 volumes:
-- name: kafka-client-config
-  configMap:
-    name: kafka-user-kafka-ui-config
-- name: kafka-truststore
+- name: kafka-ui-truststore
   secret:
-    secretName: ssl-kafka-ui
-
+    secretName: kafka-ui-truststore
+- name: kafka-ui-keystore
+  secret:
+    secretName: kafka-ui-keystore
 
 ## @param resources Set Kafka-UI container requests and limits for different resources like CPU or memory (essential for production workloads)
 resources:
