@@ -1,0 +1,58 @@
+# ---
+# apiVersion: gateway.networking.k8s.io/v1
+# kind: HTTPRoute
+# metadata:
+#   name: kafka-akhq-http
+#   namespace: kafka-system
+# spec:
+#   parentRefs:
+#   - name: shared-https-gateway
+#     namespace: kube-system
+#     sectionName: http
+#   hostnames:
+#   - "kafka-dashboard-akhq.pfs.pack"
+#   rules:
+#   - backendRefs:
+#     - name: kafka-akhq
+#       port: 80
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: kafka-akhq-http
+  namespace: kafka-system
+spec:
+  parentRefs:
+  - name: shared-https-gateway
+    namespace: kube-system
+    sectionName: http
+  hostnames:
+  - "kafka-dashboard-akhq.pfs.pack"
+  rules:
+  - filters:
+    - type: RequestRedirect
+      requestRedirect:
+        scheme: https
+        statusCode: 301
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: kafka-ui-https-redirect
+  namespace: kafka-system
+spec:
+  parentRefs:
+  - name: shared-https-gateway
+    namespace: kube-system
+    sectionName: https
+  hostnames:
+  - "kafka-dashboard-akhq.pfs.pack"
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: "/"
+    backendRefs:
+    - name: kafka-akhq
+      port: 80

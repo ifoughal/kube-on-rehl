@@ -1,0 +1,284 @@
+# CRDS examples at: https://github.com/strimzi/strimzi-kafka-operator/tree/0.46.0/examples
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: kafka-cluster
+  namespace: strimzi-kafka
+  annotations:
+    strimzi.io/node-pools: enabled
+    strimzi.io/kraft: enabled
+spec:
+  # cruiseControl:
+  #   brokerCapacity: # (1)
+  #     inboundNetwork: 10000KB/s
+  #     outboundNetwork: 10000KB/s
+  #     overrides: # (2)
+  #     - brokers: [0]
+  #       inboundNetwork: 20000KiB/s
+  #       outboundNetwork: 20000KiB/s
+  #     - brokers: [1, 2]
+  #       inboundNetwork: 30000KiB/s
+  #       outboundNetwork: 30000KiB/s
+  kafka:
+    authorization:
+      type: simple
+    # authorization:
+    #   type: keycloak
+    #   clientId: kafka
+    #   tokenEndpointUri: https://${SSO_HOST}/realms/kafka-authz/protocol/openid-connect/token
+    #   tlsTrustedCertificates:  # keycloak and oauth only!
+    #     - secretName: oauth-server-cert
+    #       certificate: sso.crt
+    #   delegateToKafkaAcls: true
+    #   superUsers:
+    #     - service-account-kafka
+    version: 4.0.0
+    metadataVersion: 4.0-IV3
+    config:
+      auto.create.topics.enable: "false"
+      # offsets.topic.replication.factor: 3
+      # transaction.state.log.replication.factor: 3
+      # transaction.state.log.min.isr: 2
+      # default.replication.factor: 3
+      # min.insync.replicas: 2
+
+    # REF: https://strimzi.io/docs/operators/latest/configuring#property-listener-config-preferredNodePortAddressType-reference
+    listeners:
+    - name: tls
+      port: 9093
+      type: cluster-ip
+      # type: nodeport
+      tls: true
+      authentication:
+        # type: scram-sha-512
+        type: tls
+      configuration:
+        useServiceDnsDomain: true # internal or cluster-ip only
+        brokerCertChainAndKey:
+          # secretName: kafka-cluster-cluster-ca
+          secretName: brokers-tls-cert
+          certificate: ca.crt
+          key: tls.key
+        brokers:
+        - broker: 10
+          # nodePort: 32010
+          # host: kafka-broker-0.pfs.pack # for route & ingress listeners only!
+          # advertisedHost: kafka-broker-0.pfs.pack
+          advertisedHost: broker-0-kafka-cluster.pfs.pack
+          advertisedPort: 9093
+        # - broker: 11
+        #   # nodePort: 32011
+        #   # advertisedHost: kafka-broker-1.pfs.pack
+        #   advertisedHost: broker-1-kafka-cluster.pfs.pack
+        #   advertisedPort: 9093
+        # - broker: 12
+        #   # nodePort: 32012
+        #   # advertisedHostTemplate: kafka-broker-{nodeId}.pfs.pack
+        #   # advertisedHost: kafka-broker-2.pfs.pack
+        #   advertisedHost: broker-2-kafka-cluster.pfs.pack
+        #   advertisedPort: 9093
+        bootstrap:
+        #   nodePort: 32100
+          alternativeNames:
+          - kafka-bootstrap.pfs.pack
+        createBootstrapService: true
+
+  entityOperator:
+    # We'll create a kafka topic and user so we need these operators.
+    topicOperator:
+      resources:
+        requests:
+          memory: 512Mi
+          cpu: "1"
+        limits:
+          memory: 512Mi
+          cpu: "1"
+    userOperator:
+      resources:
+        requests:
+          memory: 512Mi
+          cpu: "1"
+        limits:
+          memory: 512Mi
+          cpu: "1"
+  #####################################################
+  clusterCa:
+    renewalDays: 30
+    validityDays: 365
+    generateCertificateAuthority: false
+  clientsCa:
+    renewalDays: 30
+    validityDays: 365
+    generateCertificateAuthority: false
+  #####################################################
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaNodePool
+metadata:
+  name: controller
+  namespace: strimzi-kafka
+  annotations:
+    strimzi.io/next-node-ids: '[0-9]'
+  labels:
+    strimzi.io/cluster: kafka-cluster
+spec:
+  replicas: 1
+  roles:
+  - controller
+  template:
+    pod:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                - key: kafka-node-id
+                  operator: In
+                  values:
+                    - "12"
+  storage:
+    type: jbod
+    volumes:
+    - id: 0
+      type: persistent-claim
+      size: 50Gi
+      deleteClaim: false
+      kraftMetadata: shared
+      # selector:
+      #   hdd-type: ssd
+      # class: my-storage-class
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaNodePool
+metadata:
+  name: broker-a
+  namespace: strimzi-kafka
+  annotations:
+    strimzi.io/next-node-ids: '[10]'
+  labels:
+    strimzi.io/cluster: kafka-cluster
+spec:
+  replicas: 1
+  roles:
+  - broker
+  template:
+    pod:
+      securityContext:
+        # runAsUser: 101
+        # runAsGroup: 101
+        fsGroup: 1001
+        # fsGroupChangePolicy: "OnRootMismatch"
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kafka-node-id
+                operator: In
+                values:
+                - "10"
+  resources:
+    requests:
+      memory: 4Gi
+      cpu: "4"
+    limits:
+      memory: 8Gi
+      cpu: "8"
+  storage:
+    type: jbod
+    volumes:
+    - id: 0
+      type: persistent-claim
+      size: 100Gi
+      deleteClaim: false
+# ---
+# apiVersion: kafka.strimzi.io/v1beta2
+# kind: KafkaNodePool
+# metadata:
+#   name: broker-b
+#   namespace: strimzi-kafka
+#   annotations:
+#     strimzi.io/next-node-ids: '[11]'
+#   labels:
+#     strimzi.io/cluster: kafka-cluster
+# spec:
+#   replicas: 1
+#   roles:
+#   - broker
+#   template:
+#     pod:
+#       securityContext:
+#         # runAsUser: 101
+#         # runAsGroup: 101
+#         fsGroup: 1001
+#         # fsGroupChangePolicy: "OnRootMismatch"
+#       affinity:
+#         nodeAffinity:
+#           requiredDuringSchedulingIgnoredDuringExecution:
+#             nodeSelectorTerms:
+#             - matchExpressions:
+#               - key: kafka-node-id
+#                 operator: In
+#                 values:
+#                 - "11"
+#   resources:
+#     requests:
+#       memory: 4Gi
+#       cpu: "4"
+#     limits:
+#       memory: 8Gi
+#       cpu: "8"
+#   storage:
+#     type: jbod
+#     volumes:
+#     - id: 0
+#       type: persistent-claim
+#       size: 100Gi
+#       deleteClaim: false
+
+# ---
+# apiVersion: kafka.strimzi.io/v1beta2
+# kind: KafkaNodePool
+# metadata:
+#   name: broker-c
+#   namespace: strimzi-kafka
+#   annotations:
+#     strimzi.io/next-node-ids: '[12]'
+#   labels:
+#     strimzi.io/cluster: kafka-cluster
+# spec:
+#   replicas: 1
+#   roles:
+#   - broker
+#   template:
+#     pod:
+#       securityContext:
+#         # runAsUser: 101
+#         # runAsGroup: 101
+#         fsGroup: 1001
+#         # fsGroupChangePolicy: "OnRootMismatch"
+#       affinity:
+#         nodeAffinity:
+#           requiredDuringSchedulingIgnoredDuringExecution:
+#             nodeSelectorTerms:
+#             - matchExpressions:
+#               - key: kafka-node-id
+#                 operator: In
+#                 values:
+#                 - "12"
+#   resources:
+#     requests:
+#       memory: 4Gi
+#       cpu: "4"
+#     limits:
+#       memory: 8Gi
+#       cpu: "8"
+#   storage:
+#     type: jbod
+#     volumes:
+#     - id: 0
+#       type: persistent-claim
+#       size: 100Gi
+#       deleteClaim: false
+---

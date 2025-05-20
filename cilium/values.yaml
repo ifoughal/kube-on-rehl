@@ -1,0 +1,558 @@
+debug:
+  # -- Enable debug logging
+  enabled: true
+
+nodeinit:
+  # -- Enable the node initialization DaemonSet
+  enabled: false
+
+cleanBpfState: true
+cleanState: true
+
+# nodePort.enabled is not needed if this is set to true.
+kubeProxyReplacement: true
+
+policyEnforcementMode: "never"
+
+# -- Annotate k8s node upon initialization with Cilium's metadata.
+annotateK8sNode: true
+
+# No masquerading of any kind,
+# this will be performed by the router at the edge for v4
+enableIPv4Masquerade: true
+enableIPv6Masquerade: false
+
+# Dual-stack / single stack
+ipv4:
+ enabled: true
+ipv6:
+ enabled: false
+
+#############################################################################################################
+gatewayAPI:
+  enabled: true
+  gatewayClass:
+    # -- Enable creation of GatewayClass resource
+    # The default value is 'auto' which decides according to presence of gateway.networking.k8s.io/v1/GatewayClass in the cluster.
+    # Other possible values are 'true' and 'false', which will either always or never create the GatewayClass, respectively.
+    create: "true"
+
+# enabling gatewayAPI autoamtically enables and configured envoyConfig (envoyConfig.enabled=true)
+#############################################################################################################
+# mandatory for L4/L7 LB: (no tunelling)
+routingMode: native
+# No tunelling, native routing only
+tunnelProtocol: ""
+#############################################################################################################
+# TO BE TESTER https://github.com/cilium/cilium/issues/38123
+# l2announcements:
+#   enabled: true
+
+# loadBalancerIPs:
+#   enabled: true
+
+# externalIPs:
+#   enabled: true
+#############################################################################################################
+# enables ingress controller:
+# https://docs.cilium.io/en/stable/network/servicemesh/ingress/
+l7Proxy: true
+# enableXTSocketFallback: false
+
+# in order to be able to assign priviledged ports (80/443)
+# REF: https://docs.cilium.io/en/stable/network/servicemesh/ingress/#bind-to-privileged-port
+envoy:
+  enabled: true
+  # dnsPolicy: ~
+  # dnsPolicy: "None"
+  # dnsPolicy: ~  # "Default"
+  dnsPolicy: ClusterFirst
+  # dnsConfig:
+  #   nameservers:
+  #   - 10.96.0.101 # this is the default kube-dns ip
+  #   searches:
+  #   - ns1.svc.cluster.local
+  #   - my.dns.search.suffix
+  #   options:
+  #     - name: ndots
+  #       value: "2"
+  #     - name: edns0
+  log:
+    # -- Path to a separate Envoy log file, if any. Defaults to /dev/stdout.
+    path: ""
+    # - enum: [trace,debug,info,warning,error,critical,off]
+    # @default -- Defaults to the default log level of the Cilium Agent - `info`
+    defaultLevel: ~
+  extraHostPathMounts: []
+  # - name: host-mnt-data
+  #   mountPath: /host/mnt/data
+  #   hostPath: /mnt/data
+  #   hostPathType: Directory
+  #   readOnly: true
+  #   mountPropagation: HostToContainer
+  # -- Additional envoy volumes.
+  extraVolumes: []
+  # -- Additional envoy volumeMounts.
+  extraVolumeMounts: []
+  # -- Configure termination grace period for cilium-envoy DaemonSet.
+  terminationGracePeriodSeconds: 1
+  # -- TCP port for the health API.
+  healthPort: 9878
+  # ref: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+  resources:
+    limits:
+      cpu: 10000m
+      memory: 6Gi
+    requests:
+      cpu: 1000m
+      memory: 1Gi
+  securityContext:
+    privileged: true
+    capabilities:
+      envoy:
+      # - NET_BIND_SERVICE
+      - NET_ADMIN
+      - SYS_ADMIN
+      keepCapNetBindService: true
+  # -- Node selector for cilium-envoy.
+  # nodeSelector:
+  #   kubernetes.io/os: linux
+  debug:
+    admin:
+      enabled: true
+      port: 9901
+
+# securityContext:
+#   capabilities:
+#     envoy:
+#     - NET_BIND_SERVICE
+#     - NET_ADMIN
+#     - SYS_ADMIN
+#############################################################################################################
+# All nodes need to have a route to other nodes
+# so we can't just rely on the default route to get us there.
+# https://docs.cilium.io/en/stable/network/concepts/routing/#id3
+# All nodes are located on the same L2 segment so we can enable direct routes
+# We should look into kube-router to get an equivalent
+# of calico's cluster mesh
+autoDirectNodeRoutes: true
+
+
+
+# -- Configure the eBPF-based ip-masq-agent
+ipMasqAgent:
+  enabled: False
+
+# -- Configure Kubernetes specific configuration
+k8s:
+  # -- requireIPv4PodCIDR enables waiting for Kubernetes to provide the PodCIDR
+  # range via the Kubernetes node resource
+  requireIPv4PodCIDR: true
+  requireIPv6PodCIDR: false
+
+# -- (string) Allows to explicitly specify the IPv4 CIDR for native routing.
+# When specified, Cilium assumes networking for this CIDR is preconfigured and
+# hands traffic destined for that range to the Linux network stack without
+# applying any SNAT.
+# Generally speaking, specifying a native routing CIDR implies that Cilium can
+# depend on the underlying networking stack to route packets to their
+# destination. To offer a concrete example, if Cilium is configured to use
+# direct routing and the Kubernetes CIDR is included in the native routing CIDR,
+# the user must configure the routes to reach pods, either manually or by
+# setting the auto-direct-node-routes flag.
+# ipv4NativeRoutingCIDR: 10.66.65.0/24
+# ipv4NativeRoutingCIDR: 10.66.130.0/24
+
+# ipv6NativeRoutingCIDR: "fd00::/64"
+
+
+# indicates the default LoadBalancer Service IPAM when
+# no LoadBalancer class is set. Applicable values: lbipam, nodeipam, none
+defaultLBServiceIPAM: lbipam
+nodeIPAM:
+  # -- Configure Node IPAM
+  # ref: https://docs.cilium.io/en/stable/network/node-ipam/
+  enabled: false
+
+# https://docs.cilium.io/en/latest/network/lb-ipam/
+enableLBIPAM: true
+
+##############################################################################
+resources:
+  limits:
+    cpu: 10000m
+    memory: 10Gi
+  requests:
+    cpu: 1000m
+    memory: 1Gi
+
+cni:
+  install: true
+  uninstall: false
+  chainingMode: none
+##############################################################################
+# if this configuration is changed, the cluster must be redeployed
+# ipam:
+#   # -- Configure IP Address Management mode.
+#   # ref: https://docs.cilium.io/en/stable/network/concepts/ipam/
+#   # mode: "cluster-pool"  # default: kubernetes
+#   mode: "multi-pool"  # default: kubernetes
+#   # mode: "kubernetes"  # default: kubernetes
+
+#   operator:
+#     # -- IPv4 CIDR list range to delegate to individual nodes for IPAM.
+#     # clusterPoolIPv4PodCIDRList:
+#     # - 10.0.0.0/8
+#     # clusterPoolIPv6PodCIDRList: ["fd00::20/104"]
+#     # -- IPv4 CIDR mask size to delegate to individual nodes for IPAM.
+#     # clusterPoolIPv4MaskSize: 24
+#     autoCreateCiliumPodIPPools:  # {}
+#       default:
+#         ipv4:
+#           cidrs:
+#             - 10.10.0.0/16
+#           maskSize: 27
+#       other:
+#         ipv6:
+#           cidrs:
+#             - fd00:100::/80
+#           maskSize: 96
+#############################################################################################################
+# -- Enable installation of PodCIDR routes between worker
+# nodes if worker nodes share a common L2 network segment.
+operator:
+  enabled: true
+  prometheus:
+    enabled: true
+    port: 9963
+    # metricsService: false
+    # serviceMonitor:
+    #   # -- Enable service monitors.
+    #   # This requires the prometheus CRDs to be available (see https://github.com/prometheus-operator/prometheus-operator/blob/main/example/prometheus-operator-crd/monitoring.coreos.com_servicemonitors.yaml)
+    #   enabled: false
+    #   # -- Labels to add to ServiceMonitor cilium-operator
+    #   labels: {}
+    #   # -- Annotations to add to ServiceMonitor cilium-operator
+    #   annotations: {}
+    #   # -- jobLabel to add for ServiceMonitor cilium-operator
+    #   jobLabel: ""
+    #   # -- Interval for scrape metrics.
+    #   interval: "10s"
+    #   # @schema
+    #   # type: [null, array]
+    #   # @schema
+    #   # -- Relabeling configs for the ServiceMonitor cilium-operator
+    #   relabelings: ~
+    #   # @schema
+    #   # type: [null, array]
+    #   # @schema
+    #   # -- Metrics relabeling configs for the ServiceMonitor cilium-operator
+    #   metricRelabelings: ~
+  dashboards:
+    enabled: true
+    label: grafana_dashboard
+  securityContext:
+    privileged: true
+  # dnsPolicy: "None"
+  # dnsPolicy: "Default"
+  dnsPolicy: ClusterFirst
+  debug:
+    enabled: true
+  # We have  3 nodes
+  # replicas: 2
+  resources:
+    limits:
+      cpu: 4000m
+      memory: 8Gi
+    requests:
+      cpu: 1000m
+      memory: 2Gi
+#############################################################################################################
+# dnsPolicy: "None"
+# dnsPolicy: "Default"
+dnsPolicy: ClusterFirst
+
+dnsProxy:
+  # -- Timeout (in seconds) when closing the connection between the DNS proxy and the upstream server. If set to 0, the connection is closed immediately (with TCP RST). If set to -1, the connection is closed asynchronously in the background.
+  socketLingerTimeout: 10
+  # -- DNS response code for rejecting DNS requests, available options are '[nameError refused]'.
+  dnsRejectResponseCode: refused
+  # -- Allow the DNS proxy to compress responses to endpoints that are larger than 512 Bytes or the EDNS0 option, if present.
+  enableDnsCompression: true
+  # -- Maximum number of IPs to maintain per FQDN name for each endpoint.
+  endpointMaxIpPerHostname: 1000
+  # -- Time during which idle but previously active connections with expired DNS lookups are still considered alive.
+  idleConnectionGracePeriod: 0s
+  # -- Maximum number of IPs to retain for expired DNS lookups with still-active connections.
+  maxDeferredConnectionDeletes: 10000
+  # -- The minimum time, in seconds, to use DNS data for toFQDNs policies. If
+  # the upstream DNS server returns a DNS record with a shorter TTL, Cilium
+  # overwrites the TTL with this value. Setting this value to zero means that
+  # Cilium will honor the TTLs returned by the upstream DNS server.
+  minTtl: 0
+  # -- DNS cache data at this path is preloaded on agent startup.
+  preCache: ""
+  # -- Global port on which the in-agent DNS proxy should listen. Default 0 is a OS-assigned port.
+  proxyPort: 0
+  # -- The maximum time the DNS proxy holds an allowed DNS response before sending it along. Responses are sent as soon as the datapath is updated with the new IP information.
+  proxyResponseMaxDelay: 100ms
+  # -- DNS proxy operation mode (true/false, or unset to use version dependent defaults)
+  # enableTransparentMode: true
+#############################################################################################################
+# # -- (string) Kubernetes service host - use "auto" for automatic lookup from the cluster-info ConfigMap
+k8sServiceHost: auto
+# k8sServiceHost: 10.96.0.1
+# k8sServicePort: 443
+#############################################################################################################
+securityContext:
+  # -- User to run the pod with
+  # runAsUser: 0
+  # -- Run the pod with elevated privileges
+  privileged: true
+#############################################################################################################
+hubble:
+  enabled: true
+  debug: false
+  enableOpenMetrics: false
+  # Enabling hubble metrics makes hubble-relay crash during init
+  # could he related to L7 policies: https://docs.cilium.io/en/stable/observability/visibility/#proxy-visibility
+  metrics:
+    enabled: ~
+    # enabled:
+    # # - dns:query;ignoreAAAA
+    # - drop
+    # - tcp
+    # - flow
+    # - icmp
+    # # - http
+    # # - source_namespace
+    # # - source_workload
+    # # - destination_ip
+    # # - destination_namespace
+    # # - destination_workload
+    # # - traffic_direction
+    # # - dns
+    # # - drop
+    # # - tcp
+    # # - flow
+    # # - port-distribution
+    # # - icmp
+    # # - http
+    # # - httpV2:exemplars=true;labelsContext=source_ip
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+    dynamic:
+      enabled: true
+      config:
+        # ---- Name of configmap with configuration that may be altered to reconfigure metric handlers within a running agent.
+        configMapName: cilium-dynamic-metrics-config
+        # ---- True if helm installer should create config map.
+        # Switch to false if you want to self maintain the file content.
+        createConfigMap: true
+  securityContext:
+    # -- User to run the pod with
+    # runAsUser: 0
+    # -- Run the pod with elevated privileges
+    privileged: true
+  tls:
+    enabled: false
+    # auto:
+    #   enabled: true
+    #   method: certmanager
+    #   certValidityDuration: 1095
+    #   certManagerIssuerRef:
+    #     group: "cert-manager.io" # Reference to cert-manager's issuer
+    #     kind: "ClusterIssuer"
+    #     name: "ca-issuer"
+  listenAddress: ":4244"
+  peerService:
+    targetPort: 4244
+    clusterDomain: cluster.local
+  relay:
+    enabled: true
+    rollOutPods: true
+    securityContext:
+      # readOnlyRootFilesystem: true
+      runAsNonRoot: false
+    # replicas: 2
+    # -- hubble-relay service configuration.
+    service:
+      # --- The type of service used for Hubble Relay access, either ClusterIP, NodePort or LoadBalancer.
+      # type: ClusterIP
+      # type: ClusterIP
+      # --- The port to use when the service type is set to NodePort.
+      nodePort: 31234
+    # -- Host to listen to. Specify an empty string to bind to all the interfaces.
+    listenHost: ""
+    # -- Port to listen to.
+    listenPort: "4245"
+    resources:
+      limits:
+        cpu: 4000m
+        memory: 10024M
+      requests:
+        cpu: 100m
+        memory: 500Mi
+    # -- Additional hubble-relay volumes.
+    # extraVolumes:
+    # - name: hubble-relay
+    #   hostPath:
+    #     path: /mnt/longhorn-1/extraVolumes/cilium/hubble-relay
+    #     type: Directory
+    # # -- Additional hubble-relay volumeMounts.
+    # extraVolumeMounts:
+    # - name: hubble-relay
+    #   mountPath: /var/
+  ui:
+    enabled: True
+    # replicas: 2
+    rollOutPods: True
+    service:
+      # -- Annotations to be added for the Hubble UI service
+      annotations: {}
+      # --- The type of service used for Hubble UI access, either ClusterIP or NodePort.
+      # type: ClusterIP
+      # type: NodePort
+      # --- The port to use when the service type is set to NodePort.
+      nodePort: 31235
+    # -- Defines base url prefix for all hubble-ui http requests.
+    # It needs to be changed in case if ingress for hubble-ui is configured under some sub-path.
+    # Trailing `/` is required for custom path, ex. `/service-map/`
+    baseUrl: "/"
+    backend:
+      resources:
+        limits:
+          cpu: 1000m
+          memory: 1024M
+        requests:
+          cpu: 100m
+          memory: 64Mi
+    frontend:
+      server:
+        ipv6:
+          enabled: false
+      resources:
+        limits:
+          cpu: 1000m
+          memory: 1024M
+        requests:
+          cpu: 100m
+          memory: 64Mi
+#############################################################################################################
+
+# -- The agent can be put into one of the three policy enforcement modes:
+# default, always and never.
+# ref: https://docs.cilium.io/en/stable/security/policy/intro/#policy-enforcement-modes
+
+endpointRoutes:
+  enabled: true
+
+bpf:
+  # lbAlgorithmAnnotation: True
+  # lbModeAnnotation: True
+  hostLegacyRouting: false
+  masquerade: true
+
+
+
+# #######################################################################
+# # -- Configure N-S k8s service loadbalancing
+# # REF https://docs.cilium.io/en/stable/network/servicemesh/l7-traffic-management/
+# nodePort:
+#   # -- Enable the Cilium NodePort service implementation.
+#   enabled: true
+#   # -- Port range to use for NodePort services.
+#   # range: "30000,32767"
+#   # @schema
+#   # type: [null, string, array]
+#   # @schema
+#   # -- List of CIDRs for choosing which IP addresses assigned to native devices are used for NodePort load-balancing.
+#   # By default this is empty and the first suitable, preferably private, IPv4 and IPv6 address assigned to each device is used.
+#   addresses: ["10.66.65.7/32", "10.66.65.8/32", "10.66.65.9/32"]
+
+#######################################################################
+# Enable direct server return to preserve the client's source IP
+# when externalTrafficPolicy is set to Cluster (required to share
+# a single IP between multiple LoadBalancer services targeting
+# the pods on different nodes)
+# https://docs.cilium.io/en/stable/network/kubernetes/kubeproxy-free/#direct-server-return-dsr-with-ipv4-option-ipv6-extension-header
+# https://github.com/cilium/cilium/issues/30700
+
+loadBalancer:
+  mode: dsr
+  dsrDispatch: opt
+  protocolDifferentiation:
+    enabled: true
+  algorithm: maglev
+  l7:
+    backend: envoy  # disabled
+
+
+# -- Configure maglev consistent hashing
+maglev:
+# -- tableSize is the size (parameter M) for the backend table of one
+# service entry
+  tableSize: 65521
+  # -- hashSeed is the cluster-wide base64 encoded seed for the hashing
+  #     generated with: head -c12 /dev/urandom | base64 -w0
+  # hashSeed: TOrnUIrqFc4xkTMu
+
+
+# # TODO TS why it doesn't go up...
+encryption:
+# -- Enable transparent network encryption.
+  enabled: false
+  nodeEncryption: true
+  # -- Encryption method. Can be either ipsec or wireguard.
+  type: wireguard
+  # -- Enable encryption for pure node to node traffic.
+  # This option is only effective when encryption.type is set to "wireguard".
+  # -- Configure the WireGuard Pod2Pod strict mode.
+  strictMode:
+    # -- Enable WireGuard Pod2Pod strict mode.
+    enabled: false
+    # -- CIDR for the WireGuard Pod2Pod strict mode.
+    cidr: ""
+    # -- Allow dynamic lookup of remote node identities.
+    # This is required when tunneling is used or direct routing is used and the node CIDR and pod CIDR overlap.
+    allowRemoteNodeIdentities: true
+  wireguard:
+    # -- Controls WireGuard PersistentKeepalive option. Set 0s to disable.
+    persistentKeepalive: 0s
+#######################################################################
+# # Enable Prometheus metrics
+prometheus:
+ enabled: true
+
+dashboards:
+  enabled: true
+
+hostFirewall:
+  # -- Enables the enforcement of host policies in the eBPF datapath.
+  enabled: false
+
+#######################################################################
+# REF: # https://gateway-api.sigs.k8s.io/geps/gep-1897/?h=connect+connection
+# REF: https://docs.cilium.io/en/latest/security/tls-visibility/
+tls:
+  # -- Configure if the Cilium Agent will only look in `tls.secretsNamespace` for
+  #    CiliumNetworkPolicy relevant Secrets.
+  #    If false, the Cilium Agent will be granted READ (GET/LIST/WATCH) access
+  #    to _all_ secrets in the entire cluster. This is not recommended and is
+  #    included for backwards compatibility.
+  readSecretsOnlyFromSecretsNamespace: false
+  # -- Configures where secrets used in CiliumNetworkPolicies will be looked for
+  secretsNamespace:
+    # -- Create secrets namespace for TLS Interception secrets.
+    create: true
+    # -- Name of TLS Interception secret namespace.
+    name: cilium-secrets
+  # -- Configures settings for synchronization of TLS Interception Secrets
+  secretSync:
+    # @schema
+    # type: [null, boolean]
+    # @schema
+    # -- Enable synchronization of Secrets for TLS Interception. If disabled and
+    # tls.readSecretsOnlyFromSecretsNamespace is set to 'false', then secrets will be read directly by the agent.
+    enabled: true

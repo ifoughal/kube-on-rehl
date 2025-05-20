@@ -1,0 +1,129 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: producer
+spec:
+  selector:
+    matchLabels:
+      app: producer
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: producer
+        producerid: "1"
+    spec:
+      hostNetwork: true  # same as --network host
+      dnsPolicy: ClusterFirstWithHostNet
+      dnsConfig:
+        nameservers:
+        - 10.37.224.6         # Replace with your actual DNS server
+        - 10.12.180.71
+        # searches:
+        # - pfs.pack            # Optional search domain
+        # options:
+        #   - name: ndots
+        #     value: "5"
+      restartPolicy: Always
+      containers:
+      - name: producer
+        image: quay.io/strimzi/kafka:0.46.0-kafka-4.0.0
+        command: [ "bin/kafka-console-producer.sh" ]
+        args:
+          - "--bootstrap-server"
+          # - kafka-cluster-kafka-external1-bootstrap:9092
+          - "kafka-bootstrap.pfs.pack:9092"
+          - "--topic"
+          - "test-topic"
+          - "--producer.config"
+          - "/tmp/kafka-client-config.properties/kafka-client-config.properties"
+        resources:
+          limits:
+            cpu: 500m
+            memory: 4Gi
+          requests:
+            cpu: 50m
+            memory: 128Mi
+        env:
+        - name: KAFKA_HEAP_OPTS
+          value: "-Xms1G -Xmx4G"
+        - name: KAFKA_OPTS
+          value: "-Dlog4j.debug=true"
+        # - name: KAFKA_OPTS
+        #   value: "-Dorg.apache.kafka.clients.producer.ProducerConfig=DEBUG -Dlog4j.configuration=file:/tmp/log4j.properties"
+        volumeMounts:
+        - name: kafka-client-config
+          mountPath: /tmp/kafka-client-config.properties
+        - name: kafka-truststore
+          mountPath: /tmp/strimzi-kafka-truststore.jks
+          subPath: truststore.jks
+      volumes:
+      - name: kafka-client-config
+        configMap:
+          name: kafka-client-config
+      - name: kafka-truststore
+        secret:
+          secretName: kafka-truststore
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: consumer
+spec:
+  selector:
+    matchLabels:
+      app: consumer
+      consumerid: "1"
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: consumer
+        consumerid: "1"
+    spec:
+      hostNetwork: true  # same as --network host
+      dnsPolicy: ClusterFirstWithHostNet
+      dnsConfig:
+        nameservers:
+        - 10.37.224.6         # Replace with your actual DNS server
+        - 10.12.180.71
+      restartPolicy: Always
+      containers:
+      - name: consumer
+        image: quay.io/strimzi/kafka:0.46.0-kafka-4.0.0
+        command: [ "bin/kafka-console-consumer.sh" ]
+        args:
+          - "--bootstrap-server"
+          # - kafka-cluster-kafka-external1-bootstrap:9092
+          - "kafka-bootstrap.pfs.pack:9092"
+          - "--topic"
+          - "test-topic"
+          - "--from-beginning"
+          - "--consumer.config"
+          - "/tmp/kafka-client-config.properties/kafka-client-config.properties"
+        resources:
+          limits:
+            cpu: 500m
+            memory: 4Gi
+          requests:
+            cpu: 50m
+            memory: 128Mi
+        env:
+        - name: KAFKA_HEAP_OPTS
+          value: "-Xms1G -Xmx4G"
+        - name: KAFKA_OPTS
+          value: "-Dlog4j.debug=true"
+        volumeMounts:
+        - name: kafka-client-config
+          mountPath: /tmp/kafka-client-config.properties
+        - name: kafka-truststore
+          mountPath: /tmp/strimzi-kafka-truststore.jks
+          subPath: truststore.jks
+      volumes:
+      - name: kafka-client-config
+        configMap:
+          name: kafka-client-config
+      - name: kafka-truststore
+        secret:
+          secretName: kafka-truststore

@@ -1,0 +1,111 @@
+---
+# 1-cluster-ca-bootstrap.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: kafka-clients-tls-cert
+  namespace: strimzi-kafka
+spec:
+  isCA: true
+  commonName: cluster-ca
+  secretName: kafka-clients-tls-cert
+  duration: 8760h # 1 year
+  renewBefore: 720h # 30 days
+  privateKey:
+    algorithm: RSA
+    size: 2048
+  issuerRef:
+    name: selfsigned-bootstrap
+    kind: ClusterIssuer
+---
+# 2-cluster-ca-issuer.yaml
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: kafka-clients-ca-issuer
+  namespace: strimzi-kafka
+spec:
+  ca:
+    secretName: kafka-clients-tls-cert
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: generate-strimzi-clients-ca-secrets
+  namespace: strimzi-kafka
+spec:
+  template:
+    spec:
+      serviceAccountName: ca-job-sa
+      containers:
+      - name: generate
+        image: bitnami/kubectl:latest
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          PASSWORD=$(openssl rand -base64 32)
+          mkdir -p /tmp/out
+          echo -n "$PASSWORD" > /tmp/out/ca.password
+          ################################################################
+          openssl pkcs12 -export \
+            -in "/tls/tls.crt" \
+            -inkey "/tls/tls.key" \
+            -out "/tmp/out/ca.p12" \
+            -caname ca.crt \
+            -password pass:"$PASSWORD"
+          ################################################################
+          # Create CA certificate + P12 secret
+          kubectl delete secret kafka-cluster-clients-ca-cert \
+            -n strimzi-kafka \
+            --ignore-not-found
+          kubectl create secret generic kafka-cluster-clients-ca-cert \
+            -n strimzi-kafka \
+            --from-file=ca.crt=/tls/ca.crt \
+            --from-file=ca.p12=/tmp/out/ca.p12 \
+            --from-file=ca.password=/tmp/out/ca.password \
+             --dry-run=client -o yaml | \
+            kubectl apply -f -
+
+          # --from-literal=ca.password="$PASSWORD"
+          # label and annotate
+          kubectl label secret kafka-cluster-clients-ca-cert \
+            -n strimzi-kafka \
+            --overwrite \
+            strimzi.io/kind=Kafka \
+            strimzi.io/cluster="kafka-cluster"
+
+          kubectl annotate secret kafka-cluster-clients-ca-cert \
+            -n strimzi-kafka \
+            --overwrite \
+            strimzi.io/ca-cert-generation="0"
+          ################################################################
+          # Create CA from kafka-cluster-tls-cert
+          kubectl delete secret kafka-cluster-clients-ca \
+              -n strimzi-kafka \
+              --ignore-not-found
+          kubectl create secret generic kafka-cluster-clients-ca \
+              -n strimzi-kafka \
+              --from-file=ca.crt="/tls/ca.crt" \
+              --from-file=ca.key="/tls/tls.key"
+          # label and annotate
+          kubectl label secret kafka-cluster-clients-ca \
+              -n strimzi-kafka \
+              --overwrite \
+              strimzi.io/kind=Kafka \
+              strimzi.io/cluster="kafka-cluster"
+
+          kubectl annotate secret kafka-cluster-clients-ca \
+              -n strimzi-kafka \
+              --overwrite \
+              strimzi.io/ca-key-generation="0"
+          ################################################################
+        volumeMounts:
+        - name: tls
+          mountPath: /tls
+      restartPolicy: OnFailure
+      volumes:
+      - name: tls
+        secret:
+          secretName: kafka-clients-tls-cert

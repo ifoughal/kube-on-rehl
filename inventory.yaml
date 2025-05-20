@@ -1,0 +1,29 @@
+hosts:
+- hostname: control-plane-leader
+  ip: 10.10.10.10
+  role: control-plane-leader
+  user: idris
+  password: password-123
+  ingress:
+    cluster_interface: ens160
+    public_interface: ens192
+  API_PORT: 6443
+
+- hostname: control-plane-replica-1
+  ip: 10.10.10.11
+  role: control-plane-replica
+  user: idris
+  password: password-123
+  ingress:
+    cluster_interface: ens160
+    public_interface: ens192
+  API_PORT: 6443
+
+- hostname: worker-node-1
+  ip: 10.10.10.12
+  role: worker
+  user: idris
+  password: password-123
+  ingress:
+    cluster_interface: ens160
+    public_interface: ens192

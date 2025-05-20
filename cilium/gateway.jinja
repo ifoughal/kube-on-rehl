@@ -1,0 +1,47 @@
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: shared-https-gateway
+  namespace: kube-system
+spec:
+  addresses:
+  {{ addresses }}
+  gatewayClassName: cilium
+  infrastructure:
+    annotations:
+      lbipam.cilium.io/sharing-key: "kafkaCluster"
+      lbipam.cilium.io/sharing-cross-namespace: "*"
+      ingress.cilium.io/service-external-traffic-policy: Cluster
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+    allowedRoutes:
+      namespaces:
+        from: All
+  - name: https
+    protocol: HTTPS
+    port: 443
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - kind: Secret
+        name: shared-tls
+  - name: kafka-plain-listener
+    protocol: TCP
+    port: 9092
+    allowedRoutes:
+      namespaces:
+        from: All
+  - name: kafka-tls-passthrough
+    protocol: TLS
+    port: 9093
+    tls:
+      mode: Passthrough
+    allowedRoutes:
+      namespaces:
+        from: All

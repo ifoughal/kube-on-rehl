@@ -1,0 +1,31 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role # or ClusterRole if global
+metadata:
+  name: ca-secret-access
+  namespace: strimzi-kafka
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "watch", "delete", "list", "create", "update", "patch"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ca-job-sa
+  namespace: strimzi-kafka
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ca-secret-access-binding
+  namespace: strimzi-kafka
+subjects:
+- kind: ServiceAccount
+  name: ca-job-sa
+  namespace: strimzi-kafka
+roleRef:
+  kind: Role
+  name: ca-secret-access
+  apiGroup: rbac.authorization.k8s.io
+---

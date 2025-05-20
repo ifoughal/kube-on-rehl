@@ -1,0 +1,224 @@
+service:
+  ui:
+    type: ClusterIP
+  manager:
+    type: ClusterIP
+
+persistence:
+  defaultClass: true
+  # defaultFsType: ext4
+  defaultFsType: xfs
+  defaultMkfsParams: ""
+  defaultClassReplicaCount: 1
+  # defaultDataLocality: best-effort # otherwise disabled when replicaCount > 1
+  defaultDataLocality: strict-local
+  defaultReplicaAutoBalance: ignored # "disabled", "least-effort" or "best-effort" otherwise
+  reclaimPolicy: Delete
+  migratable: false
+  recurringJobSelector:
+    enable: false
+    jobList: []
+  backingImage:
+    enable: false
+    name: ~
+    dataSourceType: ~
+    dataSourceParameters: ~
+    expectedChecksum: ~
+  defaultNodeSelector:
+    enable: false # disable by default
+    selector: []
+  removeSnapshotsDuringFilesystemTrim: ignored # "enabled" or "disabled" otherwise
+
+csi:
+  kubeletRootDir: ~
+  attacherReplicaCount: 1
+  provisionerReplicaCount: 1
+  resizerReplicaCount: 1
+  snapshotterReplicaCount: 1
+
+defaultSettings:
+  autoSalvage: false   # set to true in prod
+  disableSchedulingOnCordonedNode: false
+  priorityClass: high-priority
+  replicaSoftAntiAffinity: false
+  replicaZoneSoftAntiAffinity: false
+  replicaDiskSoftAntiAffinity: false
+  volumeAttachmentRecoveryPolicy: never
+  defaultLonghornStaticStorageClass: longhron # longhorn-static
+  nodeDownPodDeletionPolicy: do-nothing
+
+  defaultReplicaCount: 1
+  # defaultDataLocality: disabled # ~
+  defaultDataLocality: strict-local # incompatible with ReadWriteMany (RWX)
+  # defaultDataLocality: best-effort
+  guaranteedInstanceManagerCpu: 1
+  guaranteedEngineManagerCPU: 1
+  guaranteedReplicaManagerCPU: 1
+  backupTarget: ~
+  # backupTarget: s3://backupbucket@us-east-1/backupstore
+  backupTargetCredentialSecret: ~
+
+  orphanAutoDeletion: true
+
+  allowRecurringJobWhileVolumeDetached: ~
+  createDefaultDiskLabeledNodes: true
+  # defaultDataPath: /mnt/longhorn-1/longhorn/
+  defaultDataPath: /var/lib/longhorn/
+
+  replicaAutoBalance: least-effort
+  storageOverProvisioningPercentage: 600
+  storageMinimalAvailablePercentage: 15
+  upgradeChecker: false
+  backupstorePollInterval: ~
+  failedBackupTTL: ~
+  restoreVolumeRecurringJobs: ~
+  recurringSuccessfulJobsHistoryLimit: ~
+  recurringFailedJobsHistoryLimit: ~
+  supportBundleFailedHistoryLimit: ~
+  taintToleration: ~
+  systemManagedComponentsNodeSelector: ~
+  autoDeletePodWhenVolumeDetachedUnexpectedly: ~
+  allowNodeDrainWithLastHealthyReplica: ~
+  mkfsExt4Parameters: ~
+  disableReplicaRebuild: ~
+  replicaReplenishmentWaitInterval: ~
+  concurrentReplicaRebuildPerNodeLimit: ~
+  concurrentVolumeBackupRestorePerNodeLimit: ~
+  disableRevisionCounter: ~
+  systemManagedPodsImagePullPolicy: ~
+  allowVolumeCreationWithDegradedAvailability: ~
+  autoCleanupSystemGeneratedSnapshot: ~
+  concurrentAutomaticEngineUpgradePerNodeLimit: ~
+  backingImageCleanupWaitInterval: ~
+  backingImageRecoveryWaitInterval: ~
+
+  kubernetesClusterAutoscalerEnabled: ~
+  storageNetwork: ~
+  deletingConfirmationFlag: ~
+  engineReplicaTimeout: ~
+  snapshotDataIntegrity: ~
+  snapshotDataIntegrityImmediateCheckAfterSnapshotCreation: ~
+  snapshotDataIntegrityCronjob: ~
+  removeSnapshotsDuringFilesystemTrim: ~
+  fastReplicaRebuildEnabled: ~
+  replicaFileSyncHttpClientTimeout: ~
+privateRegistry:
+  createSecret: ~
+  registryUrl: ~
+  registryUser: ~
+  registryPasswd: ~
+  registrySecret: ~
+
+longhornManager:
+  log:
+    ## Allowed values are `plain` or `json`.
+    format: plain
+  priorityClass: ~
+  tolerations: []
+  ## If you want to set tolerations for Longhorn Manager DaemonSet, delete the `[]` in the line above
+  ## and uncomment this example block
+  # - key: "key"
+  #   operator: "Equal"
+  #   value: "value"
+  #   effect: "NoSchedule"
+  nodeSelector: {}
+  ## If you want to set node selector for Longhorn Manager DaemonSet, delete the `{}` in the line above
+  ## and uncomment this example block
+  #  label-key1: "label-value1"
+  #  label-key2: "label-value2"
+  serviceAnnotations: {}
+  ## If you want to set annotations for the Longhorn Manager service, delete the `{}` in the line above
+  ## and uncomment this example block
+  #  annotation-key1: "annotation-value1"
+  #  annotation-key2: "annotation-value2"
+
+longhornDriver:
+  priorityClass: ~
+  tolerations: []
+  ## If you want to set tolerations for Longhorn Driver Deployer Deployment, delete the `[]` in the line above
+  ## and uncomment this example block
+  # - key: "key"
+  #   operator: "Equal"
+  #   value: "value"
+  #   effect: "NoSchedule"
+  nodeSelector: {}
+  ## If you want to set node selector for Longhorn Driver Deployer Deployment, delete the `{}` in the line above
+  ## and uncomment this example block
+  #  label-key1: "label-value1"
+  #  label-key2: "label-value2"
+
+longhornUI:
+  replicas: 1
+  priorityClass: ~
+  tolerations: []
+  ## If you want to set tolerations for Longhorn UI Deployment, delete the `[]` in the line above
+  ## and uncomment this example block
+  # - key: "key"
+  #   operator: "Equal"
+  #   value: "value"
+  #   effect: "NoSchedule"
+  nodeSelector: {}
+  ## If you want to set node selector for Longhorn UI Deployment, delete the `{}` in the line above
+  ## and uncomment this example block
+  #  label-key1: "label-value1"
+  #  label-key2: "label-value2"
+
+longhornConversionWebhook:
+  replicas: 1
+  priorityClass: ~
+  tolerations: []
+  ## If you want to set tolerations for Longhorn conversion webhook Deployment, delete the `[]` in the line above
+  ## and uncomment this example block
+  # - key: "key"
+  #   operator: "Equal"
+  #   value: "value"
+  #   effect: "NoSchedule"
+  nodeSelector: {}
+  ## If you want to set node selector for Longhorn conversion webhook Deployment, delete the `{}` in the line above
+  ## and uncomment this example block
+  #  label-key1: "label-value1"
+  #  label-key2: "label-value2"
+
+longhornAdmissionWebhook:
+  replicas: 1
+  priorityClass: ~
+  tolerations: []
+  ## If you want to set tolerations for Longhorn admission webhook Deployment, delete the `[]` in the line above
+  ## and uncomment this example block
+  # - key: "key"
+  #   operator: "Equal"
+  #   value: "value"
+  #   effect: "NoSchedule"
+  nodeSelector: {}
+  ## If you want to set node selector for Longhorn admission webhook Deployment, delete the `{}` in the line above
+  ## and uncomment this example block
+  #  label-key1: "label-value1"
+  #  label-key2: "label-value2"
+
+longhornRecoveryBackend:
+  replicas: 1
+  priorityClass: ~
+  tolerations: []
+  ## If you want to set tolerations for Longhorn recovery backend Deployment, delete the `[]` in the line above
+  ## and uncomment this example block
+  # - key: "key"
+  #   operator: "Equal"
+  #   value: "value"
+  #   effect: "NoSchedule"
+  nodeSelector: {}
+  ## If you want to set node selector for Longhorn recovery backend Deployment, delete the `{}` in the line above
+  ## and uncomment this example block
+  #  label-key1: "label-value1"
+  #  label-key2: "label-value2"
+
+
+#  For Kubernetes < v1.25, if your cluster enables Pod Security Policy admission controller,
+#  set this to `true` to ship longhorn-psp which allow privileged Longhorn pods to start
+enablePSP: false
+
+# Annotations to add to the Longhorn Manager DaemonSet Pods. Optional.
+annotations: {}
+
+serviceAccount:
+  # Annotations to add to the service account
+  annotations: {}
