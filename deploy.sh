@@ -1822,9 +1822,11 @@ verify_cert_manager_installation() {
     ##################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
     ##################################################################
+    local chart_dir="/tmp/kube-on-rehl/certmanager"
+    ##################################################################
     log -f ${CURRENT_FUNC} "Started testing cert-manager installation"
     ssh -q ${CONTROL_PLANE_NODE} <<< """
-        TEST_MANIFEST=/tmp/certmanager/test-resources.yaml
+        TEST_MANIFEST=$chart_dir/test-resources.yaml
         TEST_NS=cert-manager-test
         CERT_NAME=selfsigned-cert
         SECRET_NAME=selfsigned-cert-tls
@@ -1881,6 +1883,8 @@ install_certmanager () {
     ##################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
     ##################################################################
+    local chart_dir="/tmp/kube-on-rehl/certmanager"
+    ##################################################################
     log -f ${CURRENT_FUNC} "Started cert-manager helm chart prerequisites"
     helm_chart_prerequisites "$CONTROL_PLANE_NODE" "cert-manager" "jetstack" "https://charts.jetstack.io" "$CERTMANAGER_NS" "true" "true"
     if [ $? -ne 0 ]; then
@@ -1891,14 +1895,18 @@ install_certmanager () {
     ##################################################################
     log -f "$CURRENT_FUNC" "Sending certmanager values to control-plane node: ${CONTROL_PLANE_NODE}"
     ssh -q ${CONTROL_PLANE_NODE} <<< """
-        # create tmp dir for certmanager
-        rm -rf /tmp/certmanager
-        mkdir -p /tmp/certmanager
+        rm -rf $chart_dir
+        mkdir -p $chart_dir
     """
-    scp -q ./certmanager/values.yaml $CONTROL_PLANE_NODE:/tmp/certmanager/
+    scp -q ./certmanager/values.yaml $CONTROL_PLANE_NODE:$chart_dir/
     ##################################################################
     log -f "$CURRENT_FUNC" "Sending certmanager test deployment to control-plane node: ${CONTROL_PLANE_NODE}"
-    scp -q ./certmanager/test-resources.yaml $CONTROL_PLANE_NODE:/tmp/certmanager/
+    scp -q ./certmanager/test-resources.yaml $CONTROL_PLANE_NODE:$chart_dir/
+
+    log -f "$CURRENT_FUNC" "Sending certmanager cluster-issuer and role-binding  to control-plane node: ${CONTROL_PLANE_NODE}"
+
+    scp -q ./pki/$chart_name/cluster-issuer.yaml $CONTROL_PLANE_NODE:$chart_dir/pki/
+    scp -q ./pki/$chart_name/role-binding.yaml $CONTROL_PLANE_NODE:$chart_dir/pki/
     ##################################################################
     log -f "${CURRENT_FUNC}" "Started installing cert-manger on namespace: '${CERTMANAGER_NS}'"
     # TODO: --set http_proxy --set https_proxy --set no_proxy
@@ -1907,7 +1915,7 @@ install_certmanager () {
             --version ${CERTMANAGER_VERSION} \
             --namespace ${CERTMANAGER_NS} \
             --create-namespace \
-            -f /tmp/certmanager/values.yaml \
+            -f $chart_dir/values.yaml \
             2>&1 || true)
         # Check if the Helm install command was successful
         if [ ! \$? -eq 0 ]; then
@@ -1930,6 +1938,14 @@ install_certmanager () {
         log -f "${CURRENT_FUNC}" "ERROR" "Failed to install cert-manager"
         return 1
     fi
+    ##################################################################
+    log -f "${CURRENT_FUNC}" "Started installing cert-manager cluster issuer and role binding"
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        # create tmp dir for certmanager
+        kubectl apply -f $chart_dir/pki/cluster-issuer.yaml
+        kubectl apply -f $chart_dir/pki/role-binding.yaml
+    """
+    log -f "${CURRENT_FUNC}" "✅ Finished installing cert-manager cluster issuer and role binding"
 }
 
 
@@ -2970,302 +2986,277 @@ install_kafka_cluster() {
     ###################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
     ###################################################################
-    # log -f ${CURRENT_FUNC} "Started Strimzi Cluster Operator installation"
-    # ssh -q ${CONTROL_PLANE_NODE} <<< """
-    # helm install strimzi-cluster-operator oci://quay.io/strimzi-helm/strimzi-kafka-operator
-    # """
-    # log -f ${CURRENT_FUNC} "Finished Strimzi Cluster Operator installation"
+    local chart_name="strimzi-kafka-cluster"
+    local chart_dir="/tmp/kube-on-rehl/$chart_name"
+    local timeout_=300  # 5 minutes in seconds
+    local broker_secret=ifoughali
+    local client_secrets_dir=$chart_dir/secrets
     ###################################################################
-    local chart_url="https://strimzi.io/charts/"
-    local repo_name="strimzi"
-    local chart_name="strimzi-kafka-operator"
-    local chart_ns="$STRIMZI_KAFKA_OPERATOR_NS"
-    local chart_version=$STRIMZI_KAFKA_OPERATOR_VERSION
-    local create_ns=false
-    local delete_ns=false
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        rm -rf "$chart_dir"
+        mkdir -p $chart_dir/pki
+    """
+    log -f ${CURRENT_FUNC} "sending $chart_name cluster-crd.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    scp -q ./$chart_name/cluster-crd.yaml $CONTROL_PLANE_NODE:$chart_dir/
 
-    # if [ "$RESET_KAFKA_STORAGE" == "true" ]; then
-    #     local delete_ns=true
-    # fi
-    # ###################################################################
-    # log -f ${CURRENT_FUNC} "sending $chart_name cluster-crd.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
-    # scp -q ./$chart_name/cluster-crd.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
+    log -f ${CURRENT_FUNC} "sending $chart_name routes.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    scp -q ./$chart_name/routes.yaml $CONTROL_PLANE_NODE:$chart_dir/
 
-    # log -f ${CURRENT_FUNC} "sending $chart_name routes.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
-    # scp -q ./$chart_name/routes.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
+    log -f ${CURRENT_FUNC} "sending $chart_name kafka-bridge.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    scp -q ./$chart_name/kafka-bridge.yaml $CONTROL_PLANE_NODE:$chart_dir/
 
-    # # log -f ${CURRENT_FUNC} "sending $chart_name cert-issuer.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
-    # # scp -q ./$chart_name/cert-issuer.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
+    log -f ${CURRENT_FUNC} "sending $chart_name users.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
+    scp -q ./$chart_name/users.yaml $CONTROL_PLANE_NODE:$chart_dir/
+    ##################################################################
+    log -f ${CURRENT_FUNC} "sending $chart_name pki CRDs to control-plane node: ${CONTROL_PLANE_NODE}"
+    scp -q ./pki/$chart_name/cluster.yaml $CONTROL_PLANE_NODE:$chart_dir/pki/
+    scp -q ./pki/$chart_name/clients.yaml $CONTROL_PLANE_NODE:$chart_dir/pki/
+    scp -q ./pki/$chart_name/brokers.yaml $CONTROL_PLANE_NODE:$chart_dir/pki/
+    ##################################################################
+    # cleanup kafka PV/PVC
+    if [ "$RESET_KAFKA_STORAGE" == "true" ]; then
+        log -f ${CURRENT_FUNC} "Uninstalling previous Kafka-cluster in namespace $STRIMZI_KAFKA_NS..."
+        ssh -q ${CONTROL_PLANE_NODE} <<< """
+            kubectl delete -f $chart_dir/cluster-crd.yaml > /dev/null 2>&1
+            kubectl delete -f $chart_dir/users.yaml > /dev/null 2>&1
+            kubectl delete -f $chart_dir/routes.yaml > /dev/null 2>&1
 
-    # log -f ${CURRENT_FUNC} "sending $chart_name kafka-bridge.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
-    # scp -q ./$chart_name/kafka-bridge.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
+            kubectl delete -f $chart_dir/pki/cluster.yaml > /dev/null 2>&1 || true
+            kubectl delete -f $chart_dir/pki/clients.yaml > /dev/null 2>&1 || true
+            kubectl delete -f $chart_dir/pki/brokers.yaml > /dev/null 2>&1 || true
 
-    # log -f ${CURRENT_FUNC} "sending $chart_name users.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
-    # scp -q ./$chart_name/users.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
-    # ##################################################################
-    # # cleanup kafka PV/PVC
-    # if [ "$RESET_KAFKA_STORAGE" == "true" ]; then
-    #     log -f ${CURRENT_FUNC} "Uninstalling previous Kafka-cluster in namespace $STRIMZI_KAFKA_NS..."
-    #     ssh -q ${CONTROL_PLANE_NODE} <<< """
-    #         kubectl delete -f /tmp/$chart_name/cluster-crd.yaml > /dev/null 2>&1
-    #         kubectl delete -f /tmp/$chart_name/users.yaml > /dev/null 2>&1
-    #         kubectl delete -f /tmp/$chart_name/routes.yaml > /dev/null 2>&1
+            kubectl delete secrets kafka-cluster-clients-ca \
+                -n "$STRIMZI_KAFKA_NS" > /dev/null 2>&1
 
-    #         kubectl delete secrets kafka-cluster-clients-ca \
-    #             -n "$STRIMZI_KAFKA_NS" > /dev/null 2>&1
+            kubectl delete secrets kafka-cluster-clients-ca-cert \
+                -n "$STRIMZI_KAFKA_NS" > /dev/null 2>&1
 
-    #         kubectl delete secrets kafka-cluster-clients-ca-cert \
-    #             -n "$STRIMZI_KAFKA_NS" > /dev/null 2>&1
+            kubectl delete secrets kafka-cluster-cluster-ca \
+                -n "$STRIMZI_KAFKA_NS" > /dev/null 2>&1
 
-    #         kubectl delete secrets kafka-cluster-cluster-ca \
-    #             -n "$STRIMZI_KAFKA_NS" > /dev/null 2>&1
+            kubectl delete secrets kafka-cluster-cluster-ca-cert \
+                -n "$STRIMZI_KAFKA_NS" > /dev/null 2>&1
+        """
+        log -f ${CURRENT_FUNC} "Deleting Kafka-related PVCs in namespace $STRIMZI_KAFKA_NS..."
 
-    #         kubectl delete secrets kafka-cluster-cluster-ca-cert \
-    #             -n "$STRIMZI_KAFKA_NS" > /dev/null 2>&1
-    #     """
-    #     log -f ${CURRENT_FUNC} "Deleting Kafka-related PVCs in namespace $STRIMZI_KAFKA_NS..."
+        ssh -q ${CONTROL_PLANE_NODE} <<< """
+            kubectl get pvc -n $STRIMZI_KAFKA_NS --no-headers -o custom-columns=\":metadata.name\" | grep '^data-' | while read pvc; do
+                log -f ${CURRENT_FUNC} \"Deleting PVC: \$pvc\"
 
-    #     ssh -q ${CONTROL_PLANE_NODE} <<< """
-    #         kubectl get pvc -n $STRIMZI_KAFKA_NS --no-headers -o custom-columns=\":metadata.name\" | grep '^data-' | while read pvc; do
-    #             log -f ${CURRENT_FUNC} \"Deleting PVC: \$pvc\"
+                kubectl delete pvc -n $STRIMZI_KAFKA_NS \"\$pvc\" --timeout=3s || {
+                    log -f ${CURRENT_FUNC} \"Timed out waiting for \$pvc deletion, removing finalizers...\"
+                    kubectl patch pvc -n $STRIMZI_KAFKA_NS \"\$pvc\" -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge ${VERBOSE}
+                }
+            done
 
-    #             kubectl delete pvc -n $STRIMZI_KAFKA_NS \"\$pvc\" --timeout=3s || {
-    #                 log -f ${CURRENT_FUNC} \"Timed out waiting for \$pvc deletion, removing finalizers...\"
-    #                 kubectl patch pvc -n $STRIMZI_KAFKA_NS \"\$pvc\" -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge ${VERBOSE}
-    #             }
-    #         done
+            log -f ${CURRENT_FUNC} 'Waiting for PVs to be released and deleted...'
+            sleep 5
 
-    #         log -f ${CURRENT_FUNC} 'Waiting for PVs to be released and deleted...'
-    #         sleep 5
+            log -f ${CURRENT_FUNC} 'Deleting orphaned PVs (if any)...'
+            kubectl get pv --no-headers | awk '/$STRIMZI_KAFKA_NS/ {print \$1}' | while read pv; do
+                log -f ${CURRENT_FUNC} \"Deleting PV: \$pv\"
+                kubectl delete pv \"\$pv\" --timeout 3s ${VERBOSE}  || {
+                    log -f ${CURRENT_FUNC} \"Timed out waiting for \$pv deletion, removing finalizers...\"
+                    kubectl patch pv \"\$pv\" -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge ${VERBOSE}
+                }
+            done
 
-    #         log -f ${CURRENT_FUNC} 'Deleting orphaned PVs (if any)...'
-    #         kubectl get pv --no-headers | awk '/$STRIMZI_KAFKA_NS/ {print \$1}' | while read pv; do
-    #             log -f ${CURRENT_FUNC} \"Deleting PV: \$pv\"
-    #             kubectl delete pv \"\$pv\" --timeout 3s ${VERBOSE}  || {
-    #                 log -f ${CURRENT_FUNC} \"Timed out waiting for \$pv deletion, removing finalizers...\"
-    #                 kubectl patch pv \"\$pv\" -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge ${VERBOSE}
-    #             }
-    #         done
-
-    #         sleep 30
-    #     """
-    #     if [ $? -ne 0 ]; then
-    #         log -f ${CURRENT_FUNC} "ERROR" "Failed to clean-up Kafka-related PVCs in namespace $STRIMZI_KAFKA_NS"
-    #         return 1
-    #     fi
-    #     log -f ${CURRENT_FUNC} "Finished cleaning up Kafka-related PVCs in namespace $STRIMZI_KAFKA_NS"
-    # fi
-    # #############################################################
-    # log -f ${CURRENT_FUNC} "Started deploying PKI for Kafka-cluster"
-    # # kubectl delete -f ./pki/cluster-issuer.yaml > /dev/null 2>&1 || true
-    # # kubectl delete -f ./pki/role-binding.yaml > /dev/null 2>&1 || true
-    # kubectl delete -f ./pki/cluster.yaml > /dev/null 2>&1 || true
-    # kubectl delete -f ./pki/clients.yaml > /dev/null 2>&1 || true
-
-
-    # kubectl apply -f ./pki/cluster-issuer.yaml > /dev/null 2>&1 || true
-    # kubectl apply -f ./pki/role-binding.yaml > /dev/null 2>&1 || true
-    # kubectl apply -f ./pki/cluster.yaml > /dev/null 2>&1 || true
-    # kubectl apply -f ./pki/clients.yaml > /dev/null 2>&1 || true
-    # log -f ${CURRENT_FUNC} "Finished deploying PKI for Kafka-cluster"
-    # #############################################################
-    # # # tls_secret=cluster-ca
-    # # local secrets_path=/tmp/secrets
-    # # local ca_password=$(openssl rand -base64 32)
-
-    # # generate_certs cluster-ca $ca_password $secrets_path
-
-    # # generate_certs clients-ca $ca_password $secrets_path
-    # ###################################################################
-    # log -f ${CURRENT_FUNC} "Started deploying kafka-cluster CRDS"
-    # ssh -q ${CONTROL_PLANE_NODE} <<< """
-    #     kubectl apply -f /tmp/$chart_name/routes.yaml > /dev/null 2>&1
-    #     kubectl apply -f /tmp/$chart_name/cluster-crd.yaml > /dev/null 2>&1
-    #     kubectl apply -f /tmp/$chart_name/users.yaml > /dev/null 2>&1
-    # """
-    # ###################################################################
-    # local POD_NAME="kafka-cluster-controller-0"
-    # local TIMEOUT=300  # 5 minutes in seconds
-    # local INTERVAL=5
-    # local ELAPSED=0
-    # log -f ${CURRENT_FUNC} "Waiting for controller pod $POD_NAME to become Ready (timeout: ${TIMEOUT}s)..."
-
-    # while true; do
-    #     STATUS=$(kubectl get pod "$POD_NAME" -n "$STRIMZI_KAFKA_NS" -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null || echo "false")
-    #     if [ "$STATUS" == "true" ]; then
-    #         log -f ${CURRENT_FUNC} "✅ $POD_NAME is Ready"
-    #         break
-    #     fi
-
-    #     if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
-    #         log -f ${CURRENT_FUNC} "ERROR" "❌ Timeout reached: $POD_NAME is not Ready after $TIMEOUT seconds"
-    #         return 1
-    #     fi
-    #     sleep "$INTERVAL"
-    #     ELAPSED=$((ELAPSED + INTERVAL))
-    # done
-    # log -f ${CURRENT_FUNC} "✅ Finished deploying kafka-cluster CRDS"
-    ###################################################################
-    log -f ${CURRENT_FUNC} "Started testing kafka-cluster"
-
-    local broker_svc=""
-    ###################################################################
-    local TIMEOUT=300  # 5 minutes in seconds
-    local INTERVAL=5
-    local ELAPSED=0
-    while true; do
-        broker_svc=$(kubectl get svc -n "$STRIMZI_KAFKA_NS" -o json | jq -r '.items[] | select(.metadata.name | test("kafka-cluster-broker-.*")) | .metadata.name' | head -n1) 2>&1
-        if [ ! -z "$broker_svc" ]; then
-            log -f ${CURRENT_FUNC} "✅ broker_svc: $broker_svc is Ready"
-            break
-        fi
-
-        if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
-            log -f ${CURRENT_FUNC} "ERROR" "❌ Timeout reached! broker_svc: $broker_svc is not Ready after $TIMEOUT seconds"
+            sleep 30
+        """
+        if [ $? -ne 0 ]; then
+            log -f ${CURRENT_FUNC} "ERROR" "[❌] Failed to clean-up Kafka-related PVCs in namespace $STRIMZI_KAFKA_NS"
             return 1
         fi
-        sleep "$INTERVAL"
-        ELAPSED=$((ELAPSED + INTERVAL))
-    done
+        log -f ${CURRENT_FUNC} "Finished cleaning up Kafka-related PVCs in namespace $STRIMZI_KAFKA_NS"
+    fi
+    #############################################################
+    log -f ${CURRENT_FUNC} "Started deploying PKI for Kafka-cluster"
+    # TODO: TESTONLY:
+    scp -q ./pki/$chart_name/cluster-issuer.yaml $CONTROL_PLANE_NODE:$chart_dir/pki/
+    scp -q ./pki/$chart_name/role-binding.yaml $CONTROL_PLANE_NODE:$chart_dir/pki/
+
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        kubectl apply -f $chart_dir/pki/cluster-issuer.yaml > /dev/null 2>&1 || true
+        kubectl apply -f $chart_dir/pki/role-binding.yaml > /dev/null 2>&1 || true
+
+        kubectl apply -f $chart_dir/pki/cluster.yaml > /dev/null 2>&1 || true
+        kubectl apply -f $chart_dir/pki/clients.yaml > /dev/null 2>&1 || true
+        kubectl apply -f $chart_dir/pki/brokers.yaml > /dev/null 2>&1 || true
+    """
+    log -f ${CURRENT_FUNC} "Finished deploying PKI for Kafka-cluster"
     ###################################################################
-    # Get the NodePort for port 9095
-    local node_port=$(kubectl get svc "$broker_svc" -n "$STRIMZI_KAFKA_NS" -o json | jq -r ".spec.ports[] | select(.port==$KAFKA_BROKERS_TLS_PORT) | .nodePort")
-    if [ -z "$node_port" ]; then
-        log -f ${CURRENT_FUNC} "ERROR" "Kafka-cluster test failed! Failed to match ingress port: $KAFKA_BROKERS_TLS_PORT from broker service: '$broker_svc'"
+    log -f ${CURRENT_FUNC} "Started ensuring that kafka-cluster is deployed and running"
+    ###################################################################
+    local broker_secret="kafka-cluster-clients-ca"
+    log -f ${CURRENT_FUNC} "Waiting for broker_secret: $broker_secret to become Ready (timeout: ${timeout_}s)..."
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        INTERVAL=5
+        ELAPSED=0
+        while true; do
+            kubectl get secrets $broker_secret -n '$STRIMZI_KAFKA_NS' > /dev/null 2>&1
+            if [ \$? -eq 0 ]; then
+                log -f ${CURRENT_FUNC} \"✅ broker_secret: $broker_secret is Ready\"
+                exit 0
+            fi
+
+            if [ \"\$ELAPSED\" -ge \"$timeout_\" ]; then
+                log -f ${CURRENT_FUNC} 'ERROR' '[❌] Timeout reached! broker_secret: $broker_secret is not Ready after $timeout_ seconds'
+                exit 1
+            fi
+            sleep \"\$INTERVAL\"
+            ELAPSED=\$((ELAPSED + INTERVAL))
+        done
+    """
+    if [ $? -ne 0 ]; then
         return 1
     fi
-
-    # Get an IP address of a ready node (replace this with your preferred node if needed)
-    local node_ip=$(kubectl get nodes -o wide | awk '/ Ready / {print $6; exit}')
-
-    log -f ${CURRENT_FUNC} "Selected Broker SVC: $broker_svc"
-    log -f ${CURRENT_FUNC} "NodePort: $node_port"
-    log -f ${CURRENT_FUNC} "Node IP: $node_ip"
-
-
-    local broker_secret=ifoughali
-    local client_secrets_dir=/tmp/kafka-client/secrets
+    log -f ${CURRENT_FUNC} "✅ Finished waiting for broker_secret: $broker_secret to become Ready"
     ###################################################################
-    log -f ${CURRENT_FUNC} "Waiting for broker_secret: $broker_secret to become Ready (timeout: ${TIMEOUT}s)..."
-    local TIMEOUT=300  # 5 minutes in seconds
-    local INTERVAL=5
-    local ELAPSED=0
-    while true; do
-        kubectl get secrets "$broker_secret" -n "$STRIMZI_KAFKA_NS" > /dev/null 2>&1
-        if [ $? -eq 0 ]; then
-            log -f ${CURRENT_FUNC} "✅ broker_secret: $broker_secret is Ready"
-            break
-        fi
+    log -f ${CURRENT_FUNC} "Started deploying kafka-cluster CRDS"
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        kubectl apply -f $chart_dir/routes.yaml > /dev/null 2>&1
+        kubectl apply -f $chart_dir/cluster-crd.yaml > /dev/null 2>&1
+        kubectl apply -f $chart_dir/users.yaml > /dev/null 2>&1
+    """
+    ###################################################################
+    local pod_name="kafka-cluster-controller-0"
+    log -f ${CURRENT_FUNC} "Waiting for controller pod $pod_name to become Ready (timeout: ${timeout_}s)..."
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        INTERVAL=5
+        ELAPSED=0
+        while true; do
+            STATUS=\$(kubectl get pod $pod_name -n '$STRIMZI_KAFKA_NS' -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null || echo 'false')
+            if [ \"\$STATUS\" == \"true\" ]; then
+                log -f ${CURRENT_FUNC} '✅ $pod_name is Ready'
+                exit 0
+            fi
 
-        if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
-            log -f ${CURRENT_FUNC} "ERROR" "❌ Timeout reached! broker_secret: $broker_secret is not Ready after $TIMEOUT seconds"
-            return 1
-        fi
-        sleep "$INTERVAL"
-        ELAPSED=$((ELAPSED + INTERVAL))
-    done
+            if [ \"\$ELAPSED\" -ge \"$timeout_\" ]; then
+                log -f ${CURRENT_FUNC} 'ERROR' '[❌] Timeout reached: $pod_name is not Ready after $timeout_ seconds'
+                exit 1
+            fi
+            sleep \"\$INTERVAL\"
+            ELAPSED=\$((ELAPSED + INTERVAL))
+        done
+    """
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
+    log -f ${CURRENT_FUNC} "✅ Finished deploying kafka-cluster CRDS"
+    ###################################################################
+    log -f ${CURRENT_FUNC} "Waiting for kafka-cluster svcs to become Ready (timeout: ${timeout_}s)..."
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        INTERVAL=5
+        ELAPSED=0
+        broker_svc=''
+        while true; do
+            broker_svc=\$(kubectl get svc -n '$STRIMZI_KAFKA_NS' -o json | jq -r '.items[] | select(.metadata.name | test(\"kafka-cluster-broker-.*\")) | .metadata.name' | head -n1) 2>&1
+            if [ ! -z \"\$broker_svc\" ]; then
+                log -f ${CURRENT_FUNC} \"✅ broker_svc: \$broker_svc is Ready\"
+                exit 0
+            fi
+
+            if [ \"\$ELAPSED\" -ge \"$timeout_\" ]; then
+                log -f ${CURRENT_FUNC} 'ERROR' '[❌] Timeout reached! broker_svc is not Ready after $timeout_ seconds'
+                exit 1
+            fi
+            sleep \"\$INTERVAL\"
+            ELAPSED=\$((ELAPSED + INTERVAL))
+        done
+    """
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
+    log -f ${CURRENT_FUNC} "✅ Kafka-cluster svcs are Ready!"
+    ###################################################################
+    log -f ${CURRENT_FUNC} "Waiting for broker_secret: $broker_secret to become Ready (timeout: ${timeout_}s)..."
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        INTERVAL=5
+        ELAPSED=0
+        while true; do
+            kubectl get secrets '$broker_secret' -n '$STRIMZI_KAFKA_NS' > /dev/null 2>&1
+            if [ \$? -eq 0 ]; then
+                log -f ${CURRENT_FUNC} '✅ broker_secret: $broker_secret is Ready'
+                exit 0
+            fi
+
+            if [ \"\$ELAPSED\" -ge \"$timeout_\" ]; then
+                log -f ${CURRENT_FUNC} 'ERROR' '[❌] Timeout reached! broker_secret: $broker_secret is not Ready after $timeout_ seconds'
+                exit 1
+            fi
+            sleep \"\$INTERVAL\"
+            ELAPSED=\$((ELAPSED + INTERVAL))
+        done
+    """
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
     log -f ${CURRENT_FUNC} "✅ Finished waiting for broker_secret: $broker_secret to become Ready"
     ###################################################################
     log -f ${CURRENT_FUNC} "Exporting broker_secrets for testing..."
-    rm -rf $client_secrets_dir && mkdir -p $client_secrets_dir
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        rm -rf '$client_secrets_dir' && mkdir -p '$client_secrets_dir'
 
-    kubectl get secret $broker_secret  \
-        -n $STRIMZI_KAFKA_NS \
-        -o jsonpath='{.data.user\.key}' | base64 -d \
-        > $client_secrets_dir/$broker_secret.key
+        kubectl get secret brokers-tls-cert  \
+            -n $STRIMZI_KAFKA_NS \
+            -o jsonpath='{.data.ca\.crt}' | base64 -d  \
+            > $client_secrets_dir/brokers-ca.crt
 
-    kubectl get secret $broker_secret  \
-        -n $STRIMZI_KAFKA_NS \
-        -o jsonpath='{.data.user\.crt}' | base64 -d \
-        > $client_secrets_dir/$broker_secret.crt
+        kubectl get secret $broker_secret  \
+            -n $STRIMZI_KAFKA_NS \
+            -o jsonpath='{.data.user\.key}' | base64 -d \
+            > $client_secrets_dir/$broker_secret.key
 
-    kubectl get secret kafka-cluster-clients-ca-cert \
-        -n $STRIMZI_KAFKA_NS \
-        -o jsonpath='{.data.ca\.crt}' | base64 -d  \
-        > $client_secrets_dir/clients-ca.crt
+        kubectl get secret $broker_secret  \
+            -n $STRIMZI_KAFKA_NS \
+            -o jsonpath='{.data.user\.crt}' | base64 -d \
+            > $client_secrets_dir/$broker_secret.crt
 
-    kubectl get secret kafka-cluster-cluster-ca-cert \
-        -n $STRIMZI_KAFKA_NS \
-        -o jsonpath='{.data.ca\.crt}' | base64 -d  \
-        > $client_secrets_dir/cluster-ca.crt
-
-    kubectl get secret brokers-tls-cert  \
-        -n $STRIMZI_KAFKA_NS \
-        -o jsonpath='{.data.ca\.crt}' | base64 -d  \
-        > $client_secrets_dir/brokers-ca.crt
-
+        kubectl get secret kafka-cluster-clients-ca-cert \
+            -n $STRIMZI_KAFKA_NS \
+            -o jsonpath='{.data.ca\.crt}' | base64 -d  \
+            > $client_secrets_dir/clients-ca.crt
+    """
     log -f ${CURRENT_FUNC} "✅ Finished exporting broker_secrets."
     ###################################################################
-
-
-    openssl verify -CAfile "$client_secrets_dir/cluster-ca.crt" "$client_secrets_dir/$broker_secret.crt" > /dev/null 2>&1
+    log -f ${CURRENT_FUNC} "Testing kafka-cluster sshl handshake..."
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        openssl verify -CAfile '$client_secrets_dir/clients-ca.crt' '$client_secrets_dir/$broker_secret.crt' > /dev/null 2>&1
+        if [ \$? -ne 0 ]; then
+            log -f ${CURRENT_FUNC} 'ERROR' \"[❌] Client: '$broker_secret' certificate verification failed against cluster-ca\"
+            exit 1
+        fi
+    """
     if [ $? -ne 0 ]; then
-        log -f ${CURRENT_FUNC} "ERROR" "Client: '$broker_secret' certificate verification failed against cluster-ca"
         return 1
     fi
-
-    echo TODO
-    return 0
-    log -f ${CURRENT_FUNC} "Testing TLS connection to $node_ip:$node_port..."
-    output=$(kcat -b "$node_ip:$node_port" -L \
-        -X security.protocol=ssl \
-        -X ssl.key.location="$client_secrets_dir/$broker_secret.key" \
-        -X ssl.certificate.location="$client_secrets_dir/$broker_secret.crt" \
-        -X ssl.ca.location="$client_secrets_dir/brokers-ca.crt"
-        2>&1
-    )
-    if [ $? -ne 0 ]; then
-        log -f ${CURRENT_FUNC} "ERROR" "Kafka-cluster connection test failed! Failed to connect to $node_ip:$node_port"
-        log -f ${CURRENT_FUNC} "ERROR" "output: $output"
-        # rm -rf $client_secrets_dir
-        return 1
-    fi
-
-    # nc -zv kafka-broker-0.pfs.pack 9092
-
-
-
-#     # TODO: make sure they match :
-#     openssl rsa -noout -modulus -in "$client_secrets_dir/$broker_secret.key" | openssl md5
-#     openssl rsa -noout -modulus -in "$client_secrets_dir/$broker_secret.key" | openssl md5
-
-
-    openssl s_client -connect 10.66.65.10:31236 -showcerts </dev/null   | openssl x509 -outform PEM > /tmp/kafka-server.crt
-
-
-
-    node_ip=broker-0-kafka-cluster.pfs.pack
-    node_port=9093
-
-    # node_ip=10.66.65.10
-    # node_ip=localhost
-    # node_port=19093
-
-    address="$node_ip:$node_port"
-    # address="$node_ip"
-    broker_secret=ifoughali
-    client_secrets_dir=/tmp/kafka-client/secrets
-
-
-    openssl s_client -connect $address -showcerts -CAfile /tmp/kafka-client/secrets/brokers-ca.crt --cert /tmp/kafka-client/secrets/$broker_secret.crt --key /tmp/kafka-client/secrets/$broker_secret.key
-
+    log -f ${CURRENT_FUNC} "✅ Finished testing client certificate verification against cluster-ca"
+    ###################################################################
+    log -f ${CURRENT_FUNC} "Testing kafka-cluster connection..."
+    local address="$KAFKA_BROKER_0_FQDN:$KAFKA_BROKERS_TLS_PORT"
+    # openssl s_client -connect $address -showcerts -CAfile /tmp/kafka-client/secrets/brokers-ca.crt --cert /tmp/kafka-client/secrets/$broker_secret.crt --key /tmp/kafka-client/secrets/$broker_secret.key
     # openssl s_client -connect $address -showcerts -CAfile  </dev/null   | openssl x509 -outform PEM > /tmp/kafka-server.crt
-
-
-    # kcat -b "$node_ip:$node_port" -L \
-    kcat -b "$address" -L -m 30 \
-        -X security.protocol=ssl \
-        -X ssl.key.location="$client_secrets_dir/$broker_secret.key" \
-        -X ssl.certificate.location="$client_secrets_dir/$broker_secret.crt" \
-        -X ssl.ca.location="$client_secrets_dir/brokers-ca.crt" \
-        -X debug=security
-
-        # -X enable.ssl.certificate.verification=false
-
-
-    log -f ${CURRENT_FUNC} "TLS connection to $node_ip:$node_port was successful!"
-
-    log -f ${CURRENT_FUNC} "Finished testing kafka-cluster"
+    # -X debug=security  # -X enable.ssl.certificate.verification=false \
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        kcat -b '$address' -L -m 15 \
+            -X security.protocol=ssl \
+            -X ssl.key.location='$client_secrets_dir/$broker_secret.key' \
+            -X ssl.certificate.location='$client_secrets_dir/$broker_secret.crt' \
+            -X ssl.ca.location='$client_secrets_dir/brokers-ca.crt' > /dev/null 2>&1
+        if [ \$? -ne 0 ]; then
+            log -f ${CURRENT_FUNC} 'ERROR' \"[❌] Kafka-cluster connection test failed! Failed to connect to '$address'\"
+            rm -rf $client_secrets_dir
+            exit 1
+        fi
+        rm -rf $client_secrets_dir
+        exit 0
+    """
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
+    log -f ${CURRENT_FUNC} "✅ Finished testing kafka-cluster connection"
+    ###################################################################
+    log -f ${CURRENT_FUNC} "✅ Finished testing kafka-cluster successfully"
     return 0
 }
 
@@ -3705,12 +3696,6 @@ install_kafka_operator() {
     ###################################################################
     CURRENT_FUNC=${FUNCNAME[0]}
     ###################################################################
-    # log -f ${CURRENT_FUNC} "Started Strimzi Cluster Operator installation"
-    # ssh -q ${CONTROL_PLANE_NODE} <<< """
-    # helm install strimzi-cluster-operator oci://quay.io/strimzi-helm/strimzi-kafka-operator
-    # """
-    # log -f ${CURRENT_FUNC} "Finished Strimzi Cluster Operator installation"
-    ###################################################################
     local chart_url="https://strimzi.io/charts/"
     local repo_name="strimzi"
     local chart_name="strimzi-kafka-operator"
@@ -3818,38 +3803,6 @@ install_kafka_operator() {
     log -f ${CURRENT_FUNC} "sending $chart_name values-$chart_version.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
     scp -q ./$chart_name/values-$chart_version.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
     ##################################################################
-
-    ##################################################################
-    # log -f ${CURRENT_FUNC} "Installing $chart_name Helm chart from source"
-    # ssh -q ${CONTROL_PLANE_NODE} <<< """
-
-    #     cd /tmp/$chart_name
-
-    #     wget -q https://github.com/strimzi/strimzi-kafka-operator/releases/download/$chart_version/strimzi-kafka-operator-helm-3-chart-$chart_version.tgz
-
-
-    #     output=\$(helm install $chart_name /tmp/$chart_name/strimzi-kafka-operator-helm-3-chart-$chart_version.tgz \
-    #         --version $chart_version \
-    #         --namespace $chart_ns \
-    #         --create-namespace \
-    #         -f /tmp/$chart_name/values.yaml \
-    #         2>&1)
-    #         # Check if the Helm install command was successful
-    #     if [ ! \$? -eq 0 ]; then
-    #         log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install $chart_name:\n\t\${output}\"
-    #         exit 1
-    #     fi
-
-    #     log -f ${CURRENT_FUNC} 'WARNING' \"Initiating workaround to force the install on kubenerete 1.33\"
-    #     kubectl -n $chart_ns set env deployment/strimzi-cluster-operator STRIMZI_KUBERNETES_VERSION=\"major=1,minor=33\" > /dev/null 2>&1 || true
-
-    #     kubectl -n $chart_ns rollout restart deployment strimzi-cluster-operator > /dev/null 2>&1 || true
-
-    #     log -f ${CURRENT_FUNC} 'INFO' 'Waiting for the strimzi-cluster-operator to be ready...'
-    #     sleep 60
-    #     kubectl apply -f /tmp/$chart_name/cluster-crd.yaml
-    # """
-    ##################################################################
     log -f ${CURRENT_FUNC} "Installing $chart_name Helm chart"
     ssh -q ${CONTROL_PLANE_NODE} <<< """
         output=\$(helm install $chart_name $repo_name/$chart_name \
@@ -3876,95 +3829,40 @@ install_kafka_operator() {
         log -f ${CURRENT_FUNC} "ERROR" "Failed to install kafka helm chart"
         return 1
     fi
-    return 0
-    # ssh -q ${CONTROL_PLANE_NODE} <<< """
-    #     output=\$(helm install $chart_name $repo_name/$chart_name \
-    #         --version $chart_version \
-    #         --namespace $chart_ns \
-    #         --create-namespace \
-    #         -f /tmp/$chart_name/values.yaml \
-    #         2>&1)
-    #         # Check if the Helm install command was successful
-    #     if [ ! \$? -eq 0 ]; then
-    #         log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install $chart_name:\n\t\${output}\"
-    #         exit 1
-    #     fi
-    # """
-    # if [ $? -eq 0 ]; then
-    #     log -f "${CURRENT_FUNC}" "Finished installing $chart_name on namespace: '${chart_ns}'"
-    # else
-    #     log -f "${CURRENT_FUNC}" "ERROR" "Failed to install $chart_name"
-    #     return 1
-    # fi
-    #############################################################################
-    # TODO:
-    log -f ${CURRENT_FUNC} "Installing kafkacat for TS"
-    return 1
-    sudo dnf update -y
-    sudo dnf install librdkafka-devel -y
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Installing kafkacat on the cluster nodes:"
+    while read -r node; do
+        local hostname=$(echo "$node" | jq -r '.hostname')
+        local ip=$(echo "$node" | jq -r '.ip')
+        local role=$(echo "$node" | jq -r '.role')
 
-    cd /tmp
-    git clone https://github.com/edenhill/kcat.git -b 1.7.1
-    cd kcat
-    ./configure
-    make
-    sudo make install
+        log -f ${CURRENT_FUNC} "Restarting cilium PIDs on $role node ${hostname}"
+        ssh -q ${hostname} <<< """
+            if command -v kcat &> /dev/null; then
+                log -f ${CURRENT_FUNC} 'kafkacat is already installed on nodes: $hostname'
+                exit 0
+            else
+                sudo dnf update -y
+                sudo dnf install librdkafka-devel -y
+                cd /tmp
+                git clone https://github.com/edenhill/kcat.git -b 1.7.1
+                cd kcat
+                ./configure
+                make
+                sudo make install
+                rm -rf /tmp/kcat
+                log -f ${CURRENT_FUNC} 'Finished installing kafkacat on node: $hostname'
 
+            fi
+        """
+        if [ $? -ne 0 ]; then
+            log -f ${CURRENT_FUNC} "ERROR" "Failed to install kafkacat on nodes: $hostname"
+        fi
+    done < <(echo "$CLUSTER_NODES" | jq -c '.[]')
+    ##################################################################
+    log -f ${CURRENT_FUNC} "Finished deploying kafka on the cluster."
     ##################################################################
     return 0
-    ###################################################################
-    #  BITNAMI CHART
-    # log -f ${CURRENT_FUNC} "Started kafka helm chart prerequisites"
-    # helm_chart_prerequisites "$CONTROL_PLANE_NODE" "kafka" "https://charts.bitnami.com/bitnami" "$KAFKA_NS" "true" "true"
-    # if [ $? -ne 0 ]; then
-    #     log -f ${CURRENT_FUNC} "ERROR" "Failed to install kafka helm chart prerequisites"
-    #     return 1
-    # fi
-    # log -f ${CURRENT_FUNC} "Finished kafka helm chart prerequisites"
-    # ##################################################################
-    # log -f ${CURRENT_FUNC} "removing kafka crds"
-    # ssh -q ${CONTROL_PLANE_NODE} <<< """
-    #     kubectl delete crd --selector app=kafka --now=true ${VERBOSE} || true
-    # """
-    # ##################################################################
-    # ssh -q ${CONTROL_PLANE_NODE} <<< """
-    #     # create tmp dir for kafka
-    #     rm -rf /tmp/kafka &&  mkdir -p /tmp/kafka
-    # """
-    # ##################################################################
-    # log -f ${CURRENT_FUNC} "sending kafka values.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
-    # scp -q ./kafka/values.yaml $CONTROL_PLANE_NODE:/tmp/kafka/
-    # ##################################################################
-    # log -f ${CURRENT_FUNC} "sending kafka http-routes.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
-    # scp -q ./kafka/http-routes.yaml $CONTROL_PLANE_NODE:/tmp/kafka/
-    # ##################################################################
-    # log -f ${CURRENT_FUNC} "Installing bitnami kafka Helm chart"
-    # ssh -q ${CONTROL_PLANE_NODE} <<< """
-    #     output=\$(helm install kafka kafka/kafka \
-    #         --namespace $KAFKA_NS \
-    #         --create-namespace \
-    #         --version $KAFKA_VERSION \
-    #         -f /tmp/kafka/values.yaml \
-    #         2>&1)
-    #         # Check if the Helm install command was successful
-    #     if [ ! \$? -eq 0 ]; then
-    #         log -f ${CURRENT_FUNC} 'ERROR' \"Failed to install kafka:\n\t\${output}\"
-    #         exit 1
-    #     fi
-    # """
-    # if [ $? -eq 0 ]; then
-    #     log -f "${CURRENT_FUNC}" "Finished installing kafka on namespace: '${KAFKA_NS}'"
-    # else
-    #     log -f "${CURRENT_FUNC}" "ERROR" "Failed to install kafka"
-    #     return 1
-    # fi
-    # ##################################################################
-    # # log -f ${CURRENT_FUNC} "applying http-routes for kafka ingress"
-    # # ssh -q ${CONTROL_PLANE_NODE} <<< """
-    # #     kubectl apply -f /tmp/kafka/http-routes.yaml ${VERBOSE}
-    # # """
-    # ##################################################################
-    log -f ${CURRENT_FUNC} "Finished deploying kafka on the cluster."
 }
 
 
@@ -4046,6 +3944,72 @@ install_kafka_ui() {
     log -f ${CURRENT_FUNC} "sending $chart_name http-routes.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
     scp -q ./$chart_name/http-routes.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
     ##################################################################
+    log -f ${CURRENT_FUNC} "Exporting '$KAFKA_UI_USER' secrets for truststore and keystore creation"
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        client_secrets_dir='/tmp/kube-on-rehl/kafka-ui/secrets'
+        rm -rf \$client_secrets_dir && mkdir -p \$client_secrets_dir
+        cd \$client_secrets_dir
+        ###################################################################
+        log -f ${CURRENT_FUNC} 'Creating truststore.jks for kafka-ui'
+        ca_certs=(
+            broker-client-ca
+            brokers-ca
+            ca
+            clients-ca
+            cluster-ca
+            kafka-cluster-tls
+            kube-root-ca
+            user
+        )
+        ###################################################################
+        log -f ${CURRENT_FUNC} 'Started exporting kafka ca-certs for truststore creation'
+        for alias in \"\${ca_certs[@]}\"; do
+            kubectl get cm kube-root-ca.crt \
+                -n $STRIMZI_KAFKA_NS \
+                -o jsonpath='{.data.ca\.crt}'  \
+                > \$client_secrets_dir/kube-root-ca.crt
+        done
+        log -f ${CURRENT_FUNC} '✅ Finished exporting kafka ca-certs for truststore creation'
+        ###################################################################
+        log -f ${CURRENT_FUNC} 'Started adding ca-certs to truststore.jks for kafka-ui'
+        for alias in \"\${ca_certs[@]}\"; do
+            keytool -importcert \
+                -file \"\$client_secrets_dir/\${alias}.crt\" \
+                -keystore \"\$client_secrets_dir/truststore.jks\" \
+                -storepass \"\$KAFKA_UI_TRUSTSTORE_PASS\" \
+                -alias \"\$alias\" \
+                -noprompt
+        done
+        log -f ${CURRENT_FUNC} '✅ Finished adding ca-certs to truststore.jks for kafka-ui'
+        ###################################################################
+        # DEBUG commands:
+        # openssl s_client -connect broker-0-kafka-cluster.pfs.pack:9093 -showcerts -CAfile brokers-ca.crt
+        # keytool -list -keystore \$PWD/truststore.jks -storepass atreides
+        ###################################################################
+        log -f ${CURRENT_FUNC} 'Started creating truststore.jks secret for kafka-ui'
+        kubectl delete secret kafka-ui-truststore -n $STRIMZI_KAFKA_NS > /dev/null 2>&1 || true
+        kubectl create secret generic kafka-ui-truststore \
+            --from-file=./truststore.jks \
+            -n $STRIMZI_KAFKA_NS > /dev/null 2>&1
+        log -f ${CURRENT_FUNC} '✅ Finished creating truststore.jks secret for kafka-ui'
+        ###################################################################
+        log -f ${CURRENT_FUNC} 'Started creating keystore.p12 for kafka-ui'
+        openssl pkcs12 -export \
+            -inkey \$client_secrets_dir/user.key \
+            -in \$client_secrets_dir/user.crt \
+            -certfile \$client_secrets_dir/ca.crt \
+            -name kafka-ui-keystore \
+            -out \$client_secrets_dir/keystore.p12 \
+            -password pass:arakeen
+        kubectl delete secret kafka-ui-keystore -n $STRIMZI_KAFKA_NS > /dev/null 2>&1 || true
+        kubectl create secret generic kafka-ui-keystore \
+            --from-file=./keystore.p12 \
+            -n $STRIMZI_KAFKA_NS > /dev/null 2>&1
+        log -f ${CURRENT_FUNC} '✅ Finished creating keystore.p12 secret for kafka-ui'
+        ###################################################################
+    """
+    log -f ${CURRENT_FUNC} "✅ Finished exporting '$KAFKA_UI_USER' secrets for keystore & truststore and keystore creation"
+    ###################################################################
     log -f ${CURRENT_FUNC} "Installing $chart_name Helm chart"
     ssh -q ${CONTROL_PLANE_NODE} <<< """
         output=\$(helm install $chart_name $chart_name/$chart_name \
@@ -4073,22 +4037,27 @@ install_kafka_ui() {
     """
     ##################################################################
     log -f ${CURRENT_FUNC} "applying dnsPolicy and dnsConfig for $chart_name deployment"
-    kubectl patch deployment kafka-ui -n $STRIMZI_KAFKA_NS --type='json' -p='
-    [
-        {
-            "op": "add",
-            "path": "/spec/template/spec/dnsPolicy",
-            "value": "ClusterFirstWithHostNet"
-        },
-        {
-            "op": "add",
-            "path": "/spec/template/spec/dnsConfig",
-            "value": {
-                "nameservers": ["10.37.224.6", "10.12.180.71"]
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        kubectl patch deployment kafka-ui -n $STRIMZI_KAFKA_NS --type='json' -p='
+        [
+            {
+                \"op\": \"add\",
+                \"path\": \"/spec/template/spec/dnsPolicy\",
+                \"value\": \"ClusterFirstWithHostNet\"
+            },
+            {
+                \"op\": \"add\",
+                \"path\": \"/spec/template/spec/dnsConfig\",
+                \"value\": {
+                    \"nameservers\": [\"10.37.224.6\", \"10.12.180.71\"]
+                }
             }
-        }
-    ]'
+        ]'
+    """
     ##################################################################
+    log -f ${CURRENT_FUNC} "Finished deploying $chart_name on the cluster."
+    ##################################################################
+    return 0
 }
 
 
@@ -4649,7 +4618,7 @@ if [ "$INSTALL_CLUSTER" = true ]; then
 #     #     log -f "main" "ERROR" "Failed to deploy cert_manager on the cluster, services might be unreachable due to faulty TLS..."
 #     #     exit 1
 #     # fi
-#     # # ##################################################################
+#     # # ##################################################################²
 #     # # vault_uninstall
 #     # # ##################################################################
 #     # # ##################################################################
@@ -4673,7 +4642,7 @@ if [ "$INSTALL_CLUSTER" = true ]; then
         fi
 #     ##################################################################
 #     # install_akhq
-    # install_kafka_ui
+    install_kafka_ui
 #     ##################################################################
 #     # install_neo4j
 fi
