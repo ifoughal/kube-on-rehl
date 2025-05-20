@@ -2989,7 +2989,7 @@ install_kafka_cluster() {
     local chart_name="strimzi-kafka-cluster"
     local chart_dir="/tmp/kube-on-rehl/$chart_name"
     local timeout_=300  # 5 minutes in seconds
-    local broker_secret=ifoughali
+    local broker_secret="kafka-cluster-clients-ca"
     local client_secrets_dir=$chart_dir/secrets
     ###################################################################
     ssh -q ${CONTROL_PLANE_NODE} <<< """
@@ -2997,16 +2997,16 @@ install_kafka_cluster() {
         mkdir -p $chart_dir/pki
     """
     log -f ${CURRENT_FUNC} "sending $chart_name cluster-crd.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
-    scp -q ./$chart_name/cluster-crd.yaml $CONTROL_PLANE_NODE:$chart_dir/
+    scp -q ./strimzi-kafka-operator/cluster-crd.yaml $CONTROL_PLANE_NODE:$chart_dir/
 
     log -f ${CURRENT_FUNC} "sending $chart_name routes.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
-    scp -q ./$chart_name/routes.yaml $CONTROL_PLANE_NODE:$chart_dir/
+    scp -q ./strimzi-kafka-operator/routes.yaml $CONTROL_PLANE_NODE:$chart_dir/
 
     log -f ${CURRENT_FUNC} "sending $chart_name kafka-bridge.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
-    scp -q ./$chart_name/kafka-bridge.yaml $CONTROL_PLANE_NODE:$chart_dir/
+    scp -q ./strimzi-kafka-operator/kafka-bridge.yaml $CONTROL_PLANE_NODE:$chart_dir/
 
     log -f ${CURRENT_FUNC} "sending $chart_name users.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
-    scp -q ./$chart_name/users.yaml $CONTROL_PLANE_NODE:$chart_dir/
+    scp -q ./strimzi-kafka-operator/users.yaml $CONTROL_PLANE_NODE:$chart_dir/
     ##################################################################
     log -f ${CURRENT_FUNC} "sending $chart_name pki CRDs to control-plane node: ${CONTROL_PLANE_NODE}"
     scp -q ./pki/$chart_name/cluster.yaml $CONTROL_PLANE_NODE:$chart_dir/pki/
@@ -3072,8 +3072,8 @@ install_kafka_cluster() {
     #############################################################
     log -f ${CURRENT_FUNC} "Started deploying PKI for Kafka-cluster"
     # TODO: TESTONLY:
-    scp -q ./pki/$chart_name/cluster-issuer.yaml $CONTROL_PLANE_NODE:$chart_dir/pki/
-    scp -q ./pki/$chart_name/role-binding.yaml $CONTROL_PLANE_NODE:$chart_dir/pki/
+    scp -q ./pki/cluster-issuer.yaml $CONTROL_PLANE_NODE:$chart_dir/pki/
+    scp -q ./pki/role-binding.yaml $CONTROL_PLANE_NODE:$chart_dir/pki/
 
     ssh -q ${CONTROL_PLANE_NODE} <<< """
         kubectl apply -f $chart_dir/pki/cluster-issuer.yaml > /dev/null 2>&1 || true
@@ -3087,7 +3087,6 @@ install_kafka_cluster() {
     ###################################################################
     log -f ${CURRENT_FUNC} "Started ensuring that kafka-cluster is deployed and running"
     ###################################################################
-    local broker_secret="kafka-cluster-clients-ca"
     log -f ${CURRENT_FUNC} "Waiting for broker_secret: $broker_secret to become Ready (timeout: ${timeout_}s)..."
     ssh -q ${CONTROL_PLANE_NODE} <<< """
         INTERVAL=5
@@ -3169,19 +3168,28 @@ install_kafka_cluster() {
     fi
     log -f ${CURRENT_FUNC} "✅ Kafka-cluster svcs are Ready!"
     ###################################################################
-    log -f ${CURRENT_FUNC} "Waiting for broker_secret: $broker_secret to become Ready (timeout: ${timeout_}s)..."
     ssh -q ${CONTROL_PLANE_NODE} <<< """
         INTERVAL=5
         ELAPSED=0
+
+        readarray -t users_secrets < <(yq eval-all '.metadata.name' $chart_dir/users.yaml | grep -v '^---$')
+        if [ -z "\$users_secrets" ]; then
+            log -f ${CURRENT_FUNC} 'ERROR' '[❌] No users secrets found in users.yaml'
+            exit 1
+        fi
+
+        log -f ${CURRENT_FUNC} \"Waiting for broker_secret: \${users_secrets[0]} to become Ready (timeout: \${timeout_}s)...\"
+
         while true; do
-            kubectl get secrets '$broker_secret' -n '$STRIMZI_KAFKA_NS' > /dev/null 2>&1
+            kubectl get secrets \"\${users_secrets[0]}\" -n '$STRIMZI_KAFKA_NS' > /dev/null 2>&1
             if [ \$? -eq 0 ]; then
-                log -f ${CURRENT_FUNC} '✅ broker_secret: $broker_secret is Ready'
+                log -f ${CURRENT_FUNC} \"✅ broker_secret: '\${users_secrets[0]}' is Ready\"
+                log -f ${CURRENT_FUNC} \"✅ Finished waiting for broker_secret: '\${users_secrets[0]}' to become Ready\"
                 exit 0
             fi
 
             if [ \"\$ELAPSED\" -ge \"$timeout_\" ]; then
-                log -f ${CURRENT_FUNC} 'ERROR' '[❌] Timeout reached! broker_secret: $broker_secret is not Ready after $timeout_ seconds'
+                log -f ${CURRENT_FUNC} 'ERROR' \"[❌] Timeout reached! broker_secret: '\${users_secrets[0]}' is not Ready after $timeout_ seconds\"
                 exit 1
             fi
             sleep \"\$INTERVAL\"
@@ -3191,26 +3199,28 @@ install_kafka_cluster() {
     if [ $? -ne 0 ]; then
         return 1
     fi
-    log -f ${CURRENT_FUNC} "✅ Finished waiting for broker_secret: $broker_secret to become Ready"
     ###################################################################
     log -f ${CURRENT_FUNC} "Exporting broker_secrets for testing..."
     ssh -q ${CONTROL_PLANE_NODE} <<< """
         rm -rf '$client_secrets_dir' && mkdir -p '$client_secrets_dir'
+
+        readarray -t users_secrets < <(yq eval-all '.metadata.name' $chart_dir/users.yaml | grep -v '^---$')
+
 
         kubectl get secret brokers-tls-cert  \
             -n $STRIMZI_KAFKA_NS \
             -o jsonpath='{.data.ca\.crt}' | base64 -d  \
             > $client_secrets_dir/brokers-ca.crt
 
-        kubectl get secret $broker_secret  \
+        kubectl get secret \${users_secrets[0]}  \
             -n $STRIMZI_KAFKA_NS \
             -o jsonpath='{.data.user\.key}' | base64 -d \
-            > $client_secrets_dir/$broker_secret.key
+            > $client_secrets_dir/\${users_secrets[0]}.key
 
-        kubectl get secret $broker_secret  \
+        kubectl get secret \${users_secrets[0]}  \
             -n $STRIMZI_KAFKA_NS \
             -o jsonpath='{.data.user\.crt}' | base64 -d \
-            > $client_secrets_dir/$broker_secret.crt
+            > $client_secrets_dir/\${users_secrets[0]}.crt
 
         kubectl get secret kafka-cluster-clients-ca-cert \
             -n $STRIMZI_KAFKA_NS \
@@ -3221,9 +3231,10 @@ install_kafka_cluster() {
     ###################################################################
     log -f ${CURRENT_FUNC} "Testing kafka-cluster sshl handshake..."
     ssh -q ${CONTROL_PLANE_NODE} <<< """
-        openssl verify -CAfile '$client_secrets_dir/clients-ca.crt' '$client_secrets_dir/$broker_secret.crt' > /dev/null 2>&1
+        readarray -t users_secrets < <(yq eval-all '.metadata.name' $chart_dir/users.yaml | grep -v '^---$')
+        openssl verify -CAfile '$client_secrets_dir/clients-ca.crt' \"$client_secrets_dir/\${users_secrets[0]}.crt\"  > /dev/null 2>&1
         if [ \$? -ne 0 ]; then
-            log -f ${CURRENT_FUNC} 'ERROR' \"[❌] Client: '$broker_secret' certificate verification failed against cluster-ca\"
+            log -f ${CURRENT_FUNC} 'ERROR' \"[❌] Client: '\${users_secrets[0]}' certificate verification failed against clients-ca\"
             exit 1
         fi
     """
@@ -3238,17 +3249,19 @@ install_kafka_cluster() {
     # openssl s_client -connect $address -showcerts -CAfile  </dev/null   | openssl x509 -outform PEM > /tmp/kafka-server.crt
     # -X debug=security  # -X enable.ssl.certificate.verification=false \
     ssh -q ${CONTROL_PLANE_NODE} <<< """
+        readarray -t users_secrets < <(yq eval-all '.metadata.name' $chart_dir/users.yaml | grep -v '^---$')
+
         kcat -b '$address' -L -m 15 \
             -X security.protocol=ssl \
-            -X ssl.key.location='$client_secrets_dir/$broker_secret.key' \
-            -X ssl.certificate.location='$client_secrets_dir/$broker_secret.crt' \
+            -X ssl.key.location=\"$client_secrets_dir/\${users_secrets[0]}.key\" \
+            -X ssl.certificate.location=\"$client_secrets_dir/\${users_secrets[0]}.crt\" \
             -X ssl.ca.location='$client_secrets_dir/brokers-ca.crt' > /dev/null 2>&1
         if [ \$? -ne 0 ]; then
             log -f ${CURRENT_FUNC} 'ERROR' \"[❌] Kafka-cluster connection test failed! Failed to connect to '$address'\"
-            rm -rf $client_secrets_dir
+            # rm -rf $client_secrets_dir
             exit 1
         fi
-        rm -rf $client_secrets_dir
+        # rm -rf $client_secrets_dir
         exit 0
     """
     if [ $? -ne 0 ]; then
@@ -3944,6 +3957,22 @@ install_kafka_ui() {
     log -f ${CURRENT_FUNC} "sending $chart_name http-routes.yaml to control-plane node: ${CONTROL_PLANE_NODE}"
     scp -q ./$chart_name/http-routes.yaml $CONTROL_PLANE_NODE:/tmp/$chart_name/
     ##################################################################
+    log -f ${CURRENT_FUNC} "Ensuring that 'keytool' command is available on the control-plane node: ${CONTROL_PLANE_NODE}"
+    ssh -q ${CONTROL_PLANE_NODE} <<< """
+        set -euo pipefail
+        if command -v keytool &> /dev/null; then
+            log -f ${CURRENT_FUNC} 'keytool is already installed on the control-plane node: $CONTROL_PLANE_NODE'
+        else
+            log -f ${CURRENT_FUNC} 'keytool is not installed, installing it...'
+            sudo dnf install java-17-openjdk-headless -y > /dev/null 2>&1
+        fi
+    """
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to install keytool on the control-plane node: $CONTROL_PLANE_NODE"
+        return 1
+    fi
+    log -f ${CURRENT_FUNC} "Finished ensuring that 'keytool' command is available on the control-plane node: ${CONTROL_PLANE_NODE}"
+    ##################################################################
     log -f ${CURRENT_FUNC} "Exporting '$KAFKA_UI_USER' secrets for truststore and keystore creation"
     ssh -q ${CONTROL_PLANE_NODE} <<< """
         client_secrets_dir='/tmp/kube-on-rehl/kafka-ui/secrets'
@@ -3952,33 +3981,47 @@ install_kafka_ui() {
         ###################################################################
         log -f ${CURRENT_FUNC} 'Creating truststore.jks for kafka-ui'
         ca_certs=(
-            broker-client-ca
-            brokers-ca
-            ca
-            clients-ca
-            cluster-ca
-            kafka-cluster-tls
-            kube-root-ca
-            user
+            brokers-tls-cert
+            kafka-clients-tls-cert
+            kafka-cluster-tls-cert
+            kafka-cluster-clients-ca
+            kafka-cluster-cluster-ca
         )
         ###################################################################
         log -f ${CURRENT_FUNC} 'Started exporting kafka ca-certs for truststore creation'
+        kubectl get cm kube-root-ca.crt \
+            -n $STRIMZI_KAFKA_NS \
+            -o jsonpath='{.data.ca\.crt}'  \
+            > \$client_secrets_dir/kube-root-ca.crt
         for alias in \"\${ca_certs[@]}\"; do
-            kubectl get cm kube-root-ca.crt \
+            if [ \$alias == "kube-root-ca" ]; then
+                continue
+            fi
+            kubectl get secrets \$alias \
                 -n $STRIMZI_KAFKA_NS \
-                -o jsonpath='{.data.ca\.crt}'  \
-                > \$client_secrets_dir/kube-root-ca.crt
+                -o jsonpath='{.data.ca\.crt}' | base64 -d \
+                > \$client_secrets_dir/\$alias.crt
+            if [ \$? -ne 0 ]; then
+                log -f ${CURRENT_FUNC} 'ERROR' \"Failed to get secret ca-cert: \$alias from ns: '$STRIMZI_KAFKA_NS' \"
+                exit 1
+            fi
         done
         log -f ${CURRENT_FUNC} '✅ Finished exporting kafka ca-certs for truststore creation'
         ###################################################################
         log -f ${CURRENT_FUNC} 'Started adding ca-certs to truststore.jks for kafka-ui'
         for alias in \"\${ca_certs[@]}\"; do
-            keytool -importcert \
-                -file \"\$client_secrets_dir/\${alias}.crt\" \
-                -keystore \"\$client_secrets_dir/truststore.jks\" \
-                -storepass \"\$KAFKA_UI_TRUSTSTORE_PASS\" \
-                -alias \"\$alias\" \
-                -noprompt
+            output=\$(
+                keytool -importcert \
+                    -file \"\$client_secrets_dir/\${alias}.crt\" \
+                    -keystore \"\$client_secrets_dir/truststore.jks\" \
+                    -storepass \"$KAFKA_UI_TRUSTSTORE_PASS\" \
+                    -alias \"\$alias\" \
+                    -noprompt 2>&1
+            )
+            if [ \$? -ne 0 ]; then
+                log -f ${CURRENT_FUNC} 'ERROR' \"Failed to add ca-cert: \$alias to truststore.jks for kafka-ui...\n\t\t:\$output\"
+                exit 1
+            fi
         done
         log -f ${CURRENT_FUNC} '✅ Finished adding ca-certs to truststore.jks for kafka-ui'
         ###################################################################
@@ -3992,15 +4035,34 @@ install_kafka_ui() {
             --from-file=./truststore.jks \
             -n $STRIMZI_KAFKA_NS > /dev/null 2>&1
         log -f ${CURRENT_FUNC} '✅ Finished creating truststore.jks secret for kafka-ui'
+
+        ###################################################################
+
+
+        kubectl get secret kafka-ui \
+            -n $STRIMZI_KAFKA_NS \
+            -o jsonpath='{.data.user\.key}' | base64 -d \
+            > \$client_secrets_dir/kafka-ui.key
+
+        kubectl get secret kafka-ui \
+            -n $STRIMZI_KAFKA_NS \
+            -o jsonpath='{.data.user\.crt}' | base64 -d \
+            > \$client_secrets_dir/kafka-ui.crt
+
+        kubectl get secret kafka-ui \
+            -n $STRIMZI_KAFKA_NS \
+            -o jsonpath='{.data.ca\.crt}' | base64 -d \
+            > \$client_secrets_dir/ca.crt
         ###################################################################
         log -f ${CURRENT_FUNC} 'Started creating keystore.p12 for kafka-ui'
         openssl pkcs12 -export \
-            -inkey \$client_secrets_dir/user.key \
-            -in \$client_secrets_dir/user.crt \
+            -inkey \$client_secrets_dir/kafka-ui.key \
+            -in \$client_secrets_dir/kafka-ui.crt \
             -certfile \$client_secrets_dir/ca.crt \
             -name kafka-ui-keystore \
             -out \$client_secrets_dir/keystore.p12 \
-            -password pass:arakeen
+            -password pass:$KAFKA_KEYSTORE_PASS
+
         kubectl delete secret kafka-ui-keystore -n $STRIMZI_KAFKA_NS > /dev/null 2>&1 || true
         kubectl create secret generic kafka-ui-keystore \
             --from-file=./keystore.p12 \
@@ -4008,6 +4070,10 @@ install_kafka_ui() {
         log -f ${CURRENT_FUNC} '✅ Finished creating keystore.p12 secret for kafka-ui'
         ###################################################################
     """
+    if [ $? -ne 0 ]; then
+        log -f ${CURRENT_FUNC} "ERROR" "Failed to export '$KAFKA_UI_USER' secrets for keystore & truststore creation"
+        return 1
+    fi
     log -f ${CURRENT_FUNC} "✅ Finished exporting '$KAFKA_UI_USER' secrets for keystore & truststore and keystore creation"
     ###################################################################
     log -f ${CURRENT_FUNC} "Installing $chart_name Helm chart"
@@ -4305,6 +4371,7 @@ stabilise_cluster() {
           \"app.kubernetes.io/name=ceph-mgr\"
           \"app.kubernetes.io/name=ceph-mon\"
           \"app.kubernetes.io/name=ceph-osd\"
+          \"app.kubernetes.io/name=ceph-rgw\"
           \"operator=rook\"
           \"app=rook-ceph-osd\"
           \"app=csi-cephfsplugin-provisioner\"
@@ -4642,7 +4709,10 @@ if [ "$INSTALL_CLUSTER" = true ]; then
         fi
 #     ##################################################################
 #     # install_akhq
-    install_kafka_ui
+    if ! install_kafka_ui; then
+        log -f "main" "ERROR" "Failed to install kafka-ui on the cluster"
+        exit 1
+    fi
 #     ##################################################################
 #     # install_neo4j
 fi
