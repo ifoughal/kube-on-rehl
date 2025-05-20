@@ -547,7 +547,7 @@ helm_uninstall_chart(){
 
         log -f '${CURRENT_FUNC}' 'uninstalling and ensuring the cluster is cleaned from $CHART_NAME'
 
-        helm uninstall -n $CHART_NS $CHART_NAME > /dev/null 2>&1 || true
+        helm uninstall -n '$CHART_NS' '$CHART_NAME' > /dev/null 2>&1 || true
         # Record the start time
         start_time=\$(date +%s)
 
