@@ -9,7 +9,17 @@ metadata:
     strimzi.io/node-pools: enabled
     strimzi.io/kraft: enabled
 spec:
-
+  # cruiseControl:
+  #   brokerCapacity: # (1)
+  #     inboundNetwork: 10000KB/s
+  #     outboundNetwork: 10000KB/s
+  #     overrides: # (2)
+  #     - brokers: [0]
+  #       inboundNetwork: 20000KiB/s
+  #       outboundNetwork: 20000KiB/s
+  #     - brokers: [1, 2]
+  #       inboundNetwork: 30000KiB/s
+  #       outboundNetwork: 30000KiB/s
   kafka:
     authorization:
       type: simple
@@ -27,60 +37,14 @@ spec:
     metadataVersion: 4.0-IV3
     config:
       auto.create.topics.enable: "false"
-      offsets.topic.replication.factor: 3
-      transaction.state.log.replication.factor: 3
-      transaction.state.log.min.isr: 2
-      default.replication.factor: 3
-      min.insync.replicas: 2
+      # offsets.topic.replication.factor: 3
+      # transaction.state.log.replication.factor: 3
+      # transaction.state.log.min.isr: 2
+      # default.replication.factor: 3
+      # min.insync.replicas: 2
 
     # REF: https://strimzi.io/docs/operators/latest/configuring#property-listener-config-preferredNodePortAddressType-reference
     listeners:
-    - name: plain
-      port: 9092
-      type: internal
-      tls: false
-      configuration:
-        useServiceDnsDomain: true
-    # - name: tls
-    #   port: 9093
-    #   type: internal
-    #   tls: true
-    #   configuration:
-    #     useServiceDnsDomain: true
-    #   authentication:
-    #     type: tls
-    # - name: saslplain
-    #   port: 9094
-    #   # type: cluster-
-    #   # type: loadbalancer
-    #   type: nodeport  # this works!
-    #   tls: false
-    #   configuration:
-    #     createBootstrapService: true
-    #     # since we don't have any available IP address, we use the nodePort or CusterIP
-    #     # loadBalancerSourceRanges:
-    #     # - 10.66.65.10/32
-    #     # - 10.66.65.11/32
-    #     # - 10.66.65.12/32
-    #     # useServiceDnsDomain: true # internal or cluster-ip only
-    #     # brokers:
-    #     # - broker: 10
-    #     #   advertisedHost: kafka-broker-0.pfs.pack
-    #     #   advertisedPort: 9094
-    #     #   # loadBalancerIP: 10.66.65.10
-    #     # - broker: 11
-    #     #   advertisedHost: kafka-broker-1.pfs.pack
-    #     #   advertisedPort: 9094
-    #     #   # loadBalancerIP: 10.66.65.11
-    #     # - broker: 12
-    #     #   advertisedHost: kafka-broker-2.pfs.pack
-    #     #   advertisedPort: 9094
-    #     #   # loadBalancerIP: 10.66.65.12
-    #     # bootstrap:
-    #     #   alternativeNames:
-    #     #   - kafka-bootstrap.pfs.pack
-    #       # loadBalancerIP: 10.66.65.10
-
     - name: tls
       port: 9093
       type: cluster-ip
@@ -89,25 +53,8 @@ spec:
       authentication:
         # type: scram-sha-512
         type: tls
-        # certificateAndKey:
-        #   secretName: my-secret
-        #   certificate: my-public-tls-certificate-file.crt
-        #   key: private.key
-        # tlsTrustedCertificates:
-        # - secretName: ifoughali
-        #   pattern: "*.crt"
-        # - secretName: kafka-cluster-cluster-ca-cert
-        #   pattern: "*.crt"
-        # - secretName: kafka-cluster-cluster-ca
-        #   pattern: "*.crt"
-        # - secretName: kafka-cluster-clients-ca
-        #   pattern: "*.crt"
-        # - secretName: kafka-cluster-clients-ca-cert
-        #   pattern: "*.crt"
-        # - secretName: brokers-tls-cert
-        #   pattern: "*.crt"
       configuration:
-        # useServiceDnsDomain: true # internal or cluster-ip only
+        useServiceDnsDomain: true # internal or cluster-ip only
         brokerCertChainAndKey:
           # secretName: kafka-cluster-cluster-ca
           secretName: brokers-tls-cert
@@ -120,21 +67,21 @@ spec:
           # advertisedHost: kafka-broker-0.pfs.pack
           advertisedHost: broker-0-kafka-cluster.pfs.pack
           advertisedPort: 9093
-        - broker: 11
-          # nodePort: 32011
-          # advertisedHost: kafka-broker-1.pfs.pack
-          advertisedHost: broker-1-kafka-cluster.pfs.pack
-          advertisedPort: 9093
-        - broker: 12
-          # nodePort: 32012
-          # advertisedHostTemplate: kafka-broker-{nodeId}.pfs.pack
-          # advertisedHost: kafka-broker-2.pfs.pack
-          advertisedHost: broker-2-kafka-cluster.pfs.pack
-          advertisedPort: 9093
-        # bootstrap:
+        # - broker: 11
+        #   # nodePort: 32011
+        #   # advertisedHost: kafka-broker-1.pfs.pack
+        #   advertisedHost: broker-1-kafka-cluster.pfs.pack
+        #   advertisedPort: 9093
+        # - broker: 12
+        #   # nodePort: 32012
+        #   # advertisedHostTemplate: kafka-broker-{nodeId}.pfs.pack
+        #   # advertisedHost: kafka-broker-2.pfs.pack
+        #   advertisedHost: broker-2-kafka-cluster.pfs.pack
+        #   advertisedPort: 9093
+        bootstrap:
         #   nodePort: 32100
-        #   alternativeNames:
-        #   - kafka-bootstrap.pfs.pack
+          alternativeNames:
+          - kafka-bootstrap.pfs.pack
         createBootstrapService: true
 
   entityOperator:
@@ -165,82 +112,6 @@ spec:
     validityDays: 365
     generateCertificateAuthority: false
   #####################################################
-
-
-    # INGRESS WILL NOT WORK AS WE USE GATEWAY API!
-    # - name: external2
-    #   port: 9095
-    #   type: ingress
-    #   tls: true
-    #   # authentication:
-    #   #   type: tls
-    #   configuration:
-    #     bootstrap:
-    #       # nodePort: 32100
-    #       host: kafka-boostrap.pfs.pack
-    #     brokers:
-    #     - broker: 0
-    #       # nodePort: 32000
-    #       host: kafka-broker-0.pfs.pack
-    #     - broker: 1
-    #       # nodePort: 32001
-    #       host: kafka-broker-1.pfs.pack
-    #     - broker: 2
-    #       # nodePort: 32001
-    #       host: kafka-broker-2.pfs.pack
-
-
-    # - name: external2
-    #   port: 9096
-    #   type: loadbalancer
-    #   tls: true
-    #   configuration:
-    #     # loadBalancerSourceRanges:
-    #     # - 10.66.65.12/32
-    #     # - 10.66.65.11/32
-    #     # - 10.66.65.10/32
-    #     bootstrap:
-    #       loadBalancerIP: 10.66.65.12
-    #     brokers:
-    #     - broker: 0
-    #       loadBalancerIP: 10.66.65.11
-    #     - broker: 1
-    #       loadBalancerIP: 10.66.65.10
-
-
-    # - name: external
-    #   port: 9094
-    #   type: cluster-ip
-    #   tls: false
-
-
-# status:
-#   clusterId: myvE0PyuRhmQIwbhmcZXew
-  # niD_eXqZRAuCAwAwhxbaxQ
-  # p3LshGcWRkiT1fSRI5S6Jw
-
-
-
-
-
-# ---
-
-# apiVersion: kafka.strimzi.io/v1beta2
-# kind: KafkaBridge
-# metadata:
-#   name: kafka-bridge
-#   namespace: strimzi-kafka
-# spec:
-#   replicas: 1
-#   bootstrapServers: kafka-cluster-kafka-external1-bootstrap.strimzi-kafka.svc:9094
-#   http:
-#     port: 8080
-
-# # FORCE RECONCILE CHANGES AFTER APPLYING THIS CRS:
-# # kubectl patch kafka kafka-cluster --type=merge -p '{"metadata":{"annotations":{"reconcile":"now"}}}'
-# # CHECK STATUS:
-# # kubectl get kafka kafka-cluster -o yaml
-
 ---
 apiVersion: kafka.strimzi.io/v1beta2
 kind: KafkaNodePool
@@ -278,42 +149,6 @@ spec:
       #   hdd-type: ssd
       # class: my-storage-class
 ---
-#  apply this to replace dual-role later. as we do not want to expsoe the controllers...
-# apiVersion: kafka.strimzi.io/v1beta2
-# kind: KafkaNodePool
-# metadata:
-#   name: broker
-#   namespace: strimzi-kafka
-#   annotations:
-#     strimzi.io/next-node-ids: '[10-100]'
-#   labels:
-#     strimzi.io/cluster: kafka-cluster
-# spec:
-#   replicas: 3
-#   roles:
-#   - broker
-#   storage:
-#     type: jbod
-#     volumes:
-#     - id: 0
-#       type: persistent-claim
-#       size: 100Gi
-#       deleteClaim: false
-#       class: rook-ceph-block
-#       # selector:
-#       #   hdd-type: nvme
-#       # class: my-storage-class
-#     - id: 1
-#       type: persistent-claim
-#       size: 100Gi
-#       deleteClaim: false
-#       class: rook-ceph-block
-#     - id: 2
-#       type: persistent-claim
-#       size: 100Gi
-#       deleteClaim: false
-#       class: rook-ceph-block
-
 apiVersion: kafka.strimzi.io/v1beta2
 kind: KafkaNodePool
 metadata:
@@ -357,109 +192,43 @@ spec:
       type: persistent-claim
       size: 100Gi
       deleteClaim: false
----
-apiVersion: kafka.strimzi.io/v1beta2
-kind: KafkaNodePool
-metadata:
-  name: broker-b
-  namespace: strimzi-kafka
-  annotations:
-    strimzi.io/next-node-ids: '[11]'
-  labels:
-    strimzi.io/cluster: kafka-cluster
-spec:
-  replicas: 1
-  roles:
-  - broker
-  template:
-    pod:
-      securityContext:
-        # runAsUser: 101
-        # runAsGroup: 101
-        fsGroup: 1001
-        # fsGroupChangePolicy: "OnRootMismatch"
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: kafka-node-id
-                operator: In
-                values:
-                - "11"
-  resources:
-    requests:
-      memory: 4Gi
-      cpu: "4"
-    limits:
-      memory: 8Gi
-      cpu: "8"
-  storage:
-    type: jbod
-    volumes:
-    - id: 0
-      type: persistent-claim
-      size: 100Gi
-      deleteClaim: false
-
----
-apiVersion: kafka.strimzi.io/v1beta2
-kind: KafkaNodePool
-metadata:
-  name: broker-c
-  namespace: strimzi-kafka
-  annotations:
-    strimzi.io/next-node-ids: '[12]'
-  labels:
-    strimzi.io/cluster: kafka-cluster
-spec:
-  replicas: 1
-  roles:
-  - broker
-  template:
-    pod:
-      securityContext:
-        # runAsUser: 101
-        # runAsGroup: 101
-        fsGroup: 1001
-        # fsGroupChangePolicy: "OnRootMismatch"
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: kafka-node-id
-                operator: In
-                values:
-                - "12"
-  resources:
-    requests:
-      memory: 4Gi
-      cpu: "4"
-    limits:
-      memory: 8Gi
-      cpu: "8"
-  storage:
-    type: jbod
-    volumes:
-    - id: 0
-      type: persistent-claim
-      size: 100Gi
-      deleteClaim: false
----
+# ---
 # apiVersion: kafka.strimzi.io/v1beta2
 # kind: KafkaNodePool
 # metadata:
-#   name: dual-role
+#   name: broker-b
 #   namespace: strimzi-kafka
+#   annotations:
+#     strimzi.io/next-node-ids: '[11]'
 #   labels:
 #     strimzi.io/cluster: kafka-cluster
 # spec:
-#   replicas: 3
+#   replicas: 1
 #   roles:
-#   - controller
 #   - broker
-#   # REF: https://strimzi.io/docs/operators/latest/deploying#assembly-storage-str
+#   template:
+#     pod:
+#       securityContext:
+#         # runAsUser: 101
+#         # runAsGroup: 101
+#         fsGroup: 1001
+#         # fsGroupChangePolicy: "OnRootMismatch"
+#       affinity:
+#         nodeAffinity:
+#           requiredDuringSchedulingIgnoredDuringExecution:
+#             nodeSelectorTerms:
+#             - matchExpressions:
+#               - key: kafka-node-id
+#                 operator: In
+#                 values:
+#                 - "11"
+#   resources:
+#     requests:
+#       memory: 4Gi
+#       cpu: "4"
+#     limits:
+#       memory: 8Gi
+#       cpu: "8"
 #   storage:
 #     type: jbod
 #     volumes:
@@ -467,4 +236,49 @@ spec:
 #       type: persistent-claim
 #       size: 100Gi
 #       deleteClaim: false
-#       kraftMetadata: shared
+
+# ---
+# apiVersion: kafka.strimzi.io/v1beta2
+# kind: KafkaNodePool
+# metadata:
+#   name: broker-c
+#   namespace: strimzi-kafka
+#   annotations:
+#     strimzi.io/next-node-ids: '[12]'
+#   labels:
+#     strimzi.io/cluster: kafka-cluster
+# spec:
+#   replicas: 1
+#   roles:
+#   - broker
+#   template:
+#     pod:
+#       securityContext:
+#         # runAsUser: 101
+#         # runAsGroup: 101
+#         fsGroup: 1001
+#         # fsGroupChangePolicy: "OnRootMismatch"
+#       affinity:
+#         nodeAffinity:
+#           requiredDuringSchedulingIgnoredDuringExecution:
+#             nodeSelectorTerms:
+#             - matchExpressions:
+#               - key: kafka-node-id
+#                 operator: In
+#                 values:
+#                 - "12"
+#   resources:
+#     requests:
+#       memory: 4Gi
+#       cpu: "4"
+#     limits:
+#       memory: 8Gi
+#       cpu: "8"
+#   storage:
+#     type: jbod
+#     volumes:
+#     - id: 0
+#       type: persistent-claim
+#       size: 100Gi
+#       deleteClaim: false
+---
