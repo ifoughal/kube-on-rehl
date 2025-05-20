@@ -87,7 +87,7 @@ metadata:
 spec:
   hostnames:
   - kafka-bootstrap.pfs.pack
-  - bkafka-cluster-bootstrap.pfs.pack
+  - kafka-cluster-bootstrap.pfs.pack
   parentRefs:
   - group: gateway.networking.k8s.io
     kind: Gateway
